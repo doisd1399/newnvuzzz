@@ -1,0 +1,2681 @@
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useMemo,
+  useEffect,
+} from "react";
+import { toast } from "sonner";
+import { auth, db } from "../lib/firebase";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  getDocs,
+  collection,
+  onSnapshot,
+  query,
+  where,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  setDoc,
+  deleteField,
+  writeBatch,
+  arrayUnion,
+} from "firebase/firestore";
+
+// --- Types ---
+export type Role = "admin" | "driver";
+
+export interface CompanyMember {
+  id: string;
+  companyId: string;
+  userId: string;
+  roles: Role[];
+  permissions: string[];
+  status: "active" | "pending" | "rejected";
+  joinedAt?: string;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  password?: string;
+  photoURL?: string;
+  whatsapp?: string;
+  applicationSubmitted?: boolean;
+  status: "active" | "pending" | "rejected";
+  isOnline?: boolean;
+  level?: number;
+  rating?: number;
+  avatar?: string;
+  xp?: number;
+  totalDeliveries?: number;
+
+  // Legacy fields (kept for fallback only, do not rely on these)
+  companyId?: string;
+  memberships?: {
+    [companyId: string]: {
+      role: Role;
+      roles: Role[];
+      status: "active" | "pending" | "rejected";
+    };
+  };
+  role?: Role;
+  roles?: Role[];
+}
+
+export interface Vehicle {
+  id: string;
+  userId?: string;
+  companyId: string;
+  name: string;
+  plate?: string;
+  paintCode?: string;
+  status: "available" | "in_use" | "maintenance";
+}
+
+export interface Trailer {
+  id: string;
+  userId?: string;
+  companyId: string;
+  name: string;
+  plate?: string;
+  paintCode?: string;
+  status: "available" | "in_use";
+}
+
+export interface ContractDelivery {
+  id: string;
+  origin: string;
+  destination: string;
+}
+
+export interface RecruitmentSettings {
+  about: string;
+  rules: string;
+  howItWorks: string;
+  benefits: string;
+}
+
+export interface RecruitmentApplication {
+  id: string;
+  userId?: string;
+  companyId: string;
+  photoURL: string;
+  fullName: string;
+  whatsapp: string;
+  email: string;
+  reason: string;
+  objective: string;
+  deliveriesPerWeek: string;
+  hasExperience?: boolean;
+  primaryVehicle: string;
+  secondaryVehicle: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+}
+
+export interface CompanyProfile {
+  id: string;
+  userId?: string;
+  ownerId?: string;
+  companyName: string;
+  fleetName: string;
+  simulatorName: string;
+  ownerName: string;
+  cnpj: string;
+  whatsapp?: string;
+  logoUrl?: string;
+  recruitmentSettings?: RecruitmentSettings;
+}
+
+export interface Contract {
+  id: string;
+  userId?: string;
+  companyId: string;
+  companyName?: string;
+  name: string;
+  simulator: string;
+  trailerId?: string;
+  deadlineDays: number;
+  totalDeliveries: number;
+  mode: "simple" | "detailed";
+  deliveries?: ContractDelivery[]; // Only for detailed mode
+  status: "active" | "completed";
+}
+
+export interface Job {
+  id: string;
+  userId?: string;
+  motoristaId?: string;
+  companyId: string;
+  contractId: string;
+  driverId: string;
+  vehicleId: string;
+  trailerId?: string;
+  status: "pending" | "active" | "completed" | "cancelled";
+  progress: number; // Num of completed deliveries
+  completedRoutes?: { origin: string; destination: string }[]; // For simple mode deliveries
+  deadlineDate: string; // ISO String
+  createdAt?: string;
+  completedAt?: string;
+}
+
+export interface JobDemand {
+  id: string;
+  driverId: string;
+  companyId: string;
+  status: "pending" | "reviewed";
+  createdAt: string;
+}
+
+export interface DriverRequest {
+  id: string;
+  motoristaId: string;
+  empresaId: string;
+  adminId: string;
+  status: "pendente" | "aprovado" | "recusado";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  titulo: string;
+  mensagem: string;
+  tipo: "solicitacao" | "aprovado" | "recusado";
+  lida: boolean;
+  createdAt: string;
+}
+
+// --- Initial Mock Data ---
+const MOCK_COMPANIES: CompanyProfile[] = [
+  {
+    id: "c1",
+    companyName: "Logistics Pro SA",
+    fleetName: "Pro Fleet",
+    simulatorName: "Euro Truck Simulator 2",
+    ownerName: "Admin",
+    cnpj: "12.345.678/0001-90",
+  },
+];
+
+const MOCK_USERS: User[] = [
+  {
+    companyId: "c1",
+    id: "u1",
+    name: "Fábio Dias",
+    email: "admin@frotalog.com",
+    password: "123",
+    role: "admin",
+    roles: ["admin", "driver"],
+    status: "active",
+    avatar: "https://i.pravatar.cc/150?u=u1",
+  },
+  {
+    companyId: "c1",
+    id: "u2",
+    name: "João Silva",
+    email: "joao@frotalog.com",
+    password: "123",
+    role: "driver",
+    roles: ["driver"],
+    status: "active",
+    level: 4,
+    rating: 4.8,
+    avatar: "https://i.pravatar.cc/150?u=u2",
+  },
+  {
+    companyId: "c1",
+    id: "u3",
+    name: "Carlos Lima",
+    email: "carlos@frotalog.com",
+    password: "123",
+    role: "driver",
+    roles: ["driver"],
+    status: "active",
+    level: 2,
+    rating: 4.5,
+    avatar: "https://i.pravatar.cc/150?u=u3",
+  },
+  {
+    companyId: "c1",
+    id: "u4",
+    name: "Marcos Paulo",
+    email: "marcos@frotalog.com",
+    password: "123",
+    role: "driver",
+    roles: ["driver"],
+    status: "pending",
+    level: 1,
+    rating: 5.0,
+    avatar: "https://i.pravatar.cc/150?u=u4",
+  },
+];
+
+const MOCK_VEHICLES: Vehicle[] = [
+  {
+    companyId: "c1",
+    id: "v1",
+    name: "Scania R500",
+    plate: "ABC-1D23",
+    status: "available",
+    paintCode: "#FF0000",
+  },
+  {
+    companyId: "c1",
+    id: "v2",
+    name: "Volvo FH540",
+    plate: "XYZ-9F71",
+    status: "in_use",
+    paintCode: "Azul Brilhante",
+  },
+  {
+    companyId: "c1",
+    id: "v3",
+    name: "DAF XF 105",
+    plate: "QWE-4422",
+    status: "available",
+  },
+];
+
+const MOCK_TRAILERS: Trailer[] = [
+  {
+    companyId: "c1",
+    id: "t1",
+    name: "Granel GR 7 Eixos",
+    plate: "AAA-0001",
+    status: "available",
+    paintCode: "#FFFFFF",
+  },
+  {
+    companyId: "c1",
+    id: "t2",
+    name: "Sider 3 Eixos",
+    plate: "BBB-0002",
+    status: "in_use",
+  },
+];
+
+const MOCK_CONTRACTS: Contract[] = [
+  {
+    companyId: "c1",
+    id: "c1",
+    name: "Transporte de Grãos",
+    simulator: "Euro Truck Sim 2",
+    deadlineDays: 5,
+    totalDeliveries: 8,
+    mode: "simple",
+    status: "active",
+  },
+  {
+    companyId: "c1",
+    id: "c2",
+    name: "Minério de Ferro",
+    simulator: "American Truck Sim",
+    deadlineDays: 3,
+    totalDeliveries: 4,
+    mode: "detailed",
+    deliveries: [
+      { id: "d1", origin: "Mina A", destination: "Porto Novo" },
+      { id: "d2", origin: "Mina A", destination: "Porto Sul" },
+      { id: "d3", origin: "Mina B", destination: "Siderúrgica" },
+      { id: "d4", origin: "Mina B", destination: "Porto Norte" },
+    ],
+    status: "active",
+  },
+];
+
+// Pre-create some jobs
+const d = new Date();
+d.setDate(d.getDate() + 2); // Deadline in 2 days
+const MOCK_JOBS: Job[] = [
+  {
+    companyId: "c1",
+    id: "j1",
+    contractId: "c1",
+    driverId: "u2",
+    vehicleId: "v2",
+    trailerId: "t2",
+    status: "active",
+    progress: 3,
+    deadlineDate: d.toISOString(),
+  },
+];
+
+// --- Context Setup ---
+interface AppContextType {
+  currentUser: User | null;
+  setCurrentUser: (user: User | null) => void;
+  activeRole: Role | null;
+  memberships: CompanyMember[];
+  allCompanyMembers: CompanyMember[];
+  switchRole: (role: Role, newCompanyId?: string) => Promise<void>;
+  promoteDriverToAdmin: (driverId: string) => Promise<void>;
+  demoteAdminToDriver: (driverId: string) => Promise<void>;
+  removeDriverFromFleet: (driverId: string) => Promise<void>;
+  updateUserOnlineStatus: (isOnline: boolean) => Promise<void>;
+  authInitialized: boolean;
+
+  users: User[];
+  vehicles: Vehicle[];
+  trailers: Trailer[];
+  contracts: Contract[];
+  jobs: Job[];
+  jobDemands: JobDemand[];
+  companies: CompanyProfile[];
+  activeCompanyId: string | null;
+  setActiveCompanyId: (id: string | null) => void;
+  recruitmentApplications: RecruitmentApplication[];
+
+  // Actions
+  updateRecruitmentSettings: (
+    companyId: string,
+    settings: RecruitmentSettings,
+  ) => Promise<void>;
+  submitRecruitmentApplication: (
+    data: Omit<RecruitmentApplication, "id" | "status" | "createdAt">,
+  ) => Promise<void>;
+  approveRecruitmentApplication: (applicationId: string) => Promise<void>;
+  rejectRecruitmentApplication: (applicationId: string) => Promise<void>;
+  deleteRecruitmentApplication: (applicationId: string) => Promise<void>;
+
+  createCompany: (data: Omit<CompanyProfile, "id" | "cnpj">) => void;
+  updateCompany: (
+    id: string,
+    updates: Partial<Omit<CompanyProfile, "id" | "cnpj">>,
+  ) => void;
+  deleteCompany: (id: string) => void;
+  createContract: (contract: Omit<Contract, "id" | "status">) => Promise<void>;
+  updateContract: (
+    id: string,
+    updates: Partial<Omit<Contract, "id">>,
+  ) => Promise<void>;
+  deleteContract: (id: string) => void;
+  assignJob: (
+    contractId: string,
+    driverId: string,
+    vehicleId: string,
+    trailerId?: string,
+    customDeadlineDays?: number,
+  ) => void;
+  startJob: (jobId: string) => Promise<void>;
+  markDeliveryComplete: (
+    jobId: string,
+    route?: { origin: string; destination: string },
+  ) => Promise<void>;
+  updateDeliveryRoute: (
+    jobId: string,
+    index: number,
+    route: { origin: string; destination: string },
+  ) => Promise<void>;
+  unmarkDelivery: (jobId: string) => Promise<void>;
+  finishJob: (jobId: string) => Promise<void>;
+  cancelJob: (jobId: string) => Promise<void>;
+  deleteJob: (jobId: string) => Promise<void>;
+  requestNewJobDemand: () => Promise<void>;
+  cancelJobDemand: () => Promise<void>;
+  rejectJobDemand: (demandId: string) => Promise<void>;
+  driverRequests: DriverRequest[];
+  notifications: AppNotification[];
+  markNotificationAsRead: (notificationId: string) => void;
+  requestJoinCompany: (companyId: string) => void;
+  cancelRequestJoinCompany: (requestId: string) => void;
+  approveDriver: (requestId: string) => void;
+  rejectDriver: (requestId: string) => void;
+  syncCompanyData: () => Promise<void>;
+  createManualDriver: (driverData: Partial<User>) => Promise<void>;
+  registerUser: (
+    userData: Pick<User, "name" | "email" | "password" | "role">,
+  ) => void;
+  addVehicle: (vehicle: Omit<Vehicle, "id" | "status" | "companyId">) => void;
+  updateVehicle: (id: string, updates: Partial<Omit<Vehicle, "id">>) => void;
+  deleteVehicle: (id: string) => void;
+
+  addTrailer: (trailer: Omit<Trailer, "id" | "status" | "companyId">) => void;
+  updateTrailer: (id: string, updates: Partial<Omit<Trailer, "id">>) => void;
+  deleteTrailer: (id: string) => void;
+  logOutApp: () => Promise<void>;
+}
+
+const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null); // Start in login flow
+  const [authInitialized, setAuthInitialized] = useState(false);
+  const [memberships, setMemberships] = useState<CompanyMember[]>([]);
+  const [activeCompanyId, setActiveCompanyId] = useState<string | null>(() => {
+    return localStorage.getItem("activeCompanyId");
+  });
+  const [activeRole, setActiveRole] = useState<Role | null>(() => {
+    return localStorage.getItem("activeRole") as Role | null;
+  });
+
+  // Observe auth state initially
+  useEffect(() => {
+    let unsubDoc: (() => void) | undefined;
+
+    const unsubAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          unsubDoc = onSnapshot(
+            doc(db, "users", firebaseUser.uid),
+            (userDoc) => {
+              if (userDoc.exists()) {
+                const data = { ...userDoc.data(), id: userDoc.id } as User;
+                if (!data.roles) data.roles = [data.role || "driver"];
+                if (
+                  data.roles.includes("admin") &&
+                  !data.roles.includes("driver")
+                ) {
+                  data.roles.push("driver");
+                }
+                if (!data.role)
+                  data.role = data.roles.includes("admin") ? "admin" : "driver";
+                if (data.roles.includes("admin")) {
+                  data.status = "active";
+                }
+                setCurrentUser(data);
+              } else {
+                setCurrentUser(null);
+              }
+              setAuthInitialized(true);
+            },
+            (e: any) => {
+              console.error("Error fetching user data", e);
+              if (e.code === "permission-denied") {
+                alert(
+                  "Atenção! Suas regras no Firestore estão bloqueando o acesso. Certifique-se de adicionar regras de leitura/escrita para a coleção 'users' no seu Console do Firebase.\n\nExemplo:\nmatch /users/{userId} {\n  allow read, write: if request.auth != null;\n}",
+                );
+              }
+              setCurrentUser(null);
+              setAuthInitialized(true);
+            },
+          );
+        } catch (e) {
+          console.error("Error attaching user snapshot", e);
+          setAuthInitialized(true);
+        }
+      } else {
+        setCurrentUser(null);
+        setActiveCompanyId(null);
+        setActiveRole(null);
+        setMemberships([]);
+        setAllCompanyMembers([]);
+        setUsers([]);
+        setFetchedMissingUsers([]);
+        setVehicles([]);
+        setTrailers([]);
+        setContracts([]);
+        setJobs([]);
+        setJobDemands([]);
+        setDriverRequests([]);
+        setNotifications([]);
+        setRecruitmentApplications([]);
+        
+        localStorage.removeItem("activeCompanyId");
+        localStorage.removeItem("activeRole");
+        // Clear anything else that might be lingering
+        sessionStorage.clear();
+        setAuthInitialized(true);
+        if (unsubDoc) {
+          unsubDoc();
+          unsubDoc = undefined;
+        }
+      }
+    });
+
+    return () => {
+      if (unsubDoc) unsubDoc();
+      unsubAuth();
+    };
+  }, []);
+
+  const [users, setUsers] = useState<User[]>([]);
+  const [fetchedMissingUsers, setFetchedMissingUsers] = useState<User[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [trailers, setTrailers] = useState<Trailer[]>([]);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobDemands, setJobDemands] = useState<JobDemand[]>([]);
+  const [companies, setCompanies] = useState<CompanyProfile[]>([]);
+  const [driverRequests, setDriverRequests] = useState<DriverRequest[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [allCompanyMembers, setAllCompanyMembers] = useState<CompanyMember[]>(
+    [],
+  );
+
+  const [recruitmentApplications, setRecruitmentApplications] = useState<
+    RecruitmentApplication[]
+  >([]);
+
+  useEffect(() => {
+    if (activeCompanyId) {
+      localStorage.setItem("activeCompanyId", activeCompanyId);
+    } else {
+      localStorage.removeItem("activeCompanyId");
+    }
+    if (activeRole) {
+      localStorage.setItem("activeRole", activeRole);
+    } else {
+      localStorage.removeItem("activeRole");
+    }
+  }, [activeCompanyId, activeRole]);
+
+  // --- Global Public Companies Subscription ---
+  useEffect(() => {
+    const unsubCompanies = onSnapshot(
+      collection(db, "frotas"),
+      (snap) => {
+        const data = snap.docs.map(
+          (doc) => ({ ...doc.data(), id: doc.id }) as CompanyProfile,
+        );
+        setCompanies(data);
+      },
+      (error) => {
+        console.error("Error fetching global frotas snapshot:", error);
+      },
+    );
+    return () => unsubCompanies();
+  }, []);
+
+  // --- Real-time Firestore Subscriptions (Authenticated) ---
+  useEffect(() => {
+    if (!currentUser || !currentUser.id) {
+      setMemberships([]);
+      return;
+    }
+    const q = query(
+      collection(db, "companyMembers"),
+      where("userId", "==", currentUser.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      async (snap) => {
+        const fetchedMemberships = snap.docs.map(
+          (doc) => ({ ...doc.data(), id: doc.id }) as CompanyMember,
+        );
+
+        // Auto-migration for legacy relationships
+        if (
+          fetchedMemberships.length === 0 &&
+          (currentUser.memberships || currentUser.companyId)
+        ) {
+          console.log(
+            "Auto-migrating legacy memberships to companyMembers collection...",
+          );
+          const batch = writeBatch(db);
+          if (currentUser.memberships) {
+            Object.entries(currentUser.memberships).forEach(
+              ([compId, membershipData]) => {
+                const rolesList =
+                  membershipData.roles || [membershipData.role] || [];
+                const docRef = doc(collection(db, "companyMembers"));
+                batch.set(docRef, {
+                  companyId: compId,
+                  userId: currentUser.id,
+                  roles: rolesList,
+                  status: membershipData.status || "active",
+                  permissions: rolesList.includes("admin")
+                    ? ["admin", "owner", "manage_fleet", "all"]
+                    : [],
+                  joinedAt: new Date().toISOString(),
+                });
+              },
+            );
+          }
+
+          if (
+            currentUser.companyId &&
+            (!currentUser.memberships ||
+              !currentUser.memberships[currentUser.companyId])
+          ) {
+            const rolesList =
+              currentUser.roles ||
+              (currentUser.role ? [currentUser.role] : ["admin", "driver"]);
+            const docRef = doc(collection(db, "companyMembers"));
+            batch.set(docRef, {
+              companyId: currentUser.companyId,
+              userId: currentUser.id,
+              roles: rolesList,
+              status: "active",
+              permissions: rolesList.includes("admin")
+                ? ["admin", "owner", "manage_fleet", "all"]
+                : [],
+              joinedAt: new Date().toISOString(),
+            });
+          }
+          await batch
+            .commit()
+            .then(() => {
+              // Snapshot listener should pick up the newly created docs shortly.
+            })
+            .catch((e) => {
+              console.error("Auto-migration failed:", e.message);
+
+              // Fallback: Populate local memberships so the app doesn't break
+              const mockMemberships: CompanyMember[] = [];
+              if (currentUser.memberships) {
+                Object.entries(currentUser.memberships).forEach(
+                  ([compId, membershipData]) => {
+                    const rolesList =
+                      membershipData.roles || [membershipData.role] || [];
+                    mockMemberships.push({
+                      id: "mock-" + compId,
+                      companyId: compId,
+                      userId: currentUser.id,
+                      roles: rolesList,
+                      status: (membershipData.status as any) || "active",
+                      permissions: rolesList.includes("admin")
+                        ? ["admin", "owner", "manage_fleet", "all"]
+                        : [],
+                      joinedAt: new Date().toISOString(),
+                    });
+                  },
+                );
+              }
+
+              if (
+                currentUser.companyId &&
+                (!currentUser.memberships ||
+                  !currentUser.memberships[currentUser.companyId])
+              ) {
+                const rolesList = currentUser.roles || [
+                  currentUser.role as any,
+                ];
+                mockMemberships.push({
+                  id: "mock-" + currentUser.companyId,
+                  companyId: currentUser.companyId,
+                  userId: currentUser.id,
+                  roles: rolesList,
+                  status: "active",
+                  permissions: rolesList.includes("admin")
+                    ? ["admin", "owner", "manage_fleet", "all"]
+                    : [],
+                  joinedAt: new Date().toISOString(),
+                });
+              }
+              setMemberships(mockMemberships);
+            });
+        } else {
+          setMemberships(fetchedMemberships);
+        }
+      },
+      (err) => {
+        console.error("Error fetching memberships", err);
+      },
+    );
+    return () => unsub();
+  }, [currentUser?.id]);
+
+  // Stable primitives for dependencies to avoid excessive re-renders/listener recreations
+  const currentUserId = currentUser?.id;
+  const currentUserCompanyId = currentUser?.companyId;
+
+  useEffect(() => {
+    if (!currentUser || memberships.length === 0) return;
+
+    const validCompanyIds = memberships.map((m) => m.companyId);
+
+    // Check if current activeCompanyId is still valid and corresponds to an actual membership
+    const isStale =
+      !activeCompanyId || !validCompanyIds.includes(activeCompanyId);
+
+    if (isStale) {
+      // Find default membership: prefer admin if user role defaults to admin, otherwise first
+      const defaultMember =
+        memberships.find((m) => m.roles.includes("admin")) || memberships[0];
+      setActiveCompanyId(defaultMember.companyId);
+
+      const defaultRole = defaultMember.roles.includes("admin")
+        ? "admin"
+        : defaultMember.roles[0];
+      setActiveRole(defaultRole as Role);
+    } else {
+      // Verify if activeRole is valid for the current activeCompanyId membership
+      const currentMember = memberships.find(
+        (m) => m.companyId === activeCompanyId,
+      );
+      if (currentMember) {
+        if (!activeRole || !currentMember.roles.includes(activeRole)) {
+          setActiveRole(currentMember.roles[0] as Role);
+        }
+      }
+    }
+  }, [currentUserId, memberships, activeCompanyId, activeRole]);
+
+  // Fast initial setting of activeCompanyId to avoid blank/flickering states
+  useEffect(() => {
+    if (currentUserCompanyId && !activeCompanyId) {
+      setActiveCompanyId(currentUserCompanyId);
+      if (!activeRole) {
+        setActiveRole((currentUser.role || "driver") as Role);
+      }
+    }
+  }, [
+    currentUserId,
+    currentUserCompanyId,
+    activeCompanyId,
+    activeRole,
+    currentUser?.role,
+  ]);
+
+  const isActiveUser = useMemo(() => {
+    if (!currentUser) return false;
+    const currentMembership = memberships.find(
+      (m) => m.companyId === activeCompanyId,
+    );
+    return (
+      currentMembership?.status === "active" ||
+      currentMembership?.roles?.includes("admin") ||
+      currentUser.status === "active" ||
+      currentUser.role === "admin"
+    );
+  }, [currentUser, memberships, activeCompanyId]);
+
+  const targetCompanyId = activeCompanyId || currentUserCompanyId;
+
+  useEffect(() => {
+    if (!currentUserId) {
+      setVehicles([]);
+      setTrailers([]);
+      setContracts([]);
+      setJobs([]);
+      setUsers([]);
+      setDriverRequests([]);
+      setNotifications([]);
+      return;
+    }
+
+    const uid = currentUserId;
+    const isActive = isActiveUser;
+
+    let unsubVehicles: () => void = () => {};
+    let unsubTrailers: () => void = () => {};
+    let unsubContracts: () => void = () => {};
+    let unsubJobs: () => void = () => {};
+    let unsubDemands: () => void = () => {};
+    let unsubUsers: () => void = () => {};
+    let unsubAllCompanyMembers: () => void = () => {};
+
+    const handleSnapError = (prefix: string) => (error: any) => {
+      if (error.code !== "permission-denied") {
+        console.error(`${prefix}:`, error);
+      }
+    };
+
+    if (isActive) {
+      // For dependent resources (vehicles, trailers, contracts, jobs), Admins and Drivers fetch by companyId.
+      const vehicleQuery = targetCompanyId
+        ? query(
+            collection(db, "veiculos"),
+            where("companyId", "==", targetCompanyId),
+          )
+        : null;
+
+      if (vehicleQuery)
+        unsubVehicles = onSnapshot(
+          vehicleQuery,
+          (snap) => {
+            setVehicles(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as Vehicle,
+              ),
+            );
+          },
+          handleSnapError("Error fetching veiculos snap"),
+        );
+
+      const trailerQuery = targetCompanyId
+        ? query(
+            collection(db, "reboques"),
+            where("companyId", "==", targetCompanyId),
+          )
+        : null;
+
+      if (trailerQuery)
+        unsubTrailers = onSnapshot(
+          trailerQuery,
+          (snap) => {
+            setTrailers(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as Trailer,
+              ),
+            );
+          },
+          handleSnapError("Error fetching reboques snap"),
+        );
+
+      const contractQuery = targetCompanyId
+        ? query(
+            collection(db, "contratos"),
+            where("companyId", "==", targetCompanyId),
+          )
+        : null;
+
+      if (contractQuery)
+        unsubContracts = onSnapshot(
+          contractQuery,
+          (snap) => {
+            setContracts(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as Contract,
+              ),
+            );
+          },
+          handleSnapError("Error fetching contratos snap"),
+        );
+
+      // For jobs, we can query by companyId when acting as admin, or motoristaId when acting as driver
+      const jobQuery =
+        activeRole === "admin" && targetCompanyId
+          ? query(
+              collection(db, "trabalhos"),
+              where("companyId", "==", targetCompanyId),
+            )
+          : query(collection(db, "trabalhos"), where("driverId", "==", uid));
+
+      unsubJobs = onSnapshot(
+        jobQuery,
+        (snap) => {
+          let loadedJobs = snap.docs.map(
+            (doc) => ({ ...doc.data(), id: doc.id }) as Job,
+          );
+          if (targetCompanyId) {
+            loadedJobs = loadedJobs.filter(
+              (j) => j.companyId === targetCompanyId,
+            );
+          }
+          setJobs(loadedJobs);
+        },
+        handleSnapError("Error fetching trabalhos snap"),
+      );
+
+      const demandsQuery =
+        activeRole === "admin"
+          ? targetCompanyId
+            ? query(
+                collection(db, "jobDemands"),
+                where("companyId", "==", targetCompanyId),
+              )
+            : null
+          : query(collection(db, "jobDemands"), where("driverId", "==", uid));
+
+      if (demandsQuery)
+        unsubDemands = onSnapshot(
+          demandsQuery,
+          (snap) => {
+            setJobDemands(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as JobDemand,
+              ),
+            );
+          },
+          handleSnapError("Error fetching jobDemands"),
+        );
+
+      const usersQuery = targetCompanyId
+        ? query(
+            collection(db, "users"),
+            where("companyId", "==", targetCompanyId),
+          )
+        : null;
+
+      if (usersQuery) {
+        unsubUsers = onSnapshot(
+          usersQuery,
+          (snap) => {
+            let mappedUsers = snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as User,
+            );
+
+            // Auto-fix for Carlos Henrique
+            if (targetCompanyId) {
+              const carlos = mappedUsers.find(
+                (u) =>
+                  u.name && u.name.toLowerCase().includes("carlos henrique"),
+              );
+              if (carlos && carlos.status === "rejected") {
+                updateDoc(doc(db, "users", carlos.id), {
+                  status: "active",
+                  companyId: targetCompanyId,
+                  roles: ["driver"],
+                  role: "driver",
+                }).catch((e) => console.error("Auto-fix Carlos falhou:", e));
+              }
+            }
+
+            mappedUsers = mappedUsers.map((u) => {
+              if (!u.roles) u.roles = [u.role || "driver"];
+              if (u.roles.includes("admin") && !u.roles.includes("driver"))
+                u.roles.push("driver");
+              if (u.roles.includes("admin")) u.status = "active";
+              return u;
+            });
+            setUsers(mappedUsers);
+          },
+          handleSnapError("Error fetching users snap"),
+        );
+      }
+
+      // NOVO: Fetch todos os membros da empresa ativa
+      if (targetCompanyId) {
+        unsubAllCompanyMembers = onSnapshot(
+          query(
+            collection(db, "companyMembers"),
+            where("companyId", "==", targetCompanyId),
+          ),
+          (snap) => {
+            setAllCompanyMembers(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as CompanyMember,
+              ),
+            );
+          },
+          handleSnapError("Error fetching all company members"),
+        );
+      }
+    }
+
+    // Helper pra unsub
+    let unsubDriverRequests: () => void = () => {};
+    let unsubNotifications: () => void = () => {};
+    let unsubRecruitmentApps: () => void = () => {};
+
+    if (isActive) {
+      // Notificações: o prórprio uid.
+      unsubNotifications = onSnapshot(
+        query(collection(db, "notificacoes"), where("userId", "==", uid)),
+        (snap) => {
+          setNotifications(
+            snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as AppNotification,
+            ),
+          );
+        },
+        handleSnapError("Error fetching notificacoes"),
+      );
+
+      if (activeRole === "admin") {
+        if (targetCompanyId) {
+          unsubDriverRequests = onSnapshot(
+            query(
+              collection(db, "solicitacoes_motoristas"),
+              where("empresaId", "==", targetCompanyId),
+            ),
+            (snap) => {
+              setDriverRequests(
+                snap.docs.map(
+                  (doc) => ({ ...doc.data(), id: doc.id }) as DriverRequest,
+                ),
+              );
+            },
+            handleSnapError("Error fetching driver requests admin"),
+          );
+
+          unsubRecruitmentApps = onSnapshot(
+            query(
+              collection(db, "recruitment_applications"),
+              where("companyId", "==", targetCompanyId),
+            ),
+            (snap) => {
+              setRecruitmentApplications(
+                snap.docs.map(
+                  (doc) =>
+                    ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
+                ),
+              );
+            },
+            handleSnapError("Error fetching recruitment apps"),
+          );
+        }
+      } else {
+        unsubDriverRequests = onSnapshot(
+          query(
+            collection(db, "solicitacoes_motoristas"),
+            where("motoristaId", "==", uid),
+          ),
+          (snap) => {
+            setDriverRequests(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as DriverRequest,
+              ),
+            );
+          },
+          handleSnapError("Error fetching driver requests motorista"),
+        );
+
+        unsubRecruitmentApps = onSnapshot(
+          query(
+            collection(db, "recruitment_applications"),
+            where("userId", "==", uid),
+          ),
+          (snap) => {
+            setRecruitmentApplications(
+              snap.docs.map(
+                (doc) =>
+                  ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
+              ),
+            );
+          },
+          handleSnapError("Error fetching recruitment apps motorista"),
+        );
+      }
+    } else {
+      // If not active, only try to fetch recruitment apps just in case it works so they can see data,
+      // but gracefully ignore permission errors.
+      unsubRecruitmentApps = onSnapshot(
+        query(
+          collection(db, "recruitment_applications"),
+          where("userId", "==", uid),
+        ),
+        (snap) => {
+          setRecruitmentApplications(
+            snap.docs.map(
+              (doc) =>
+                ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
+            ),
+          );
+        },
+        handleSnapError("Error fetching recruitment apps motorista"),
+      );
+    }
+
+    return () => {
+      unsubVehicles();
+      unsubTrailers();
+      unsubContracts();
+      unsubJobs();
+      unsubUsers();
+      unsubAllCompanyMembers();
+      unsubDriverRequests();
+      unsubNotifications();
+      unsubDemands();
+      unsubRecruitmentApps();
+    };
+  }, [currentUserId, targetCompanyId, activeRole, isActiveUser]);
+
+  useEffect(() => {
+    if (!activeCompanyId || allCompanyMembers.length === 0) return;
+
+    const existingIds = users.map((u) => u.id);
+    const missingIds = allCompanyMembers
+      .map((m) => m.userId)
+      .filter((id): id is string => Boolean(id) && !existingIds.includes(id));
+
+    if (missingIds.length === 0) return;
+
+    const fetchUsers = async () => {
+      const fetched: User[] = [];
+      try {
+        for (let i = 0; i < missingIds.length; i += 30) {
+          const chunk = missingIds.slice(i, i + 30);
+          const q = query(
+            collection(db, "users"),
+            where("__name__", "in", chunk),
+          );
+          const qs = await getDocs(q);
+          qs.docs.forEach((d) =>
+            fetched.push({ ...d.data(), id: d.id } as User),
+          );
+        }
+
+        if (fetched.length > 0) {
+          setFetchedMissingUsers((prev) => {
+            const combined = [...prev];
+            fetched.forEach((f) => {
+              if (!combined.some((u) => u.id === f.id)) combined.push(f);
+            });
+            // apply auto-fix for roles
+            return combined.map((u) => {
+              if (!u.roles) u.roles = [u.role || "driver"];
+              if (u.roles.includes("admin") && !u.roles.includes("driver"))
+                u.roles.push("driver");
+              if (u.roles.includes("admin")) u.status = "active";
+              return u;
+            });
+          });
+        }
+      } catch (e) {
+        console.error("Error fetching missing users:", e);
+      }
+    };
+
+    fetchUsers();
+  }, [allCompanyMembers, activeCompanyId, users.map((u) => u.id).join(",")]);
+
+  // Helper para getCurrentUserId (conforme requisitos)
+  const getCurrentUserId = () => {
+    if (!auth.currentUser) throw new Error("Usuário não autenticado");
+    return auth.currentUser.uid;
+  };
+
+  const handleFirebaseError = (error: any) => {
+    console.error("Firebase Error: ", error);
+    if (
+      error.code === "permission-denied" ||
+      error.message?.includes("permission-denied") ||
+      error.message?.includes("Missing or insufficient permissions")
+    ) {
+      toast.error("Você não tem permissão para esta ação");
+    } else {
+      toast.error("Ocorreu um erro: " + (error.message || String(error)));
+    }
+  };
+
+  // --- Implement Actions ---
+  const updateRecruitmentSettings = async (
+    companyId: string,
+    settings: RecruitmentSettings,
+  ) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "frotas", companyId), {
+        recruitmentSettings: settings,
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const submitRecruitmentApplication = async (
+    data: Omit<RecruitmentApplication, "id" | "status" | "createdAt">,
+  ) => {
+    try {
+      // Don't enforce current user auth - this is a public form
+      await addDoc(collection(db, "recruitment_applications"), {
+        ...data,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      });
+
+      if (auth.currentUser) {
+        // Use setDoc with merge: true instead of updateDoc to ensure it doesn't fail if the user doc hasn't been created yet
+        await setDoc(
+          doc(db, "users", auth.currentUser.uid),
+          {
+            applicationSubmitted: true,
+            status: "pending", // Update their own user status
+          },
+          { merge: true },
+        );
+      }
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
+  };
+
+  const approveRecruitmentApplication = async (applicationId: string) => {
+    try {
+      getCurrentUserId();
+      const app = recruitmentApplications.find((a) => a.id === applicationId);
+      if (!app) return;
+
+      // Check if user with this email already exists
+      const q = query(
+        collection(db, "users"),
+        where("email", "==", app.email.trim().toLowerCase()),
+      );
+      const qs = await getDocs(q);
+
+      let userId = "";
+      if (!qs.empty) {
+        // user exists, just update them
+        userId = qs.docs[0].id;
+        const currentData = qs.docs[0].data();
+
+        const updates: any = {
+          name: app.fullName,
+          whatsapp: app.whatsapp,
+          photoURL: app.photoURL || currentData.photoURL || "",
+        };
+
+        if (currentData.status !== "active") {
+          updates.status = "active";
+          updates.companyId = app.companyId;
+          updates.role = "driver";
+          updates.roles = ["driver"];
+        }
+
+        await updateDoc(doc(db, "users", userId), updates);
+
+        // Update or create membership
+        const memberQuery = query(
+          collection(db, "companyMembers"),
+          where("userId", "==", userId),
+          where("companyId", "==", app.companyId),
+        );
+        const mqs = await getDocs(memberQuery);
+        if (mqs.empty) {
+          await addDoc(collection(db, "companyMembers"), {
+            userId: userId,
+            companyId: app.companyId,
+            roles: ["driver"],
+            status: "active",
+            permissions: [],
+            joinedAt: new Date().toISOString(),
+          });
+        } else {
+          await updateDoc(doc(db, "companyMembers", mqs.docs[0].id), {
+            status: "active",
+            roles: arrayUnion("driver"),
+          });
+        }
+      } else {
+        // create new user profile using Auth UID if available
+        userId = app.userId || doc(collection(db, "users")).id;
+        const newDocRef = doc(db, "users", userId);
+        await setDoc(newDocRef, {
+          id: userId,
+          email: app.email.trim().toLowerCase(),
+          name: app.fullName,
+          whatsapp: app.whatsapp,
+          photoURL: app.photoURL || "",
+          status: "active",
+          companyId: app.companyId,
+          role: "driver",
+          roles: ["driver"],
+          createdAt: new Date().toISOString(),
+        });
+
+        await addDoc(collection(db, "companyMembers"), {
+          userId: userId,
+          companyId: app.companyId,
+          roles: ["driver"],
+          status: "active",
+          permissions: [],
+          joinedAt: new Date().toISOString(),
+        });
+      }
+
+      await updateDoc(doc(db, "recruitment_applications", applicationId), {
+        status: "approved",
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const rejectRecruitmentApplication = async (applicationId: string) => {
+    try {
+      getCurrentUserId();
+      const app = recruitmentApplications.find((a) => a.id === applicationId);
+      await updateDoc(doc(db, "recruitment_applications", applicationId), {
+        status: "rejected",
+      });
+
+      if (app && app.userId) {
+        const u = await getDoc(doc(db, "users", app.userId));
+        if (u.exists() && u.data().status === "pending") {
+          await updateDoc(doc(db, "users", app.userId), { status: "rejected" });
+        }
+      } else if (app && app.email) {
+        const q = query(
+          collection(db, "users"),
+          where("email", "==", app.email.trim().toLowerCase()),
+        );
+        const qs = await getDocs(q);
+        if (!qs.empty && qs.docs[0].data().status === "pending") {
+          await updateDoc(doc(db, "users", qs.docs[0].id), {
+            status: "rejected",
+          });
+        }
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const deleteRecruitmentApplication = async (applicationId: string) => {
+    try {
+      getCurrentUserId();
+      await deleteDoc(doc(db, "recruitment_applications", applicationId));
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const createCompany = async (data: Omit<CompanyProfile, "id" | "cnpj">) => {
+    try {
+      const uid = getCurrentUserId();
+      console.log("[DEBUG] createCompany -> UID:", uid, "Data:", data);
+      const randomNum = (min: number, max: number) =>
+        Math.floor(Math.random() * (max - min + 1)) + min;
+      const cnpj = `${randomNum(10, 99)}.${randomNum(100, 999)}.${randomNum(100, 999)}/0001-${randomNum(10, 99)}`;
+      const payload = {
+        ...data,
+        userId: uid,
+        ownerId: uid,
+        cnpj,
+        createdAt: new Date().toISOString(),
+      };
+      const newDoc = await addDoc(collection(db, "frotas"), payload);
+
+      // Update user document to be an admin/driver in this company
+      await updateDoc(doc(db, "users", uid), {
+        companyId: newDoc.id,
+        roles: ["admin", "driver"],
+        status: "active",
+      });
+
+      // Create companyMember document for the constructor/owner
+      await addDoc(collection(db, "companyMembers"), {
+        companyId: newDoc.id,
+        userId: uid,
+        roles: ["admin", "driver"],
+        status: "active",
+        permissions: ["admin", "owner", "manage_fleet", "all"],
+        joinedAt: new Date().toISOString(),
+      });
+
+      setActiveCompanyId(newDoc.id);
+      setActiveRole("admin");
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateCompany = async (
+    id: string,
+    updates: Partial<Omit<CompanyProfile, "id" | "cnpj">>,
+  ) => {
+    try {
+      getCurrentUserId(); // valida se tá autenticado
+      await updateDoc(doc(db, "frotas", id), updates);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteCompany = async (id: string) => {
+    try {
+      getCurrentUserId(); // valida
+
+      const batch = writeBatch(db);
+
+      const usersToUpdate = users.filter((u) => u.companyId === id);
+      for (const u of usersToUpdate) {
+        batch.update(doc(db, "users", u.id), {
+          companyId: deleteField(),
+          role: "driver",
+        });
+      }
+
+      const vehiclesToDelete = vehicles.filter((v) => v.companyId === id);
+      for (const v of vehiclesToDelete) {
+        batch.delete(doc(db, "veiculos", v.id));
+      }
+
+      const trailersToDelete = trailers.filter((t) => t.companyId === id);
+      for (const t of trailersToDelete) {
+        batch.delete(doc(db, "reboques", t.id));
+      }
+
+      const contractsToDelete = contracts.filter((c) => c.companyId === id);
+      for (const c of contractsToDelete) {
+        batch.delete(doc(db, "contratos", c.id));
+      }
+
+      const jobsToDelete = jobs.filter((j) => j.companyId === id);
+      for (const j of jobsToDelete) {
+        batch.delete(doc(db, "trabalhos", j.id));
+      }
+
+      const requestsToDelete = driverRequests.filter((r) => r.empresaId === id);
+      for (const r of requestsToDelete) {
+        batch.delete(doc(db, "solicitacoes_motoristas", r.id));
+      }
+
+      // Query and delete all related memberships in companyMembers collection
+      const membersToQuery = await getDocs(
+        query(collection(db, "companyMembers"), where("companyId", "==", id)),
+      );
+      membersToQuery.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+      });
+
+      batch.delete(doc(db, "frotas", id));
+
+      await batch.commit();
+
+      if (activeCompanyId === id) setActiveCompanyId(null);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const createContract = async (data: Omit<Contract, "id" | "status">) => {
+    try {
+      if (!activeCompanyId) return;
+      const uid = getCurrentUserId();
+      const activeCompany = companies.find((c) => c.id === activeCompanyId);
+      if (!activeCompany) return;
+
+      await addDoc(collection(db, "contratos"), {
+        ...data,
+        simulator: activeCompany.simulatorName, // Auto-populate simulator
+        companyName: activeCompany.fleetName || activeCompany.companyName, // Auto-populate company name
+        userId: uid,
+        companyId: activeCompanyId,
+        status: "active",
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateContract = async (
+    id: string,
+    updates: Partial<Omit<Contract, "id">>,
+  ) => {
+    try {
+      getCurrentUserId();
+      const cleanUpdates: any = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === undefined) {
+          cleanUpdates[key] = deleteField();
+        } else {
+          cleanUpdates[key] = value;
+        }
+      }
+      await updateDoc(doc(db, "contratos", id), cleanUpdates);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteContract = async (id: string) => {
+    try {
+      getCurrentUserId();
+      await deleteDoc(doc(db, "contratos", id));
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const assignJob = async (
+    contractId: string,
+    driverId: string,
+    vehicleId: string,
+    trailerId?: string,
+    customDeadlineDays?: number,
+  ) => {
+    try {
+      if (!activeCompanyId) return;
+      const uid = getCurrentUserId();
+      const contract = contracts.find((c) => c.id === contractId);
+      if (!contract) return;
+
+      const deadline = new Date();
+      if (
+        customDeadlineDays !== undefined &&
+        customDeadlineDays !== null &&
+        customDeadlineDays > 0
+      ) {
+        deadline.setDate(deadline.getDate() + customDeadlineDays);
+      } else {
+        deadline.setDate(deadline.getDate() + contract.deadlineDays);
+      }
+      const deadlineISO = deadline.toISOString();
+
+      console.log("[AppContext/AssignJob] Contrato enviado/vinculado:", {
+        contractId,
+        driverId,
+        vehicleId,
+        trailerId: trailerId || null,
+        deadlineISO
+      });
+
+      await addDoc(collection(db, "trabalhos"), {
+        userId: uid,
+        companyId: activeCompanyId,
+        contractId,
+        driverId,
+        motoristaId: driverId, // user asked for motoristaId
+        assignedDriverId: driverId, // Ensure assignedDriverId exists for data link
+        tripId:
+          "TRIP-" +
+          Date.now().toString() +
+          "-" +
+          Math.random().toString(36).substring(2, 6), // Support for trip tracking link
+        vehicleId,
+        trailerId: trailerId || null,
+        status: "pending",
+        progress: 0,
+        deadlineDate: deadlineISO,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Update vehicle status
+      await updateDoc(doc(db, "veiculos", vehicleId), { status: "in_use" });
+      if (trailerId) {
+        await updateDoc(doc(db, "reboques", trailerId), { status: "in_use" });
+      }
+
+      // Check if driver has a pending job demand
+      const pendingDemand = jobDemands.find(
+        (d) =>
+          d.driverId === driverId &&
+          d.status === "pending" &&
+          d.companyId === activeCompanyId,
+      );
+      if (pendingDemand) {
+        await updateDoc(doc(db, "jobDemands", pendingDemand.id), {
+          status: "reviewed",
+        });
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const startJob = async (jobId: string) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "trabalhos", jobId), { status: "active" });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const markDeliveryComplete = async (
+    jobId: string,
+    route?: { origin: string; destination: string },
+  ) => {
+    try {
+      getCurrentUserId();
+      const job = jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      const contract = contracts.find((c) => c.id === job.contractId);
+      if (contract && job.progress < contract.totalDeliveries) {
+        const updates: any = { progress: job.progress + 1 };
+        if (job.status === "pending") {
+          updates.status = "active";
+        }
+        if (route && contract.mode === "simple") {
+          const existingRoutes = job.completedRoutes || [];
+          updates.completedRoutes = [...existingRoutes, route];
+        }
+        await updateDoc(doc(db, "trabalhos", jobId), updates);
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateDeliveryRoute = async (
+    jobId: string,
+    index: number,
+    route: { origin: string; destination: string },
+  ) => {
+    try {
+      getCurrentUserId();
+      const job = jobs.find((j) => j.id === jobId);
+      if (!job) return;
+      const existingRoutes = [...(job.completedRoutes || [])];
+
+      if (index >= 0 && index < job.progress) {
+        // Pad array if needed so we don't have holes
+        while (existingRoutes.length <= index) {
+          existingRoutes.push({
+            origin: "Ponto de Coleta",
+            destination: `Destino ${existingRoutes.length + 1}`,
+          });
+        }
+        existingRoutes[index] = route;
+        await updateDoc(doc(db, "trabalhos", jobId), {
+          completedRoutes: existingRoutes,
+        });
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const unmarkDelivery = async (jobId: string) => {
+    try {
+      getCurrentUserId();
+      const job = jobs.find((j) => j.id === jobId);
+      if (job && job.progress > 0) {
+        const updates: any = { progress: job.progress - 1 };
+        if (updates.progress === 0 && job.status === "active") {
+          updates.status = "pending";
+        }
+        if (job.completedRoutes && job.completedRoutes.length > 0) {
+          updates.completedRoutes = job.completedRoutes.slice(0, -1);
+        }
+        await updateDoc(doc(db, "trabalhos", jobId), updates);
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const finishJob = async (jobId: string) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "trabalhos", jobId), { status: "completed" });
+      const job = jobs.find((j) => j.id === jobId);
+      if (job) {
+        if (job.vehicleId) {
+          try {
+            await updateDoc(doc(db, "veiculos", job.vehicleId), {
+              status: "available",
+            });
+          } catch (err) {
+            console.error("Ignorado erro ao liberar veiculo", err);
+          }
+        }
+        if (job.trailerId) {
+          try {
+            await updateDoc(doc(db, "reboques", job.trailerId), {
+              status: "available",
+            });
+          } catch (err) {
+            console.error("Ignorado erro ao liberar reboque", err);
+          }
+        }
+      }
+      alert("Trabalho finalizado com sucesso!");
+    } catch (e) {
+      console.error(e);
+      handleFirebaseError(e);
+    }
+  };
+
+  const cancelJob = async (jobId: string) => {
+    let prevJobState: Job | undefined;
+    try {
+      console.log(
+        "[cancelJob] INICIO - Solicitando cancelamento para o jobId:",
+        jobId,
+      );
+      toast.info("[cancelJob] Iniciando cancelamento...");
+      if (!jobId) {
+        console.error("[cancelJob] ERRO: jobId é nulo ou indefinido!");
+        toast.error("Erro: ID do trabalho ausente.");
+        return;
+      }
+      const uid = getCurrentUserId();
+      console.log("[cancelJob] User UID:", uid);
+
+      const docRef = doc(db, "trabalhos", jobId);
+      console.log("[cancelJob] Verificando existência...");
+      const docSnap = await getDoc(docRef);
+      if (!docSnap.exists()) {
+        console.error("[cancelJob] Documento não encontrado no Firestore!");
+        toast.error("Erro: Operação não encontrada no servidor.");
+        return;
+      }
+
+      console.log(
+        "[cancelJob] Referência do documento criada, chamando updateDoc...",
+      );
+      toast.info("[cancelJob] Documento encontrado, atualizando status...");
+
+      // Salva snapshot antigo para caso de rollback
+      prevJobState = jobs.find((j) => j.id === jobId);
+
+      // Força alteração da UI instantaneamente para sensação de realtime
+      setJobs((prev: Job[]) =>
+        prev.map((j: Job) =>
+          j.id === jobId ? { ...j, status: "cancelled" as const } : j,
+        ),
+      );
+
+      await updateDoc(docRef, { status: "cancelled" });
+      console.log("[cancelJob] updateDoc 'trabalhos' concluído com sucesso.");
+      toast.info("[cancelJob] Status atualizado. Liberando veículos...");
+
+      const job = prevJobState || jobs.find((j) => j.id === jobId);
+      if (job) {
+        console.log(
+          "[cancelJob] Trabalho encontrado no local state, liberando vínculos. Vehicle:",
+          job.vehicleId,
+          "Trailer:",
+          job.trailerId,
+        );
+        if (job.vehicleId) {
+          try {
+            await updateDoc(doc(db, "veiculos", job.vehicleId), {
+              status: "available",
+            });
+            toast.success("Veículo liberado.");
+          } catch (err) {
+            console.error("[cancelJob] Ignorado erro ao liberar veiculo", err);
+            toast.error("Erro liberando veículo: " + String(err));
+          }
+        }
+        if (job.trailerId) {
+          try {
+            await updateDoc(doc(db, "reboques", job.trailerId), {
+              status: "available",
+            });
+            toast.success("Reboque liberado.");
+          } catch (err) {
+            console.error("[cancelJob] Ignorado erro ao liberar reboque", err);
+            toast.error("Erro liberando reboque: " + String(err));
+          }
+        }
+      } else {
+        console.warn(
+          "[cancelJob] AVISO: Trabalho NÃO encontrado no local state 'jobs'!",
+        );
+      }
+      toast.success("Trabalho cancelado com sucesso!");
+    } catch (e: any) {
+      console.error("[cancelJob] ERRO FATAL:", e);
+      // Rollback da UI
+      if (prevJobState) {
+        setJobs((prev: Job[]) =>
+          prev.map((j) => (j.id === jobId ? prevJobState! : j)),
+        );
+      }
+      if (e.code) {
+        console.error("Error Code:", e.code);
+      }
+      if (e.message) {
+        console.error("Error Message:", e.message);
+      }
+
+      const debugInfo = `Falha ao cancelar!\nID: ${jobId}\nUID: ${getCurrentUserId()}\nRole: ${currentUser?.role || "null"}\nPayload: { status: 'cancelled' }\nErro: ${e.code || "unknown"} - ${e.message || String(e)}`;
+      toast.error(debugInfo, {
+        duration: 15000,
+        style: { minWidth: "350px", whiteSpace: "pre-wrap" },
+      });
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteJob = async (jobId: string) => {
+    let prevJobState: Job | undefined;
+    try {
+      console.log(
+        "[deleteJob] INICIO - Solicitando exclusão para o jobId:",
+        jobId,
+      );
+      if (!jobId) {
+        console.error("[deleteJob] ERRO: jobId incompleto.");
+        toast.error("Erro ao excluir. ID ausente.");
+        return;
+      }
+      const uid = getCurrentUserId();
+      console.log("[deleteJob] User UID:", uid);
+
+      const docRef = doc(db, "trabalhos", jobId);
+
+      console.log("[deleteJob] Verificando existência...");
+      const docSnap = await getDoc(docRef);
+      if (!docSnap.exists()) {
+        console.error("[deleteJob] Documento não encontrado no Firestore!");
+        toast.error("Erro: Operação não encontrada no servidor.");
+        return;
+      }
+
+      console.log("[deleteJob] Chamando deleteDoc...");
+
+      prevJobState = jobs.find((j) => j.id === jobId);
+
+      // Força alteração da UI instantaneamente para sensação de realtime
+      setJobs((prev: Job[]) => prev.filter((j: Job) => j.id !== jobId));
+
+      await deleteDoc(docRef);
+      console.log("[deleteJob] deleteDoc finalizado.");
+      toast.success("Histórico de trabalho excluído com sucesso!");
+    } catch (e: any) {
+      console.error("[deleteJob] ERRO FATAL:", e);
+      // Rollback
+      if (prevJobState) {
+        setJobs((prev: Job[]) => {
+          // Avoid duplicating if onSnapshot already fetched it
+          if (prev.find((j) => j.id === jobId)) return prev;
+          return [...prev, prevJobState!];
+        });
+      }
+      if (e.code) {
+        console.error("Error Code:", e.code);
+      }
+      if (e.message) {
+        console.error("Error Message:", e.message);
+      }
+
+      const debugInfo = `Falha ao excluir!\nID: ${jobId}\nUID: ${getCurrentUserId()}\nRole: ${currentUser?.role || "null"}\nErro: ${e.code || "unknown"} - ${e.message || String(e)}`;
+      toast.error(debugInfo, {
+        duration: 15000,
+        style: { minWidth: "350px", whiteSpace: "pre-wrap" },
+      });
+      handleFirebaseError(e);
+    }
+  };
+
+  const requestJoinCompany = async (companyId: string) => {
+    try {
+      const uid = getCurrentUserId();
+      if (!companyId) return;
+
+      // Check if already requested
+      const hasPending = driverRequests.some(
+        (r) => r.empresaId === companyId && r.status === "pendente",
+      );
+      if (hasPending) {
+        alert("Você já tem uma solicitação pendente para esta empresa.");
+        return;
+      }
+
+      const activeCompany = companies.find((c) => c.id === companyId);
+
+      await addDoc(collection(db, "solicitacoes_motoristas"), {
+        motoristaId: uid,
+        empresaId: companyId,
+        adminId: activeCompany?.userId || "", // Adiciona adminId para regras de segurança
+        status: "pendente",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Notify the admin of the company
+      if (activeCompany && activeCompany.userId) {
+        await addDoc(collection(db, "notificacoes"), {
+          userId: activeCompany.userId, // Send to the company owner
+          titulo: "Nova Solicitação",
+          mensagem: `${currentUser?.name} solicitou entrada na frota ${activeCompany.fleetName}.`,
+          tipo: "solicitacao",
+          lida: false,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      alert("Solicitação enviada com sucesso!");
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const cancelRequestJoinCompany = async (requestId: string) => {
+    try {
+      getCurrentUserId();
+      await deleteDoc(doc(db, "solicitacoes_motoristas", requestId));
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const approveDriver = async (requestId: string) => {
+    try {
+      getCurrentUserId();
+      const req = driverRequests.find((r) => r.id === requestId);
+      if (!req) return;
+
+      // Update request status
+      await updateDoc(doc(db, "solicitacoes_motoristas", requestId), {
+        status: "aprovado",
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Get user doc to update legacy fields (optional but good for safety)
+      const userDocRef = doc(db, "users", req.motoristaId);
+      const userDocSnap = await getDoc(userDocRef);
+      if (userDocSnap.exists()) {
+        await updateDoc(userDocRef, {
+          companyId: req.empresaId,
+          status: "active",
+        });
+      }
+
+      // Update or create membership
+      const memberQuery = query(
+        collection(db, "companyMembers"),
+        where("userId", "==", req.motoristaId),
+        where("companyId", "==", req.empresaId),
+      );
+      const qs = await getDocs(memberQuery);
+      if (qs.empty) {
+        await addDoc(collection(db, "companyMembers"), {
+          userId: req.motoristaId,
+          companyId: req.empresaId,
+          roles: ["driver"],
+          status: "active",
+          permissions: [],
+          joinedAt: new Date().toISOString(),
+        });
+      } else {
+        await updateDoc(doc(db, "companyMembers", qs.docs[0].id), {
+          status: "active",
+          roles: arrayUnion("driver"),
+        });
+      }
+
+      // Notify user
+      const company = companies.find((c) => c.id === req.empresaId);
+      await addDoc(collection(db, "notificacoes"), {
+        userId: req.motoristaId,
+        titulo: "Solicitação Aprovada",
+        mensagem: `Sua solicitação para a frota ${company?.fleetName || ""} foi aprovada!`,
+        tipo: "aprovado",
+        lida: false,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const rejectDriver = async (requestId: string) => {
+    try {
+      getCurrentUserId();
+      const req = driverRequests.find((r) => r.id === requestId);
+      if (!req) return;
+
+      // Update request status
+      await updateDoc(doc(db, "solicitacoes_motoristas", requestId), {
+        status: "recusado",
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Notify user
+      const company = companies.find((c) => c.id === req.empresaId);
+      await addDoc(collection(db, "notificacoes"), {
+        userId: req.motoristaId,
+        titulo: "Solicitação Recusada",
+        mensagem: `Sua solicitação para a frota ${company?.fleetName || ""} foi recusada.`,
+        tipo: "recusado",
+        lida: false,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const markNotificationAsRead = async (notificationId: string) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "notificacoes", notificationId), { lida: true });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const switchRole = async (role: Role, newCompanyId?: string) => {
+    if (currentUser) {
+      const targetCompanyId =
+        newCompanyId || activeCompanyId || currentUser.companyId;
+      if (!targetCompanyId) return;
+
+      const membership = memberships.find(
+        (m) => m.companyId === targetCompanyId,
+      );
+      const memberRoles = membership?.roles || ["driver"];
+
+      if (membership && memberRoles.includes(role)) {
+        setActiveRole(role);
+        setActiveCompanyId(targetCompanyId);
+
+        // Optional fallback for older components
+        try {
+          await updateDoc(doc(db, "users", currentUser.id), {
+            role,
+            companyId: targetCompanyId,
+          });
+          setCurrentUser({
+            ...currentUser,
+            role,
+            companyId: targetCompanyId,
+            roles: memberRoles,
+          });
+        } catch (e) {
+          console.error("Failed to persist role/company switch:", e);
+        }
+      } else if (currentUser.roles?.includes(role)) {
+        // Legacy fallback
+        setActiveRole(role);
+        setActiveCompanyId(targetCompanyId);
+        try {
+          await updateDoc(doc(db, "users", currentUser.id), {
+            role,
+            companyId: targetCompanyId,
+          });
+          setCurrentUser({
+            ...currentUser,
+            role,
+            companyId: targetCompanyId,
+            roles: currentUser.roles,
+          });
+        } catch (e) {
+          console.error("Failed to persist role/company switch:", e);
+        }
+      }
+    }
+  };
+
+  const promoteDriverToAdmin = async (driverId: string) => {
+    try {
+      getCurrentUserId();
+      if (!activeCompanyId) return;
+
+      const memberQuery = query(
+        collection(db, "companyMembers"),
+        where("userId", "==", driverId),
+        where("companyId", "==", activeCompanyId),
+      );
+      const qs = await getDocs(memberQuery);
+      if (qs.empty) {
+        alert("Driver is not in your active fleet.");
+        return;
+      }
+
+      const memberDoc = qs.docs[0];
+      const memberData = memberDoc.data() as CompanyMember;
+
+      if (!memberData.roles.includes("admin")) {
+        await updateDoc(doc(db, "companyMembers", memberDoc.id), {
+          roles: [...memberData.roles, "admin"],
+        });
+      }
+
+      // Update legacy user doc
+      const driverRef = doc(db, "users", driverId);
+      const driverDoc = await getDoc(driverRef);
+      if (driverDoc.exists()) {
+        const driverData = driverDoc.data();
+        const currentRoles = driverData.memberships?.[activeCompanyId]?.roles ||
+          driverData.roles || ["driver"];
+        if (!currentRoles.includes("admin")) {
+          const newRoles = [...currentRoles, "admin"];
+
+          const updates: any = {
+            [`memberships.${activeCompanyId}.roles`]: newRoles,
+            [`memberships.${activeCompanyId}.role`]: "admin",
+            updatedAt: new Date().toISOString(),
+          };
+
+          if (driverData.companyId === activeCompanyId) {
+            updates.roles = Array.from(
+              new Set([...(driverData.roles || []), "admin"]),
+            );
+          }
+
+          await updateDoc(driverRef, updates);
+        }
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const demoteAdminToDriver = async (driverId: string) => {
+    try {
+      getCurrentUserId();
+      if (!activeCompanyId) return;
+
+      const memberQuery = query(
+        collection(db, "companyMembers"),
+        where("userId", "==", driverId),
+        where("companyId", "==", activeCompanyId),
+      );
+      const qs = await getDocs(memberQuery);
+      if (qs.empty) {
+        alert("Driver is not in your active fleet.");
+        return;
+      }
+
+      const memberDoc = qs.docs[0];
+      const memberData = memberDoc.data() as CompanyMember;
+      const newRoles = memberData.roles.filter((r) => r !== "admin");
+      if (newRoles.length === 0) newRoles.push("driver");
+
+      await updateDoc(doc(db, "companyMembers", memberDoc.id), {
+        roles: newRoles,
+      });
+
+      const driverRef = doc(db, "users", driverId);
+      const driverDoc = await getDoc(driverRef);
+      if (driverDoc.exists()) {
+        const driverData = driverDoc.data();
+
+        const currentRoles = driverData.memberships?.[activeCompanyId]?.roles ||
+          driverData.roles || ["driver"];
+        const fallbackRoles = currentRoles.filter((r: string) => r !== "admin");
+        if (fallbackRoles.length === 0) fallbackRoles.push("driver");
+
+        const updates: any = {
+          [`memberships.${activeCompanyId}.roles`]: fallbackRoles,
+          [`memberships.${activeCompanyId}.role`]: fallbackRoles[0],
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (driverData.companyId === activeCompanyId) {
+          updates.roles = (driverData.roles || []).filter(
+            (r: string) => r !== "admin",
+          );
+          if (updates.roles.length === 0) updates.roles.push("driver");
+
+          // If they are currently viewing THIS company as admin, kick them to driver view.
+          if (driverData.role === "admin") {
+            updates.role = "driver";
+          }
+        }
+
+        await updateDoc(driverRef, updates);
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const updateUserOnlineStatus = async (isOnline: boolean) => {
+    try {
+      const uid = getCurrentUserId();
+      await updateDoc(doc(db, "users", uid), { isOnline });
+      if (currentUser) {
+        setCurrentUser({ ...currentUser, isOnline });
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const removeDriverFromFleet = async (driverId: string) => {
+    try {
+      console.log("Removendo driver com ID:", driverId);
+      getCurrentUserId();
+      if (!activeCompanyId) return;
+
+      const memberQuery = query(
+        collection(db, "companyMembers"),
+        where("userId", "==", driverId),
+        where("companyId", "==", activeCompanyId),
+      );
+      const qs = await getDocs(memberQuery);
+      if (!qs.empty) {
+        await deleteDoc(doc(db, "companyMembers", qs.docs[0].id));
+      }
+
+      const driverRef = doc(db, "users", driverId);
+      const driverDoc = await getDoc(driverRef);
+
+      if (driverDoc.exists()) {
+        const updates: any = { updatedAt: new Date().toISOString() };
+
+        // Remove legacy membership
+        updates[`memberships.${activeCompanyId}`] = deleteField();
+
+        // If legacy match, fallback
+        if (driverDoc.data().companyId === activeCompanyId) {
+          updates.companyId = null;
+          updates.status = "pending";
+          updates.role = "driver";
+          updates.roles = ["driver"];
+        }
+
+        await updateDoc(driverRef, updates);
+        console.log("Driver removido com sucesso!");
+      }
+    } catch (e) {
+      console.error("Erro ao remover driver:", e);
+      handleFirebaseError(e);
+    }
+  };
+
+  const createManualDriver = async (driverData: Partial<User>) => {
+    try {
+      if (!activeCompanyId) throw new Error("Nenhuma empresa ativa.");
+
+      const email = driverData.email;
+      if (!email) throw new Error("Email é obrigatório.");
+
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("Não autenticado");
+
+      // Verificamos se há algum usuário no sistema com este email
+      const q = query(
+        collection(db, "users"),
+        where("email", "==", email.trim().toLowerCase()),
+      );
+      const qs = await getDocs(q);
+      if (!qs.empty) {
+        throw new Error(
+          "Já existe um usuário com este email. Use o fluxo de convite ou peça para ele se inscrever.",
+        );
+      }
+
+      const newDocRef = doc(collection(db, "users"));
+      const newUserId = newDocRef.id;
+
+      const payload = {
+        id: newUserId,
+        email: email.trim().toLowerCase(),
+        name: driverData.name || "Motorista",
+        whatsapp: driverData.whatsapp || "",
+        photoURL: driverData.photoURL || "",
+        status: "active",
+        companyId: activeCompanyId,
+        role: "driver",
+        roles: ["driver"],
+        createdAt: new Date().toISOString(),
+      };
+
+      await setDoc(newDocRef, payload);
+
+      // Criar companyMember
+      await addDoc(collection(db, "companyMembers"), {
+        userId: newUserId,
+        companyId: activeCompanyId,
+        roles: ["driver"],
+        status: "active",
+        permissions: [],
+        joinedAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error("Erro ao criar motorista manual:", e);
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const requestNewJobDemand = async () => {
+    try {
+      const uid = getCurrentUserId();
+      const targetCompanyId = activeCompanyId || currentUser?.companyId;
+      if (!targetCompanyId)
+        throw new Error(
+          "Você precisa estar em uma empresa para solicitar demandas.",
+        );
+
+      // Check if already requested
+      const existing = jobDemands.find(
+        (d) =>
+          d.driverId === uid &&
+          d.status === "pending" &&
+          d.companyId === targetCompanyId,
+      );
+      if (existing) return; // Already pending
+
+      const payload = {
+        driverId: uid,
+        companyId: targetCompanyId,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      };
+
+      await addDoc(collection(db, "jobDemands"), payload);
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const cancelJobDemand = async () => {
+    try {
+      const uid = getCurrentUserId();
+      const targetCompanyId = activeCompanyId || currentUser?.companyId;
+      const existing = jobDemands.find(
+        (d) =>
+          d.driverId === uid &&
+          d.status === "pending" &&
+          d.companyId === targetCompanyId,
+      );
+      if (!existing) return;
+
+      await deleteDoc(doc(db, "jobDemands", existing.id));
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const rejectJobDemand = async (demandId: string) => {
+    try {
+      const uid = getCurrentUserId();
+      await updateDoc(doc(db, "jobDemands", demandId), { status: "rejected" });
+
+      // Notify driver
+      const demand = jobDemands.find((d) => d.id === demandId);
+      if (demand) {
+        await addDoc(collection(db, "notificacoes"), {
+          userId: demand.driverId,
+          titulo: "Solicitação Recusada",
+          mensagem:
+            "Sua solicitação de nova demanda foi recusada no momento. Aguarde ou informe o administrador.",
+          lida: false,
+          data: new Date().toISOString(),
+        });
+      }
+    } catch (e) {
+      handleFirebaseError(e);
+      throw e;
+    }
+  };
+
+  const registerUser = (
+    userData: Pick<User, "name" | "email" | "password" | "role">,
+  ) => {
+    // This is handled via Firebase Auth in the Login component now, we don't need this local function.
+  };
+
+  const addVehicle = async (
+    data: Omit<Vehicle, "id" | "status" | "companyId">,
+  ) => {
+    try {
+      if (!activeCompanyId) return;
+      const uid = getCurrentUserId();
+      await addDoc(collection(db, "veiculos"), {
+        ...data,
+        userId: uid,
+        companyId: activeCompanyId,
+        plate: data.plate || "---",
+        status: "available",
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateVehicle = async (
+    id: string,
+    updates: Partial<Omit<Vehicle, "id">>,
+  ) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "veiculos", id), updates);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteVehicle = async (id: string) => {
+    try {
+      getCurrentUserId();
+      await deleteDoc(doc(db, "veiculos", id));
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const addTrailer = async (
+    data: Omit<Trailer, "id" | "status" | "companyId">,
+  ) => {
+    try {
+      if (!activeCompanyId) return;
+      const uid = getCurrentUserId();
+      await addDoc(collection(db, "reboques"), {
+        ...data,
+        userId: uid,
+        companyId: activeCompanyId,
+        plate: data.plate || "---",
+        status: "available",
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateTrailer = async (
+    id: string,
+    updates: Partial<Omit<Trailer, "id">>,
+  ) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "reboques", id), updates);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteTrailer = async (id: string) => {
+    try {
+      getCurrentUserId();
+      await deleteDoc(doc(db, "reboques", id));
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const logOutApp = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Error during logOutApp signOut:", error);
+    }
+    // State is automatically cleared by the onAuthStateChanged listener,
+    // but we can ensure localStorage/sessionStorage is also cleared directly here if needed.
+    sessionStorage.clear();
+    localStorage.removeItem("activeCompanyId");
+    localStorage.removeItem("activeRole");
+  };
+
+  const syncCompanyData = async () => {
+    if (!activeCompanyId) return;
+    try {
+      const companyJobs = jobs.filter((j) => j.companyId === activeCompanyId);
+      const companyUsers = users.filter(
+        (u) =>
+          u.memberships?.[activeCompanyId] || u.companyId === activeCompanyId,
+      );
+
+      const batch = writeBatch(db);
+      let updates = 0;
+
+      for (const driver of companyUsers) {
+        const allDriverJobs = companyJobs.filter(
+          (j) => j.driverId === driver.id && j.status === "completed",
+        );
+        const activeJob = companyJobs.find(
+          (j) =>
+            j.driverId === driver.id &&
+            ["pending", "active", "delayed"].includes(j.status),
+        );
+
+        const totalDeliveries =
+          allDriverJobs.reduce((acc, job) => acc + job.progress, 0) +
+          (activeJob ? activeJob.progress : 0);
+        const xp = totalDeliveries * 150 + allDriverJobs.length * 50;
+        const calculatedLevel = Math.floor(xp / 1000) + 1;
+
+        let needsUpdate = false;
+        const driverUpdates: any = {};
+
+        if (needsUpdate) {
+          batch.update(doc(db, "users", driver.id), driverUpdates);
+          updates++;
+        }
+      }
+
+      const companyVehicles = vehicles.filter(
+        (v) => v.companyId === activeCompanyId,
+      );
+      for (const v of companyVehicles) {
+        if (v.status === "in_use") {
+          const hasActiveJob = companyJobs.some(
+            (j) =>
+              j.vehicleId === v.id && ["pending", "active"].includes(j.status),
+          );
+          if (!hasActiveJob) {
+            batch.update(doc(db, "veiculos", v.id), { status: "available" });
+            updates++;
+          }
+        }
+      }
+
+      const companyTrailers = trailers.filter(
+        (t) => t.companyId === activeCompanyId,
+      );
+      for (const t of companyTrailers) {
+        if (t.status === "in_use") {
+          const hasActiveJob = companyJobs.some(
+            (j) =>
+              j.trailerId === t.id && ["pending", "active"].includes(j.status),
+          );
+          if (!hasActiveJob) {
+            batch.update(doc(db, "reboques", t.id), { status: "available" });
+            updates++;
+          }
+        }
+      }
+
+      if (updates > 0) {
+        await batch.commit();
+      }
+    } catch (e) {
+      console.error("Error syncing data:", e);
+    }
+  };
+
+  // Implementação do auto-sync inteligente (baseado nas mudanças de recursos passivos)
+  useEffect(() => {
+    if (!authInitialized || !activeCompanyId) return;
+
+    // Debounce de 1.5s para evitar recalculos em massa caso muitas coisas mudem em batch
+    const syncTimer = setTimeout(() => {
+      syncCompanyData();
+    }, 1500);
+
+    return () => clearTimeout(syncTimer);
+  }, [jobs, users, vehicles, trailers, activeCompanyId, authInitialized]);
+
+  // Recalculo e sync se retomar a conexão com a internet
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log("[Auto-Sync] Conexão restabelecida. Rodando sincronização.");
+      syncCompanyData();
+    };
+
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [jobs, users, vehicles, trailers, activeCompanyId, authInitialized]);
+
+  const value = useMemo(() => {
+    const combinedUsers = [...users];
+    fetchedMissingUsers.forEach((fmu) => {
+      if (!combinedUsers.some((u) => u.id === fmu.id)) combinedUsers.push(fmu);
+    });
+    if (currentUser && !combinedUsers.some((u) => u.id === currentUser.id)) {
+      if (
+        activeCompanyId &&
+        (currentUser.companyId === activeCompanyId ||
+          currentUser.memberships?.[activeCompanyId] ||
+          allCompanyMembers.some((m) => m.userId === currentUser.id))
+      ) {
+        combinedUsers.push(currentUser);
+      }
+    }
+
+    return {
+      currentUser,
+      setCurrentUser,
+      authInitialized,
+      users: combinedUsers,
+      allCompanyMembers,
+      activeRole,
+      memberships,
+      vehicles: vehicles.filter((v) => v.companyId === activeCompanyId),
+      trailers: trailers.filter((t) => t.companyId === activeCompanyId),
+      contracts: contracts.filter((c) => c.companyId === activeCompanyId),
+      jobs: jobs.filter((j) => j.companyId === activeCompanyId),
+      jobDemands: jobDemands.filter(
+        (jd) =>
+          jd.companyId === activeCompanyId || jd.driverId === currentUser?.id,
+      ),
+      companies,
+      activeCompanyId,
+      setActiveCompanyId,
+      driverRequests: driverRequests.filter(
+        (dr) =>
+          dr.empresaId === activeCompanyId ||
+          dr.motoristaId === currentUser?.id,
+      ),
+      notifications,
+      markNotificationAsRead,
+      recruitmentApplications: recruitmentApplications.filter(
+        (ra) =>
+          ra.companyId === activeCompanyId ||
+          (currentUser?.id && ra.userId === currentUser.id) ||
+          (currentUser?.email &&
+            ra.email?.toLowerCase() === currentUser.email.toLowerCase()),
+      ),
+      createCompany,
+      updateCompany,
+      deleteCompany,
+      createContract,
+      updateContract,
+      deleteContract,
+      assignJob,
+      startJob,
+      markDeliveryComplete,
+      updateDeliveryRoute,
+      unmarkDelivery,
+      finishJob,
+      cancelJob,
+      deleteJob,
+      requestJoinCompany,
+      cancelRequestJoinCompany,
+      approveDriver,
+      rejectDriver,
+      createManualDriver,
+      registerUser,
+      requestNewJobDemand,
+      cancelJobDemand,
+      rejectJobDemand,
+      syncCompanyData,
+      addVehicle,
+      updateVehicle,
+      deleteVehicle,
+      addTrailer,
+      updateTrailer,
+      deleteTrailer,
+      logOutApp,
+      switchRole,
+      promoteDriverToAdmin,
+      demoteAdminToDriver,
+      removeDriverFromFleet,
+      updateUserOnlineStatus,
+      updateRecruitmentSettings,
+      submitRecruitmentApplication,
+      approveRecruitmentApplication,
+      rejectRecruitmentApplication,
+      deleteRecruitmentApplication,
+    };
+  }, [
+    currentUser,
+    authInitialized,
+    users,
+    fetchedMissingUsers,
+    allCompanyMembers,
+    vehicles,
+    trailers,
+    contracts,
+    jobs,
+    jobDemands,
+    companies,
+    activeCompanyId,
+    driverRequests,
+    notifications,
+    recruitmentApplications,
+    activeRole,
+    memberships,
+  ]);
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+};
+
+export const useAppStore = () => {
+  const context = useContext(AppContext);
+  if (!context) throw new Error("useAppStore must be used within AppProvider");
+  return context;
+};
