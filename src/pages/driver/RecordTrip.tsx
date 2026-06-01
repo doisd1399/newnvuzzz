@@ -78,6 +78,11 @@ export default function RecordTrip() {
           formData.append("companyId", "Geral");
         }
 
+        console.log("UPLOAD START");
+        console.log("UPLOAD URL:", "https://backend-drive-ya2b.onrender.com/api/upload-drive");
+        console.log("FILE:", file);
+        console.log("COMPANY:", currentCompany?.id || "Geral");
+
         const response = await fetch("https://backend-drive-ya2b.onrender.com/api/upload-drive", {
           method: "POST",
           body: formData,
