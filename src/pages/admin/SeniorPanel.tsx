@@ -38,9 +38,10 @@ export default function SeniorPanel() {
   const [allVehicles, setAllVehicles] = useState<any[]>([]);
   const [allTrailers, setAllTrailers] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [systemSettings, setSystemSettings] = useState<any>({});
 
   // UI States
-  const [activeTab, setActiveTab] = useState<'requests' | 'approved' | 'profile'>('requests');
+  const [activeTab, setActiveTab] = useState<'requests' | 'approved' | 'profile' | 'settings'>('requests');
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -64,10 +65,34 @@ export default function SeniorPanel() {
       unsubs.push(onSnapshot(collection(db, "veiculos"), (snap) => setAllVehicles(snap.docs.map(d => ({id: d.id, ...d.data()})))));
       unsubs.push(onSnapshot(collection(db, "reboques"), (snap) => setAllTrailers(snap.docs.map(d => ({id: d.id, ...d.data()})))));
       unsubs.push(onSnapshot(collection(db, "users"), (snap) => setAllUsers(snap.docs.map(d => ({id: d.id, ...d.data()})))));
+      unsubs.push(onSnapshot(doc(db, "settings", "system"), (snap) => {
+        if (snap.exists()) setSystemSettings(snap.data());
+      }));
 
       return () => unsubs.forEach(unsub => unsub());
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    const handleMessage = async (event: MessageEvent) => {
+      // Validate origin if possible, but '*' acts as wildcard for same-app
+      if (event.data?.type === 'google-oauth-success') {
+        const { refreshToken } = event.data;
+        if (refreshToken) {
+          try {
+            await setDoc(doc(db, "settings", "system"), { driveRefreshToken: refreshToken }, { merge: true });
+            toast.success("Google Drive conectado com sucesso!");
+          } catch (e: any) {
+            toast.error("Erro ao salvar token: " + e.message);
+          }
+        } else {
+          toast.error("Não foi possível conectar ao Google Drive. Autorização negada ou falha.");
+        }
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
 
   const companyStats = useMemo(() => {
     return allCompanies.map(c => {
@@ -368,9 +393,73 @@ export default function SeniorPanel() {
             >
               Aprovadas
             </button>
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className={cn("px-4 py-2 text-[14px] font-medium rounded-lg transition-all", activeTab === 'settings' ? "bg-white dark:bg-[#1A1F26] text-blue-600 shadow-sm" : "text-gray-500 hover:text-gray-900 dark:hover:text-white")}
+            >
+              <Settings size={18} />
+            </button>
           </div>
         )}
       </div>
+
+      {activeTab === 'settings' && (
+        <div className="space-y-6 animate-in fade-in duration-300">
+           <Card className="rounded-[24px] overflow-hidden border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] shadow-sm dark:shadow-none">
+             <CardContent className="p-8 space-y-6">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 dark:text-[#fafafa] flex items-center gap-2 mb-2">
+                    Integrações de Sistema
+                  </h2>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 max-w-2xl">
+                    Configure os serviços externos e integrações que a plataforma NVU utiliza para operar. Estas configurações são globais.
+                  </p>
+                </div>
+                
+                <div className="bg-gray-50 dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-6 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+                  <div className="space-y-2">
+                    <h3 className="font-bold text-gray-900 dark:text-white text-[16px] flex items-center gap-2">
+                      Google Drive
+                      {systemSettings.driveRefreshToken ? (
+                         <span className="bg-green-100 text-green-700 text-[10px] uppercase font-bold px-2 py-0.5 rounded-full tracking-wider">Conectado</span>
+                      ) : (
+                         <span className="bg-orange-100 text-orange-700 text-[10px] uppercase font-bold px-2 py-0.5 rounded-full tracking-wider">Desconectado</span>
+                      )}
+                    </h3>
+                    <p className="text-sm text-gray-500 max-w-lg leading-relaxed">
+                      Conecte a conta Google do proprietário para permitir que todos os motoristas façam o upload dos comprovantes e imagens de viagem para a pasta designada.
+                    </p>
+                    {systemSettings.driveRefreshToken && (
+                      <p className="text-xs text-green-600 font-medium">✔️ Refresh token obtido e salvo com segurança.</p>
+                    )}
+                  </div>
+                  <div className="shrink-0 w-full md:w-auto">
+                    {!systemSettings.driveRefreshToken ? (
+                       <Button 
+                          onClick={() => {
+                             window.open("/api/drive/auth", "Google Oauth", "width=600,height=600");
+                          }}
+                          className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-11 px-6 shadow-sm"
+                       >
+                         Conectar Google Drive
+                       </Button>
+                    ) : (
+                       <Button 
+                          onClick={async () => {
+                             await updateDoc(doc(db, "settings", "system"), { driveRefreshToken: null });
+                             toast.success("Integração do Google Drive removida.");
+                          }}
+                          className="w-full md:w-auto bg-red-50 hover:bg-red-100 text-red-600 rounded-xl h-11 px-6 shadow-none"
+                       >
+                         Desconectar
+                       </Button>
+                    )}
+                  </div>
+                </div>
+             </CardContent>
+           </Card>
+        </div>
+      )}
 
       {activeTab === 'profile' && selectedCompany && (
         <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">

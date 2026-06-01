@@ -517,16 +517,14 @@ function DashboardComponent({
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            <a
-              href="https://cts-gestao-vtc.base44.app/Viagens"
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => navigate('/driver/trip')}
               className="flex items-center justify-center h-10 w-10 sm:w-auto sm:px-4 shrink-0 bg-blue-50 dark:bg-blue-500/10 hover:bg-blue-100 dark:hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold text-xs rounded-xl transition-colors border border-blue-100 dark:border-blue-500/20"
               title="Lançamento de Viagem"
             >
               <Navigation size={18} className="sm:mr-2" />
               <span className="hidden sm:inline">Viagens</span>
-            </a>
+            </button>
             <div className="flex-1 sm:w-auto flex items-center justify-between gap-3 bg-gray-50 dark:bg-[#11141A] px-4 py-2 rounded-xl border border-gray-100 dark:border-[#2A2F3A]">
               <div>
                 <div className="flex items-center gap-1.5 mb-0.5">
@@ -888,10 +886,8 @@ function DashboardComponent({
           </CardContent>
         </Card>
 
-        <a
-          href="https://cts-gestao-vtc.base44.app/Viagens"
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          onClick={() => navigate('/driver/trip')}
           className="flex items-center justify-center gap-2 px-4 py-3 sm:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-[13px] sm:text-sm rounded-2xl sm:rounded-xl transition-all shadow-sm group w-full sm:w-auto"
         >
           <Navigation
@@ -899,7 +895,7 @@ function DashboardComponent({
             className="group-hover:scale-110 transition-transform"
           />
           Lançar Viagem
-        </a>
+        </button>
       </header>
 
       {/* Top Metrics Row */}

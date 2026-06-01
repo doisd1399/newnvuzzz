@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { AppProvider, useAppStore } from './context/AppContext';
@@ -13,6 +13,7 @@ import AdminOperations from './pages/admin/Operations';
 import SeniorPanel from './pages/admin/SeniorPanel';
 
 import DriverProfile from './pages/driver/Profile';
+import RecordTrip from './pages/driver/RecordTrip';
 import RecruitmentApply from './pages/RecruitmentApply';
 import ApplicationStatus from './pages/ApplicationStatus';
 
@@ -74,6 +75,7 @@ function AppRoutes() {
         }>
            <Route index element={<Navigate to="profile" replace />} />
            <Route path="profile" element={<DriverProfile />} />
+           <Route path="trip" element={<RecordTrip />} />
         </Route>
       </Routes>
     </BrowserRouter>
@@ -81,6 +83,29 @@ function AppRoutes() {
 }
 
 export default function App() {
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (
+        event.data?.type === 'google-oauth-success' &&
+        event.data?.refreshToken
+      ) {
+        localStorage.setItem(
+          'google_refresh_token',
+          event.data.refreshToken
+        );
+
+        console.log('Google Drive conectado');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
   return (
     <AppProvider>
       <Toaster position="top-right" richColors />
