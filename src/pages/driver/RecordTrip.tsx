@@ -70,18 +70,15 @@ export default function RecordTrip() {
       setIsUploading(true);
 
       try {
-        const sysDoc = await getDoc(doc(db, "settings", "system"));
-        const refreshToken = sysDoc.data()?.driveRefreshToken;
-
-        if (!refreshToken) {
-          throw new Error("O Google Drive do proprietário não está conectado no Painel Senior.");
-        }
-
         const formData = new FormData();
         formData.append("image", file);
-        formData.append("refreshToken", refreshToken);
+        if (currentCompany?.id) {
+          formData.append("companyId", currentCompany.id);
+        } else {
+          formData.append("companyId", "Geral");
+        }
 
-        const response = await fetch("/api/upload-drive", {
+        const response = await fetch("https://backend-drive-ya2b.onrender.com/api/upload-drive", {
           method: "POST",
           body: formData,
         });

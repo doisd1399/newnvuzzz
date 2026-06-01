@@ -5,6 +5,14 @@ import { google } from "googleapis";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 
+// Initialize Firebase Admin SDK
+import admin from "firebase-admin";
+
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+const db = admin.firestore();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -19,6 +27,14 @@ async function startServer() {
     const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${process.env.APP_URL || "http://localhost:3000"}/api/drive/callback`;
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   };
+
+  app.get("/api/debug-routes", (req, res) => {
+    res.json({
+      version: "NVU-GDRIVE-V2",
+      uploadRouteExists: true,
+      timestamp: new Date().toISOString()
+    });
+  });
 
   app.get("/api/drive/auth", (req, res) => {
     const oauth2Client = getGoogleOAuthClient();
@@ -61,9 +77,16 @@ async function startServer() {
 
   app.post("/api/upload-drive", upload.single("image"), async (req, res) => {
     try {
-      // Expecting refresh_token in request body
-      const refreshToken = req.body.refreshToken;
+      console.log("[Google Drive Upload] - Recebendo requisição...");
+      console.log("[Google Drive Upload] - companyId:", req.body.companyId);
+      console.log("[Google Drive Upload] - arquivo recebido:", !!req.file);
+
+      // Fetch refresh token from Firestore using admin SDK
+      const sysDocSnap = await db.collection("settings").doc("system").get();
+      const refreshToken = sysDocSnap.data()?.driveRefreshToken;
       
+      console.log("[Google Drive Upload] - Token encontrado no Firestore:", !!refreshToken);
+
       if (!refreshToken) {
         return res.status(401).json({ 
           error: "O Google Drive não está conectado pelo proprietário do sistema." 
@@ -75,18 +98,51 @@ async function startServer() {
 
       const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-
       const file = req.file;
       if (!file) {
         return res.status(400).json({ error: "No image file provided" });
       }
 
-      // 1pJxzl5y1pre-qxkMb7kJIo8x7cFUso4U
-      const folderId = "1pJxzl5y1pre-qxkMb7kJIo8x7cFUso4U";
+      const PARENT_FOLDER_ID = "1pJxzl5y1pre-qxkMb7kJIo8x7cFUso4U";
+      const companyId = req.body.companyId || "Geral";
+
+      // 1. Check if folder for this company exists inside PARENT_FOLDER_ID
+      let targetFolderId = PARENT_FOLDER_ID;
+      try {
+        const query = `mimeType='application/vnd.google-apps.folder' and name='${companyId.replace(/'/g, "\\'")}' and '${PARENT_FOLDER_ID}' in parents and trashed=false`;
+        const resList = await drive.files.list({
+          q: query,
+          fields: "files(id, name)",
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+        });
+
+        if (resList.data.files && resList.data.files.length > 0) {
+          targetFolderId = resList.data.files[0].id!;
+          console.log("[Google Drive Upload] - Pasta encontrada para empresa:", companyId, "ID:", targetFolderId);
+        } else {
+          // 2. Create the subfolder if it does not exist
+          const folderMetadata = {
+            name: companyId,
+            mimeType: "application/vnd.google-apps.folder",
+            parents: [PARENT_FOLDER_ID],
+          };
+          const folderRes = await drive.files.create({
+            requestBody: folderMetadata,
+            fields: "id",
+            supportsAllDrives: true,
+          });
+          targetFolderId = folderRes.data.id!;
+          console.log("[Google Drive Upload] - Nova pasta criada para empresa:", companyId, "ID:", targetFolderId);
+        }
+      } catch (folderErr) {
+        console.warn("[Google Drive Upload] - Could not find or create company subfolder, falling back to ROOT folder. Error:", folderErr);
+        targetFolderId = PARENT_FOLDER_ID;
+      }
 
       const fileMetadata = {
         name: file.originalname,
-        parents: [folderId],
+        parents: [targetFolderId],
       };
 
       const media = {
@@ -117,6 +173,8 @@ async function startServer() {
 
       // Cleanup local temp file
       fs.unlink(file.path, () => {});
+
+      console.log("[Google Drive Upload] - Upload concluído com sucesso:", driveRes.data.webViewLink);
 
       return res.json({
         id: driveRes.data.id,

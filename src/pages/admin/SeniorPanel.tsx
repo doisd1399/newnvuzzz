@@ -437,7 +437,7 @@ export default function SeniorPanel() {
                     {!systemSettings.driveRefreshToken ? (
                        <Button 
                           onClick={() => {
-                             window.open("/api/drive/auth", "Google Oauth", "width=600,height=600");
+                             window.open("https://backend-drive-ya2b.onrender.com/api/drive/auth", "Google Oauth", "width=600,height=600");
                           }}
                           className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-11 px-6 shadow-sm"
                        >
