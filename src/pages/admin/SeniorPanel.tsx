@@ -73,26 +73,7 @@ export default function SeniorPanel() {
     }
   }, [isAuthenticated]);
 
-  useEffect(() => {
-    const handleMessage = async (event: MessageEvent) => {
-      // Validate origin if possible, but '*' acts as wildcard for same-app
-      if (event.data?.type === 'google-oauth-success') {
-        const { refreshToken } = event.data;
-        if (refreshToken) {
-          try {
-            await setDoc(doc(db, "settings", "system"), { driveRefreshToken: refreshToken }, { merge: true });
-            toast.success("Google Drive conectado com sucesso!");
-          } catch (e: any) {
-            toast.error("Erro ao salvar token: " + e.message);
-          }
-        } else {
-          toast.error("Não foi possível conectar ao Google Drive. Autorização negada ou falha.");
-        }
-      }
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
+
 
   const companyStats = useMemo(() => {
     return allCompanies.map(c => {
@@ -416,44 +397,15 @@ export default function SeniorPanel() {
                   </p>
                 </div>
                 
-                <div className="bg-gray-50 dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-6 flex flex-col md:flex-row gap-6 justify-between items-start md:items-center">
+                <div className="bg-gray-50 dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-6 flex flex-col gap-6 justify-between items-start">
                   <div className="space-y-2">
                     <h3 className="font-bold text-gray-900 dark:text-white text-[16px] flex items-center gap-2">
-                      Google Drive
-                      {systemSettings.driveRefreshToken ? (
-                         <span className="bg-green-100 text-green-700 text-[10px] uppercase font-bold px-2 py-0.5 rounded-full tracking-wider">Conectado</span>
-                      ) : (
-                         <span className="bg-orange-100 text-orange-700 text-[10px] uppercase font-bold px-2 py-0.5 rounded-full tracking-wider">Desconectado</span>
-                      )}
+                      Armazenamento de Arquivos
+                      <span className="bg-green-100 text-green-700 text-[10px] uppercase font-bold px-2 py-0.5 rounded-full tracking-wider">Storage Ativo</span>
                     </h3>
                     <p className="text-sm text-gray-500 max-w-lg leading-relaxed">
-                      Conecte a conta Google do proprietário para permitir que todos os motoristas façam o upload dos comprovantes e imagens de viagem para a pasta designada.
+                      O sistema está configurado de forma nativa e segura para utilizar o Firebase Storage como servidor de mídias e comprovantes, organizando os arquivos automaticamente por empresa.
                     </p>
-                    {systemSettings.driveRefreshToken && (
-                      <p className="text-xs text-green-600 font-medium">✔️ Refresh token obtido e salvo com segurança.</p>
-                    )}
-                  </div>
-                  <div className="shrink-0 w-full md:w-auto">
-                    {!systemSettings.driveRefreshToken ? (
-                       <Button 
-                          onClick={() => {
-                             window.open("https://backend-drive-ya2b.onrender.com/api/drive/auth", "Google Oauth", "width=600,height=600");
-                          }}
-                          className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-11 px-6 shadow-sm"
-                       >
-                         Conectar Google Drive
-                       </Button>
-                    ) : (
-                       <Button 
-                          onClick={async () => {
-                             await updateDoc(doc(db, "settings", "system"), { driveRefreshToken: null });
-                             toast.success("Integração do Google Drive removida.");
-                          }}
-                          className="w-full md:w-auto bg-red-50 hover:bg-red-100 text-red-600 rounded-xl h-11 px-6 shadow-none"
-                       >
-                         Desconectar
-                       </Button>
-                    )}
                   </div>
                 </div>
              </CardContent>
