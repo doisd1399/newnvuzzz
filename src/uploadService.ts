@@ -9,19 +9,16 @@ export async function uploadFile(
 ) {
   if (!file) throw new Error("Arquivo inválido");
 
-  // caminho no storage
   const filePath = `${companyId}/${folder}/${userId}/${Date.now()}_${file.name}`;
 
   const storageRef = ref(storage, filePath);
 
-  // upload
   const snapshot = await uploadBytes(storageRef, file);
 
-  // URL pública
-  const downloadURL = await getDownloadURL(snapshot.ref);
+  const url = await getDownloadURL(snapshot.ref);
 
   return {
-    url: downloadURL,
+    url,
     path: filePath,
   };
 }
