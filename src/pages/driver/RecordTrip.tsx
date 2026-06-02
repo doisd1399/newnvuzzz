@@ -15,6 +15,9 @@ import {
 import { cn } from "../../lib/utils";
 import { uploadFile } from "../../services/uploadService";
 
+import { db } from "../../lib/firebase";
+import { addDoc, collection, serverTimestamp } from "firebase/firestore";
+
 export default function RecordTrip() {
   const navigate = useNavigate();
   const {
@@ -74,7 +77,7 @@ export default function RecordTrip() {
     : null;
 
   // ==============================
-  // FIREBASE UPLOAD (ATUALIZADO)
+  // UPLOAD FIREBASE STORAGE
   // ==============================
   const handleImageUpload = async (
     e: React.ChangeEvent<HTMLInputElement>
@@ -102,7 +105,7 @@ export default function RecordTrip() {
       console.log("✅ UPLOAD OK:", result);
 
       setImagePreview(result.url);
-    } catch (err: any) {
+    } catch (err) {
       console.error("❌ Upload error:", err);
       alert("Erro ao enviar imagem. Tente novamente.");
     } finally {
@@ -114,18 +117,50 @@ export default function RecordTrip() {
     }
   };
 
-  const handleLancarViagem = () => {
+  // ==============================
+  // SALVAR VIAGEM NO FIRESTORE
+  // ==============================
+  const handleLancarViagem = async () => {
     if (!origem || !destino || !valor || !imagePreview) {
       alert("Por favor, preencha todos os campos obrigatórios.");
       return;
     }
 
-    alert("Viagem lançada com sucesso!");
+    try {
+      console.log("🔥 SALVANDO VIAGEM NO FIRESTORE...");
 
-    setOrigem("");
-    setDestino("");
-    setValor("");
-    setImagePreview(null);
+      const tripData = {
+        origem,
+        destino,
+        valor: parseFloat(valor.replace(/\D/g, "")) / 100,
+        imageUrl: imagePreview,
+
+        empresaId: activeCompanyId || "geral",
+        driverId: currentUser.id,
+
+        contractId: activeJob?.contractId || null,
+        vehicleId: activeJob?.vehicleId || null,
+        trailerId: activeJob?.trailerId || null,
+
+        status: "pending",
+
+        createdAt: serverTimestamp(),
+      };
+
+      const docRef = await addDoc(collection(db, "trips"), tripData);
+
+      console.log("✅ VIAGEM SALVA ID:", docRef.id);
+
+      alert("Viagem lançada com sucesso!");
+
+      setOrigem("");
+      setDestino("");
+      setValor("");
+      setImagePreview(null);
+    } catch (err) {
+      console.error("❌ Erro ao salvar viagem:", err);
+      alert("Erro ao lançar viagem. Tente novamente.");
+    }
   };
 
   const formatCurrency = (value: string) => {
@@ -166,10 +201,7 @@ export default function RecordTrip() {
     <div className="w-full max-w-2xl mx-auto space-y-4 pb-10 px-0 sm:px-4 text-gray-900 font-sans tracking-[-0.01em]">
       {/* HEADER */}
       <div className="flex items-center gap-2 py-1 px-2">
-        <button
-          onClick={() => navigate(-1)}
-          className="p-1 text-gray-600"
-        >
+        <button onClick={() => navigate(-1)}>
           <ArrowLeft size={18} />
         </button>
 
@@ -181,24 +213,21 @@ export default function RecordTrip() {
         </div>
       </div>
 
-      {/* CARD */}
+      {/* FORM */}
       <div className="bg-white border rounded-2xl p-4">
-        <div className="mb-4 font-bold">{companyName}</div>
 
-        {/* ORIGEM */}
         <input
-          className="w-full border p-2 rounded mb-3"
           placeholder="Origem"
           value={origem}
           onChange={(e) => setOrigem(e.target.value)}
+          className="w-full border p-2 rounded mb-3"
         />
 
-        {/* DESTINO */}
         <input
-          className="w-full border p-2 rounded mb-3"
           placeholder="Destino"
           value={destino}
           onChange={(e) => setDestino(e.target.value)}
+          className="w-full border p-2 rounded mb-3"
         />
 
         {/* UPLOAD */}
@@ -211,29 +240,24 @@ export default function RecordTrip() {
         />
 
         <button
-          disabled={isUploading}
           onClick={() => fileInputRef.current?.click()}
+          disabled={isUploading}
           className="bg-blue-500 text-white px-3 py-2 rounded mb-3"
         >
           {isUploading ? "Enviando..." : "Enviar imagem"}
         </button>
 
         {imagePreview && (
-          <img
-            src={imagePreview}
-            className="w-full rounded mb-3"
-          />
+          <img src={imagePreview} className="w-full rounded mb-3" />
         )}
 
-        {/* VALOR */}
         <input
-          className="w-full border p-2 rounded mb-3 text-right"
           placeholder="Valor"
           value={valor}
           onChange={handleValorChange}
+          className="w-full border p-2 rounded mb-3 text-right"
         />
 
-        {/* BOTÃO */}
         <button
           onClick={handleLancarViagem}
           className="w-full bg-green-600 text-white p-3 rounded"
@@ -249,7 +273,7 @@ export default function RecordTrip() {
         </button>
 
         {showHistory && (
-          <div className="mt-3 text-sm text-gray-500">
+          <div className="text-sm text-gray-500 mt-3">
             Sem histórico disponível
           </div>
         )}
