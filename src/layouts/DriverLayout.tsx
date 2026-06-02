@@ -13,6 +13,7 @@ import {
   Building2,
   ChevronLeft,
   Check,
+  ClipboardList,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -142,6 +143,12 @@ export default function DriverLayout() {
           label: "Meu Perfil",
           icon: UserIcon,
           path: "/driver/profile",
+          exact: false,
+        },
+        {
+          label: "Histórico de Viagens",
+          icon: ClipboardList,
+          path: "/driver/history",
           exact: false,
         },
       ]

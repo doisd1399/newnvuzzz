@@ -190,7 +190,7 @@ export default function RecruitmentApply() {
       if (photoPreview && photoPreview.startsWith('data:image')) {
         setUploadingImage(true);
         try {
-          const imageRef = ref(storage, `recruitment_photos/${company.id || 'default'}/${Date.now()}.jpg`);
+          const imageRef = ref(storage, `empresas/${company.id || 'default'}/recruitment_photos/${Date.now()}.jpg`);
           // Use timeout to prevent hanging uploads
           const uploadPromise = uploadString(imageRef, photoPreview, 'data_url');
           const timeoutPromise = new Promise((_, reject) => 

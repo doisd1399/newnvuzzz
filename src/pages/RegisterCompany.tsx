@@ -100,7 +100,7 @@ export default function RegisterCompany() {
       if (photoPreview && photoPreview.startsWith('data:image')) {
         setUploadingImage(true);
         try {
-          const imageRef = ref(storage, `recruitment_photos/company_registrations/${Date.now()}_logo.jpg`);
+          const imageRef = ref(storage, `empresas/company_registrations/recruitment_photos/${Date.now()}_logo.jpg`);
           const uploadPromise = uploadString(imageRef, photoPreview, 'data_url');
           const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000));
           await Promise.race([uploadPromise, timeoutPromise]);
@@ -116,7 +116,7 @@ export default function RegisterCompany() {
       if (ownerPhotoPreview && ownerPhotoPreview.startsWith('data:image')) {
         setUploadingImage(true);
         try {
-          const imageRef = ref(storage, `recruitment_photos/company_registrations/${Date.now()}_owner.jpg`);
+          const imageRef = ref(storage, `empresas/company_registrations/recruitment_photos/${Date.now()}_owner.jpg`);
           const uploadPromise = uploadString(imageRef, ownerPhotoPreview, 'data_url');
           const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000));
           await Promise.race([uploadPromise, timeoutPromise]);

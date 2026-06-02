@@ -41,10 +41,10 @@ export const uploadService = {
     }
 
     // 3. Generate structured file path
-    // Format: companyId / folder / userId / timestamp_filename
+    // Format: empresas / companyId / folder / userId / timestamp_filename
     const timestamp = Date.now();
     const cleanFileName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, ''); // Basic sanitization
-    const path = `${companyId}/${folder}/${userId}/${timestamp}_${cleanFileName}`;
+    const path = `empresas/${companyId}/${folder}/${userId}/${timestamp}_${cleanFileName}`;
 
     // 4. Create storage reference
     const storageRef = ref(storage, path);

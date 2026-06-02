@@ -17,6 +17,8 @@ import RecordTrip from './pages/driver/RecordTrip';
 import RecruitmentApply from './pages/RecruitmentApply';
 import ApplicationStatus from './pages/ApplicationStatus';
 
+import TripHistory from './pages/driver/TripHistory';
+
 import SelectProfile from './pages/SelectProfile';
 
 import RegisterCompany from './pages/RegisterCompany';
@@ -76,6 +78,7 @@ function AppRoutes() {
            <Route index element={<Navigate to="profile" replace />} />
            <Route path="profile" element={<DriverProfile />} />
            <Route path="trip" element={<RecordTrip />} />
+           <Route path="history" element={<TripHistory />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -1,10 +1,11 @@
 import React, { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../context/AppContext";
-import { ArrowLeft, MapPin, UploadCloud, Send, Clock, CheckCircle2, User, ClipboardList, Truck, Package } from "lucide-react";
+import { ArrowLeft, MapPin, UploadCloud, Send, Clock, CheckCircle2, User, ClipboardList, Truck, Package, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { db } from "../../lib/firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { toast } from "sonner";
 import { uploadService } from "../../services/uploadService";
 
 export default function RecordTrip() {
@@ -76,7 +77,7 @@ export default function RecordTrip() {
         setImagePreview(url);
       } catch (err: any) {
         console.error("Upload error:", err);
-        alert(`Ocorreu um erro ao enviar a imagem: ${err.message}. Tente novamente.`);
+        toast.error(`Ocorreu um erro ao enviar a imagem: ${err.message}. Tente novamente.`);
       } finally {
         setIsUploading(false);
         if (fileInputRef.current) {
@@ -86,17 +87,68 @@ export default function RecordTrip() {
     }
   };
 
-  const handleLancarViagem = () => {
+  const handleLancarViagem = async () => {
     if (!origem || !destino || !valor || !imagePreview) {
-      alert("Por favor, preencha todos os campos obrigatórios.");
+      toast.error("Por favor, preencha todos os campos obrigatórios.");
       return;
     }
-    // Lógica para salvar a viagem (mocked)
-    alert("Viagem lançada com sucesso!");
-    setOrigem("");
-    setDestino("");
-    setValor("");
-    setImagePreview(null);
+
+    if (!activeJob) {
+      toast.error("Nenhuma viagem ativa encontrada.");
+      return;
+    }
+
+    setIsUploading(true);
+
+    try {
+      const valorNumerico = parseFloat(valor.replace(/\D/g, "")) / 100;
+
+      const data = {
+        empresaId: currentCompany?.id || "Geral",
+        empresaNome: currentCompany?.companyName || "Geral",
+        motoristaId: currentUser.id,
+        motoristaNome: currentUser.name,
+        
+        contratoId: activeContract?.id || "",
+        contratoNumero: activeContract?.name || "",
+        contratoDescricao: "",
+        
+        veiculoId: activeVehicle?.id || "",
+        veiculoNome: activeVehicle ? `${activeVehicle.name || ""}`.trim() : "",
+        veiculoPlaca: activeVehicle?.plate || "",
+        
+        reboqueId: activeTrailer?.id || "",
+        reboqueNome: activeTrailer ? `${activeTrailer.name || ""}`.trim() : "",
+        
+        origem,
+        destino,
+        valor: valorNumerico,
+        comprovanteUrl: imagePreview,
+        status: "concluida",
+        criadoPor: currentUser.id,
+        dataLancamento: new Date(),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      await addDoc(collection(db, "historico_viagens"), data);
+
+      toast.success("Viagem lançada com sucesso!");
+      setOrigem("");
+      setDestino("");
+      setValor("");
+      setImagePreview(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      
+      // Navigate to history page after small delay to show toast
+      setTimeout(() => navigate('/driver/history'), 1500);
+
+    } catch (err: any) {
+      console.error("Erro ao salvar viagem:", err);
+      toast.error("Ocorreu um erro ao salvar a viagem. Tente novamente.");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const formatCurrency = (value: string) => {
@@ -293,18 +345,30 @@ export default function RecordTrip() {
                 <UploadCloud size={16} className={isUploading ? "animate-pulse" : ""} />
                 {isUploading ? "Enviando..." : "Enviar imagem"}
               </button>
-              <span className="text-[12px] text-gray-500 font-medium">
-                PNG, JPG ou WEBP (Máx. 5MB)
-              </span>
+
             </div>
 
             {imagePreview && (
-              <div className="w-full rounded-xl overflow-hidden border border-gray-200 shadow-sm relative mt-2">
-                <img
-                  src={imagePreview}
-                  alt="Prévia do comprovante"
-                  className="w-full h-auto max-h-[300px] object-cover sm:object-contain rounded-[10px]"
-                />
+              <div className="mt-2 space-y-2">
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => {
+                      setImagePreview(null);
+                      if (fileInputRef.current) fileInputRef.current.value = "";
+                    }}
+                    className="flex items-center gap-1.5 text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 py-1 px-2.5 rounded-full transition-colors"
+                  >
+                    <X size={12} className="stroke-[2.5]" />
+                    <span>Remover imagem</span>
+                  </button>
+                </div>
+                <div className="w-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-800 shadow-sm relative">
+                  <img
+                    src={imagePreview}
+                    alt="Prévia do comprovante"
+                    className="w-full h-auto max-h-[300px] object-cover sm:object-contain rounded-[10px]"
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -338,7 +402,7 @@ export default function RecordTrip() {
               LANÇAR VIAGEM
             </button>
             <button
-              onClick={() => setShowHistory(!showHistory)}
+              onClick={() => navigate('/driver/history')}
               className="w-full flex items-center justify-center gap-2 bg-white hover:bg-blue-50 text-blue-600 border border-blue-200 py-3 sm:py-3.5 rounded-[12px] font-bold text-[13px] sm:text-[14px] transition-all active:scale-[0.99]"
             >
               <Clock size={16} />
@@ -347,18 +411,6 @@ export default function RecordTrip() {
           </div>
         </div>
       </div>
-      
-      {/* Historico Modal-like or expanded section */}
-      {showHistory && (
-        <div className="bg-white border border-gray-200 shadow-sm sm:rounded-[20px] rounded-2xl p-4 sm:p-5 mt-4">
-           <h3 className="text-[13px] font-bold text-gray-900 mb-3 flex items-center gap-2 border-b border-gray-100 pb-2.5">
-             <Clock size={16} className="text-gray-400" /> Histórico
-           </h3>
-           <div className="text-[13px] text-gray-500 text-center py-5 font-medium">
-             Sem histórico disponível nesta sessão (Mocked)
-           </div>
-        </div>
-      )}
     </div>
   );
 }
