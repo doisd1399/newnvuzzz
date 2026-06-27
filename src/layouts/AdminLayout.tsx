@@ -23,6 +23,7 @@ import {
   Crown,
   ChevronLeft,
   Check,
+  Trophy,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -59,6 +60,8 @@ export default function AdminLayout() {
     if (!isProfileMenuOpen) setShowCompanySwitch(false);
   }, [isProfileMenuOpen]);
 
+  if (!currentUser) return null;
+
   const unreadNotifications = notifications.filter((n) => !n.lida);
   const pendingCount = unreadNotifications.length;
 
@@ -84,9 +87,7 @@ export default function AdminLayout() {
         if (membership.status === "active") {
           const comp = companies.find((c) => c.id === membership.companyId);
           if (companies.length > 0 && !comp) return; // Ghost company ignore
-          const cName = comp
-            ? comp.fleetName || comp.companyName
-            : "Carregando...";
+          const cName = comp ? comp.companyName : "Carregando...";
           list.push({
             companyId: membership.companyId,
             companyName: cName,
@@ -94,38 +95,9 @@ export default function AdminLayout() {
           });
         }
       });
-    } else if (currentUser?.memberships) {
-      Object.entries(currentUser.memberships).forEach(
-        ([compId, membership]) => {
-          if (membership.status === "active") {
-            const comp = companies.find((c) => c.id === compId);
-            if (companies.length > 0 && !comp) return; // Ghost company ignore
-            const cName = comp
-              ? comp.fleetName || comp.companyName
-              : "Carregando...";
-            list.push({
-              companyId: compId,
-              companyName: cName,
-              roles: membership.roles,
-            });
-          }
-        },
-      );
-    } else if (currentUser) {
-      const compId = currentUser.companyId || "";
-      const comp = companies.find((c) => c.id === compId);
-      if (companies.length > 0 && !comp && compId) return; // Ghost company ignore
-      const cName = comp ? comp.fleetName || comp.companyName : "Carregando...";
-      if (currentUser.status === "active") {
-        list.push({
-          companyId: compId,
-          companyName: cName,
-          roles: currentUser.roles || [currentUser.role],
-        });
-      }
     }
     return list;
-  }, [memberships, currentUser, companies]);
+  }, [memberships, companies]);
 
   const handleSwitchRole = (newRole: "admin" | "driver") => {
     setIsProfileMenuOpen(false);
@@ -165,6 +137,16 @@ export default function AdminLayout() {
           path: "/admin/fleet",
           badge: pendingHrCount,
         },
+        {
+          label: "Ranking",
+          icon: Trophy,
+          path: "/ranking",
+        },
+        {
+          label: "Relatórios",
+          icon: Activity,
+          path: "/admin/reports",
+        },
       ],
     },
   ];
@@ -176,7 +158,7 @@ export default function AdminLayout() {
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-[#09090b] flex flex-col text-gray-900 dark:text-[#fafafa] font-sans">
       {/* Top Bar fixed at the top */}
-      <header className="fixed top-0 left-0 right-0 h-14 md:h-16 bg-white dark:bg-[#09090b] border-b border-gray-100 dark:border-[#2A2F3A] flex items-center px-4 md:px-6 justify-between z-50">
+      <header className="fixed top-0 left-0 right-0 h-11 md:h-12 bg-white dark:bg-[#09090b] border-b border-gray-100 dark:border-[#2A2F3A] flex items-center px-4 md:px-6 justify-between z-50">
         <div className="flex items-center gap-3 md:gap-4">
           <button
             onClick={() => setIsMobileMenuOpen(true)}
@@ -257,9 +239,7 @@ export default function AdminLayout() {
               />
             ) : (
               <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-[10px]">
-                {currentUser?.name
-                  ?.substring(0, 2)
-                  .toUpperCase() || "AD"}
+                {currentUser?.name?.substring(0, 2).toUpperCase() || "AD"}
               </div>
             )}
           </button>
@@ -273,11 +253,11 @@ export default function AdminLayout() {
       </header>
 
       {/* Main wrapper starts below the header */}
-      <div className="flex-1 flex pt-14 md:pt-16 max-w-full relative">
+      <div className="flex-1 flex pt-11 md:pt-12 max-w-full relative">
         {/* Mobile Menu Overlay */}
         {isMobileMenuOpen && (
           <div
-            className="fixed inset-0 top-14 md:top-16 bg-gray-900/50 z-40 lg:hidden overflow-hidden"
+            className="fixed inset-0 top-11 md:top-12 bg-gray-900/50 z-40 lg:hidden overflow-hidden"
             onClick={() => setIsMobileMenuOpen(false)}
           />
         )}
@@ -285,333 +265,331 @@ export default function AdminLayout() {
         {/* Sidebar */}
         <aside
           className={cn(
-            "w-64 bg-white dark:bg-[#09090b] border-r border-gray-100 dark:border-[#2A2F3A] flex flex-col fixed top-14 md:top-16 bottom-0 left-0 z-40 shadow-sm dark:shadow-none transition-transform duration-300 ease-in-out lg:translate-x-0 hidden lg:flex",
-            isMobileMenuOpen ? "flex translate-x-0" : "-translate-x-full"
+            "w-64 bg-white dark:bg-[#09090b] border-r border-gray-100 dark:border-[#2A2F3A] flex flex-col fixed top-11 md:top-12 bottom-0 left-0 z-40 shadow-sm dark:shadow-none transition-transform duration-300 ease-in-out lg:translate-x-0 hidden lg:flex",
+            isMobileMenuOpen ? "flex translate-x-0" : "-translate-x-full",
           )}
         >
           <div className="p-4 flex flex-col gap-2 relative border-b border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#09090b]">
-          {isProfileMenuOpen && (
-            <div className="absolute left-4 right-4 top-full mt-2 bg-white dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] shadow-lg dark:shadow-none rounded-xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-              {showCompanySwitch ? (
-                <>
-                  <div className="px-3 py-2 border-b border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#09090b] flex items-center justify-between">
-                    <p className="text-[11px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider">
-                      Escolha a Empresa
-                    </p>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowCompanySwitch(false);
-                      }}
-                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    >
-                      <ChevronLeft size={16} />
-                    </button>
-                  </div>
-                  <div className="max-h-60 overflow-y-auto p-1">
-                    {availableCompanies.map((comp) => (
+            {isProfileMenuOpen && (
+              <div className="absolute left-4 right-4 top-full mt-2 bg-white dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] shadow-lg dark:shadow-none rounded-xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                {showCompanySwitch ? (
+                  <>
+                    <div className="px-3 py-2 border-b border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#09090b] flex items-center justify-between">
+                      <p className="text-[11px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider">
+                        Escolha a Empresa
+                      </p>
                       <button
-                        key={comp.companyId}
-                        onClick={() => {
-                          setActiveCompanyId(comp.companyId);
-                          if (
-                            comp.roles.length > 0 &&
-                            !comp.roles.includes("admin")
-                          ) {
-                            switchRole("driver", comp.companyId);
-                            navigate("/driver");
-                          } else {
-                            switchRole("admin", comp.companyId);
-                          }
-                          setIsProfileMenuOpen(false);
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowCompanySwitch(false);
                         }}
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                    </div>
+                    <div className="max-h-60 overflow-y-auto p-1">
+                      {availableCompanies.map((comp) => (
+                        <button
+                          key={comp.companyId}
+                          onClick={() => {
+                            setActiveCompanyId(comp.companyId);
+                            if (
+                              comp.roles.length > 0 &&
+                              !comp.roles.includes("admin")
+                            ) {
+                              switchRole("driver", comp.companyId);
+                              navigate("/driver");
+                            } else {
+                              switchRole("admin", comp.companyId);
+                            }
+                            setIsProfileMenuOpen(false);
+                          }}
+                          className={cn(
+                            "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left",
+                            activeCompanyId === comp.companyId
+                              ? "bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400"
+                              : "hover:bg-gray-50 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8]",
+                          )}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <Building2 size={16} className="shrink-0" />
+                            <span className="truncate">{comp.companyName}</span>
+                          </div>
+                          {activeCompanyId === comp.companyId && (
+                            <Check
+                              size={16}
+                              className="shrink-0 text-blue-600 dark:text-blue-400"
+                            />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="px-3 py-2 border-b border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#09090b]">
+                      <p className="text-[11px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider">
+                        Alternar Perfil
+                      </p>
+                    </div>
+                    <div className="p-1 border-b border-gray-100 dark:border-[#2A2F3A]">
+                      <button
+                        onClick={() => handleSwitchRole("admin")}
                         className={cn(
-                          "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left",
-                          activeCompanyId === comp.companyId
-                            ? "bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400"
+                          "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                          currentUser?.role === "admin"
+                            ? "bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-700"
                             : "hover:bg-gray-50 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8]",
                         )}
                       >
-                        <div className="flex items-center gap-2 truncate">
-                          <Building2 size={16} className="shrink-0" />
-                          <span className="truncate">{comp.companyName}</span>
+                        <div className="flex items-center gap-2">
+                          <User size={16} />
+                          <span>Administrador</span>
                         </div>
-                        {activeCompanyId === comp.companyId && (
-                          <Check
+                        {currentUser?.role === "admin" && (
+                          <UserCheck
                             size={16}
-                            className="shrink-0 text-blue-600 dark:text-blue-400"
+                            className="text-blue-600 dark:text-blue-400"
                           />
                         )}
                       </button>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="px-3 py-2 border-b border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#09090b]">
-                    <p className="text-[11px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider">
-                      Alternar Perfil
-                    </p>
-                  </div>
-                  <div className="p-1 border-b border-gray-100 dark:border-[#2A2F3A]">
-                    <button
-                      onClick={() => handleSwitchRole("admin")}
-                      className={cn(
-                        "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                        currentUser?.role === "admin"
-                          ? "bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-700"
-                          : "hover:bg-gray-50 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8]",
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        <User size={16} />
-                        <span>Administrador</span>
-                      </div>
-                      {currentUser?.role === "admin" && (
-                        <UserCheck
-                          size={16}
-                          className="text-blue-600 dark:text-blue-400"
-                        />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleSwitchRole("driver")}
-                      className={cn(
-                        "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                        currentUser?.role === "driver"
-                          ? "bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-700"
-                          : "hover:bg-gray-50 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8]",
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Truck size={16} />
-                        <span>Motorista</span>
-                      </div>
-                      {currentUser?.role === "driver" && (
-                        <UserCheck
-                          size={16}
-                          className="text-green-600 dark:text-green-400"
-                        />
-                      )}
-                    </button>
-                  </div>
-                  <div className="p-1 border-b border-gray-100 dark:border-[#2A2F3A]">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowCompanySwitch(true);
-                      }}
-                      className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Building2 size={16} />
-                        <span>Trocar de Empresa</span>
-                      </div>
-                      <ChevronLeft size={16} className="rotate-180" />
-                    </button>
-                  </div>
-                  <div className="p-1">
-                    <button
-                      onClick={() => {
-                        setIsProfileMenuOpen(false);
-                        setIsProfileModalOpen(true);
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] transition-colors"
-                    >
-                      <Settings size={16} />
-                      <span>Editar Perfil</span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          <div
-            onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-            className={cn(
-              "flex items-center justify-between px-3 py-3 rounded-xl border transition-colors cursor-pointer shadow-sm dark:shadow-none relative",
-              isProfileMenuOpen
-                ? "border-blue-200 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20/50"
-                : "border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#09090b] hover:bg-gray-50 dark:hover:bg-[#3f3f46]",
-            )}
-          >
-            <div className="flex items-center gap-3">
-              {currentUser?.photoURL || currentUser?.avatar ? (
-                <img
-                  src={currentUser.photoURL || currentUser.avatar}
-                  alt={currentUser.name}
-                  className="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 object-cover shrink-0"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
-                  {currentUser?.name
-                    ?.substring(0, 2)
-                    .toUpperCase() || "AD"}
-                </div>
-              )}
-              <div className="flex-1 min-w-0 pr-2">
-                <p className="text-sm font-bold text-gray-900 dark:text-[#fafafa] truncate">
-                  {currentUser?.name}
-                </p>
-                <p className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold truncate leading-tight mt-0.5">
-                  Administrador
-                </p>
-              </div>
-            </div>
-            <ChevronDown
-              size={16}
-              className={cn(
-                "text-gray-400 transition-transform duration-200",
-                isProfileMenuOpen
-                  ? "rotate-180 text-blue-600 dark:text-blue-400"
-                  : "",
-              )}
-            />
-          </div>
-        </div>
-
-        <nav className="flex-1 px-4 py-6 space-y-6 overflow-y-auto">
-          {navGroups.map((group, idx) => (
-            <div key={idx}>
-              {group.title && (
-                <h3 className="px-4 text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest mb-3">
-                  {group.title}
-                </h3>
-              )}
-              <div className="space-y-1">
-                {group.items.map((item) => (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
-                    end={(item as any).exact}
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className={({ isActive }) =>
-                      cn(
-                        "flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-medium transition-colors",
-                        isActive || location.pathname.startsWith('/admin/operations')
-                          ? "bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-700 dark:text-green-400"
-                          : "text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5]",
-                      )
-                    }
-                  >
-                    <div className="flex items-center gap-3">
-                      <item.icon size={18} strokeWidth={2} />
-                      {item.label}
+                      <button
+                        onClick={() => handleSwitchRole("driver")}
+                        className={cn(
+                          "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                          currentUser?.role === "driver"
+                            ? "bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-700"
+                            : "hover:bg-gray-50 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8]",
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Truck size={16} />
+                          <span>Motorista</span>
+                        </div>
+                        {currentUser?.role === "driver" && (
+                          <UserCheck
+                            size={16}
+                            className="text-green-600 dark:text-green-400"
+                          />
+                        )}
+                      </button>
                     </div>
-                    {item.badge ? (
-                      <span className="bg-yellow-100 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                        {item.badge}
-                      </span>
-                    ) : null}
-                  </NavLink>
-                ))}
+                    <div className="p-1 border-b border-gray-100 dark:border-[#2A2F3A]">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowCompanySwitch(true);
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Building2 size={16} />
+                          <span>Trocar de Empresa</span>
+                        </div>
+                        <ChevronLeft size={16} className="rotate-180" />
+                      </button>
+                    </div>
+                    <div className="p-1">
+                      <button
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          setIsProfileModalOpen(true);
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] transition-colors"
+                      >
+                        <Settings size={16} />
+                        <span>Editar Perfil</span>
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
-            </div>
-          ))}
-        </nav>
-
-        <div className="p-4 flex flex-col gap-2 relative border-t border-gray-100 dark:border-[#2A2F3A]">
-          <div className="mx-2 mb-1 p-3 bg-white dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A]/80 shadow-sm dark:shadow-none rounded-2xl flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-gray-50 dark:bg-[#27272a] border border-gray-100 dark:border-[#2A2F3A] flex items-center justify-center text-gray-500 dark:text-[#a1a1aa]">
-                {theme === "dark" ? <Moon size={15} /> : <Sun size={15} />}
-              </div>
-              <span className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa]">
-                Modo Escuro
-              </span>
-            </div>
-            <button
-              onClick={toggleTheme}
+            )}
+            <div
+              onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
               className={cn(
-                "relative w-10 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#121213]",
-                theme === "dark" ? "bg-blue-600" : "bg-gray-200",
+                "flex items-center justify-between px-3 py-3 rounded-xl border transition-colors cursor-pointer shadow-sm dark:shadow-none relative",
+                isProfileMenuOpen
+                  ? "border-blue-200 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20/50"
+                  : "border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#09090b] hover:bg-gray-50 dark:hover:bg-[#3f3f46]",
               )}
             >
-              <div
+              <div className="flex items-center gap-3">
+                {currentUser?.photoURL || currentUser?.avatar ? (
+                  <img
+                    src={currentUser.photoURL || currentUser.avatar}
+                    alt={currentUser.name}
+                    className="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 object-cover shrink-0"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                    {currentUser?.name?.substring(0, 2).toUpperCase() || "AD"}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0 pr-2">
+                  <p className="text-sm font-bold text-gray-900 dark:text-[#fafafa] truncate">
+                    {currentUser?.name}
+                  </p>
+                  <p className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold truncate leading-tight mt-0.5">
+                    Administrador
+                  </p>
+                </div>
+              </div>
+              <ChevronDown
+                size={16}
                 className={cn(
-                  "absolute top-1 left-1 w-4 h-4 rounded-full bg-white dark:bg-[#09090b] shadow-sm transition-transform",
-                  theme === "dark" ? "translate-x-4" : "",
+                  "text-gray-400 transition-transform duration-200",
+                  isProfileMenuOpen
+                    ? "rotate-180 text-blue-600 dark:text-blue-400"
+                    : "",
                 )}
               />
+            </div>
+          </div>
+
+          <nav className="flex-1 px-4 py-6 space-y-6 overflow-y-auto">
+            {navGroups.map((group, idx) => (
+              <div key={idx}>
+                {group.title && (
+                  <h3 className="px-4 text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest mb-3">
+                    {group.title}
+                  </h3>
+                )}
+                <div className="space-y-1">
+                  {group.items.map((item) => (
+                    <NavLink
+                      key={item.path}
+                      to={item.path}
+                      end={(item as any).exact}
+                      onClick={() => setIsMobileMenuOpen(false)}
+                      className={({ isActive }) =>
+                        cn(
+                          "flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-medium transition-colors",
+                          isActive
+                            ? "bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-700 dark:text-green-400"
+                            : "text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5]",
+                        )
+                      }
+                    >
+                      <div className="flex items-center gap-3">
+                        <item.icon size={18} strokeWidth={2} />
+                        {item.label}
+                      </div>
+                      {item.badge ? (
+                        <span className="bg-yellow-100 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                          {item.badge}
+                        </span>
+                      ) : null}
+                    </NavLink>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </nav>
+
+          <div className="p-4 flex flex-col gap-2 relative border-t border-gray-100 dark:border-[#2A2F3A]">
+            <div className="mx-2 mb-1 p-3 bg-white dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A]/80 shadow-sm dark:shadow-none rounded-2xl flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-gray-50 dark:bg-[#27272a] border border-gray-100 dark:border-[#2A2F3A] flex items-center justify-center text-gray-500 dark:text-[#a1a1aa]">
+                  {theme === "dark" ? <Moon size={15} /> : <Sun size={15} />}
+                </div>
+                <span className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa]">
+                  Modo Escuro
+                </span>
+              </div>
+              <button
+                onClick={toggleTheme}
+                className={cn(
+                  "relative w-10 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#121213]",
+                  theme === "dark" ? "bg-blue-600" : "bg-gray-200",
+                )}
+              >
+                <div
+                  className={cn(
+                    "absolute top-1 left-1 w-4 h-4 rounded-full bg-white dark:bg-[#09090b] shadow-sm transition-transform",
+                    theme === "dark" ? "translate-x-4" : "",
+                  )}
+                />
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                navigate("/admin/senior");
+                setIsMobileMenuOpen(false);
+              }}
+              className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
+            >
+              <Crown size={18} />
+              Painel Senior
+            </button>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
+            >
+              <LogOut size={18} />
+              Sair
             </button>
           </div>
-          <button
-            onClick={() => {
-              navigate("/admin/senior");
-              setIsMobileMenuOpen(false);
-            }}
-            className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
-          >
-            <Crown size={18} />
-            Painel Senior
-          </button>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
-          >
-            <LogOut size={18} />
-            Sair
-          </button>
-        </div>
-      </aside>
+        </aside>
 
-      {/* Main Content Viewport */}
-      <main className="flex-1 min-w-0 lg:ml-64 flex flex-col min-h-[calc(100vh-3.5rem)] md:min-h-[calc(100vh-4rem)] max-w-full">
-        <div className="p-4 sm:p-6 md:p-10 flex-1">
-          <div className="max-w-6xl mx-auto">
-            {!activeCompanyId &&
-            companies.length > 0 &&
-            !location.pathname.includes("/admin/fleet") ? (
-              <div className="text-center py-20 bg-white dark:bg-[#09090b] rounded-3xl border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] mb-2">
-                  Selecione uma Frota
-                </h2>
-                <p className="text-gray-500 dark:text-[#a1a1aa] mb-6">
-                  Você precisa selecionar uma frota ativa na página de Gestão da
-                  Frota para continuar.
-                </p>
-                <button
-                  onClick={() =>
-                    navigate("/admin/fleet", {
-                      state: { activeTab: "operations" },
-                    })
-                  }
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
-                >
-                  Ir para Gestão da Frota
-                </button>
-              </div>
-            ) : !activeCompanyId &&
-              companies.length === 0 &&
+        {/* Main Content Viewport */}
+        <main className="flex-1 min-w-0 lg:ml-64 flex flex-col min-h-[calc(100vh-3.5rem)] md:min-h-[calc(100vh-4rem)] max-w-full">
+          <div className="p-4 sm:p-6 md:p-10 flex-1">
+            <div className="max-w-6xl mx-auto">
+              {!activeCompanyId &&
+              companies.length > 0 &&
               !location.pathname.includes("/admin/fleet") ? (
-              <div className="text-center py-20 bg-white dark:bg-[#09090b] rounded-3xl border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
-                <div className="mx-auto w-16 h-16 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-500 flex items-center justify-center rounded-full mb-4">
-                  <Truck size={32} />
+                <div className="text-center py-12 bg-white dark:bg-[#09090b] rounded-3xl border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] mb-2">
+                    Selecione uma Frota
+                  </h2>
+                  <p className="text-gray-500 dark:text-[#a1a1aa] mb-6">
+                    Você precisa selecionar uma frota ativa na página de Gestão
+                    da Frota para continuar.
+                  </p>
+                  <button
+                    onClick={() =>
+                      navigate("/admin/fleet", {
+                        state: { activeTab: "operations" },
+                      })
+                    }
+                    className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
+                  >
+                    Ir para Gestão da Frota
+                  </button>
                 </div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] mb-2">
-                  Nenhuma frota cadastrada
-                </h2>
-                <p className="text-gray-500 dark:text-[#a1a1aa] mb-6">
-                  Crie sua primeira empresa/frota para começar a gerenciar.
-                </p>
-                <button
-                  onClick={() =>
-                    navigate("/admin/fleet", {
-                      state: { activeTab: "operations" },
-                    })
-                  }
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
-                >
-                  Criar Primeira Frota
-                </button>
-              </div>
-            ) : (
-              <Outlet />
-            )}
+              ) : !activeCompanyId &&
+                companies.length === 0 &&
+                !location.pathname.includes("/admin/fleet") ? (
+                <div className="text-center py-12 bg-white dark:bg-[#09090b] rounded-3xl border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
+                  <div className="mx-auto w-16 h-16 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-500 flex items-center justify-center rounded-full mb-4">
+                    <Truck size={32} />
+                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] mb-2">
+                    Nenhuma frota cadastrada
+                  </h2>
+                  <p className="text-gray-500 dark:text-[#a1a1aa] mb-6">
+                    Crie sua primeira empresa/frota para começar a gerenciar.
+                  </p>
+                  <button
+                    onClick={() =>
+                      navigate("/admin/fleet", {
+                        state: { activeTab: "operations" },
+                      })
+                    }
+                    className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
+                  >
+                    Criar Primeira Frota
+                  </button>
+                </div>
+              ) : (
+                <Outlet />
+              )}
+            </div>
           </div>
-        </div>
-      </main>
+        </main>
       </div>
 
       <ProfileModal

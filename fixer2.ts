@@ -1,13 +1,14 @@
-import fs from 'fs';
+import fs from "fs";
 
-const file = 'src/pages/admin/Operations.tsx';
-let txt = fs.readFileSync(file, 'utf8');
+const file = "src/pages/admin/Operations.tsx";
+let txt = fs.readFileSync(file, "utf8");
 
-const sIdx = txt.indexOf('             {filteredJobs.map(job => {');
-const eIdxStr = '                 </div>\n               )\n             })}\n           </div>\n         )}\n      </div>';
+const sIdx = txt.indexOf("             {filteredJobs.map(job => {");
+const eIdxStr =
+  "                 </div>\n               )\n             })}\n           </div>\n         )}\n      </div>";
 const eIdx = txt.indexOf(eIdxStr);
 
-if(sIdx > -1 && eIdx > -1) {
+if (sIdx > -1 && eIdx > -1) {
   const replacement = `             {filteredJobs.map(job => {
                const isSelected = selectedJobId === job.id;
                const progressPct = Math.round((job.progress / Math.max(1, job.contract!.totalDeliveries)) * 100) || 0;
@@ -105,10 +106,11 @@ if(sIdx > -1 && eIdx > -1) {
            </div>
          )}
       </div>`;
-  
-  txt = txt.substring(0, sIdx) + replacement + txt.substring(eIdx + eIdxStr.length);
-  fs.writeFileSync(file, txt, 'utf8');
-  console.log('SUCCESS');
+
+  txt =
+    txt.substring(0, sIdx) + replacement + txt.substring(eIdx + eIdxStr.length);
+  fs.writeFileSync(file, txt, "utf8");
+  console.log("SUCCESS");
 } else {
-  console.log('FAILED', sIdx, eIdx);
+  console.log("FAILED", sIdx, eIdx);
 }

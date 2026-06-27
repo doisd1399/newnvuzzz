@@ -98,12 +98,14 @@ export interface RecruitmentSettings {
   rules: string;
   howItWorks: string;
   benefits: string;
+  isActive?: boolean;
 }
 
 export interface RecruitmentApplication {
   id: string;
   userId?: string;
   companyId: string;
+  simulatorId?: string;
   photoURL: string;
   fullName: string;
   whatsapp: string;
@@ -123,7 +125,7 @@ export interface CompanyProfile {
   userId?: string;
   ownerId?: string;
   companyName: string;
-  fleetName: string;
+  fleetName?: string; // Fallback temporário
   simulatorName: string;
   ownerName: string;
   cnpj: string;
@@ -156,12 +158,16 @@ export interface Job {
   driverId: string;
   vehicleId: string;
   trailerId?: string;
-  status: "pending" | "active" | "completed" | "cancelled";
+  status: "pending" | "active" | "completed" | "cancelled" | "awaiting_completion";
   progress: number; // Num of completed deliveries
   completedRoutes?: { origin: string; destination: string }[]; // For simple mode deliveries
-  deadlineDate: string; // ISO String
+  deadlineDate: string; // ISO String (legacy fallback)
   createdAt?: string;
+  assignedAt?: string;
+  dueAt?: string;
   completedAt?: string;
+  completionStatus?: "on_time" | "late";
+  completionTimeOffset?: string;
 }
 
 export interface JobDemand {
@@ -360,17 +366,28 @@ interface AppContextType {
   removeDriverFromFleet: (driverId: string) => Promise<void>;
   updateUserOnlineStatus: (isOnline: boolean) => Promise<void>;
   authInitialized: boolean;
+  membershipsLoaded: boolean;
 
   users: User[];
   vehicles: Vehicle[];
   trailers: Trailer[];
   contracts: Contract[];
   jobs: Job[];
+  historicoTrips: any[];
   jobDemands: JobDemand[];
   companies: CompanyProfile[];
+  allCompanies: CompanyProfile[];
   activeCompanyId: string | null;
   setActiveCompanyId: (id: string | null) => void;
   recruitmentApplications: RecruitmentApplication[];
+
+  // Global Ranking Filters
+  globalPeriodPreset: "semana" | "mes" | "custom";
+  setGlobalPeriodPreset: (p: "semana" | "mes" | "custom") => void;
+  globalStartDateStr: string;
+  setGlobalStartDateStr: (s: string) => void;
+  globalEndDateStr: string;
+  setGlobalEndDateStr: (s: string) => void;
 
   // Actions
   updateRecruitmentSettings: (
@@ -404,16 +421,6 @@ interface AppContextType {
     customDeadlineDays?: number,
   ) => void;
   startJob: (jobId: string) => Promise<void>;
-  markDeliveryComplete: (
-    jobId: string,
-    route?: { origin: string; destination: string },
-  ) => Promise<void>;
-  updateDeliveryRoute: (
-    jobId: string,
-    index: number,
-    route: { origin: string; destination: string },
-  ) => Promise<void>;
-  unmarkDelivery: (jobId: string) => Promise<void>;
   finishJob: (jobId: string) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   deleteJob: (jobId: string) => Promise<void>;
@@ -449,6 +456,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null); // Start in login flow
   const [authInitialized, setAuthInitialized] = useState(false);
+  const [membershipsLoaded, setMembershipsLoaded] = useState(false);
   const [memberships, setMemberships] = useState<CompanyMember[]>([]);
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(() => {
     return localStorage.getItem("activeCompanyId");
@@ -456,6 +464,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [activeRole, setActiveRole] = useState<Role | null>(() => {
     return localStorage.getItem("activeRole") as Role | null;
   });
+
+  const [globalPeriodPreset, setGlobalPeriodPreset] = useState<"semana" | "mes" | "custom">("mes");
+  const [globalStartDateStr, setGlobalStartDateStr] = useState<string>("");
+  const [globalEndDateStr, setGlobalEndDateStr] = useState<string>("");
 
   // Observe auth state initially
   useEffect(() => {
@@ -518,7 +530,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         setDriverRequests([]);
         setNotifications([]);
         setRecruitmentApplications([]);
-        
+
         localStorage.removeItem("activeCompanyId");
         localStorage.removeItem("activeRole");
         // Clear anything else that might be lingering
@@ -543,6 +555,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [historicoTrips, setHistoricoTrips] = useState<any[]>([]);
   const [jobDemands, setJobDemands] = useState<JobDemand[]>([]);
   const [companies, setCompanies] = useState<CompanyProfile[]>([]);
   const [driverRequests, setDriverRequests] = useState<DriverRequest[]>([]);
@@ -573,9 +586,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     const unsubCompanies = onSnapshot(
       collection(db, "frotas"),
       (snap) => {
-        const data = snap.docs.map(
-          (doc) => ({ ...doc.data(), id: doc.id }) as CompanyProfile,
-        );
+        const data = snap.docs.map((doc) => {
+          const raw = doc.data();
+          return {
+            ...raw,
+            id: doc.id,
+            companyName: raw.companyName || raw.fleetName || "Sem Nome",
+          } as CompanyProfile;
+        });
         setCompanies(data);
       },
       (error) => {
@@ -589,6 +607,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     if (!currentUser || !currentUser.id) {
       setMemberships([]);
+      setMembershipsLoaded(true);
       return;
     }
     const q = query(
@@ -702,13 +721,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
                 });
               }
               setMemberships(mockMemberships);
+              setMembershipsLoaded(true);
             });
         } else {
           setMemberships(fetchedMemberships);
+          setMembershipsLoaded(true);
         }
       },
       (err) => {
         console.error("Error fetching memberships", err);
+        setMembershipsLoaded(true);
       },
     );
     return () => unsub();
@@ -773,9 +795,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     return (
       currentMembership?.status === "active" ||
-      currentMembership?.roles?.includes("admin") ||
-      currentUser.status === "active" ||
-      currentUser.role === "admin"
+      currentMembership?.roles?.includes("admin") === true
     );
   }, [currentUser, memberships, activeCompanyId]);
 
@@ -803,6 +823,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     let unsubDemands: () => void = () => {};
     let unsubUsers: () => void = () => {};
     let unsubAllCompanyMembers: () => void = () => {};
+    let unsubTrips: (() => void) | undefined;
 
     const handleSnapError = (prefix: string) => (error: any) => {
       if (error.code !== "permission-denied") {
@@ -896,6 +917,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         },
         handleSnapError("Error fetching trabalhos snap"),
       );
+
+      const tripsQuery = targetCompanyId
+        ? query(
+            collection(db, "historico_viagens"),
+            where("empresaId", "==", targetCompanyId),
+          )
+        : null;
+
+      if (tripsQuery) {
+        unsubTrips = onSnapshot(
+          tripsQuery,
+          (snap) => {
+            setHistoricoTrips(snap.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+          },
+          handleSnapError("Error fetching historico_viagens snap"),
+        );
+      }
 
       const demandsQuery =
         activeRole === "admin"
@@ -1092,6 +1130,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubTrailers();
       unsubContracts();
       unsubJobs();
+      if (unsubTrips) unsubTrips();
       unsubUsers();
       unsubAllCompanyMembers();
       unsubDriverRequests();
@@ -1189,6 +1228,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     data: Omit<RecruitmentApplication, "id" | "status" | "createdAt">,
   ) => {
     try {
+      if (data.userId || data.email) {
+        // Validate if owner
+        const targetCompany = companies.find((c) => c.id === data.companyId);
+        if (targetCompany && targetCompany.ownerId === data.userId) {
+          throw new Error("Você é proprietário desta empresa e não pode se inscrever como motorista.");
+        }
+
+        // Validate if member
+        const memQ = query(collection(db, "company_members"), where("userId", "==", data.userId), where("companyId", "==", data.companyId), where("status", "==", "active"));
+        const memQs = await getDocs(memQ);
+        if (!memQs.empty) {
+          throw new Error("Você já faz parte desta empresa e não precisa enviar uma nova inscrição.");
+        }
+
+        let checkQ;
+        if (data.userId) {
+          checkQ = query(
+            collection(db, "recruitment_applications"),
+            where("userId", "==", data.userId),
+            where("companyId", "==", data.companyId),
+            where("status", "in", ["pending", "approved"])
+          );
+        } else {
+          // Fallback to email if userId isn't defined yet
+          checkQ = query(
+            collection(db, "recruitment_applications"),
+            where("email", "==", data.email.trim().toLowerCase()),
+            where("companyId", "==", data.companyId),
+            where("status", "in", ["pending", "approved"])
+          );
+        }
+
+        const checkQs = await getDocs(checkQ);
+        const existingApps = checkQs.docs.filter((d) => (d.data() as RecruitmentApplication).simulatorId === data.simulatorId);
+
+        if (existingApps.length > 0) {
+          throw new Error("Você já enviou uma inscrição para esta empresa neste simulador.");
+        }
+      }
+
       // Don't enforce current user auth - this is a public form
       await addDoc(collection(db, "recruitment_applications"), {
         ...data,
@@ -1465,7 +1544,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       await addDoc(collection(db, "contratos"), {
         ...data,
         simulator: activeCompany.simulatorName, // Auto-populate simulator
-        companyName: activeCompany.fleetName || activeCompany.companyName, // Auto-populate company name
+        companyName: activeCompany.companyName, // Auto-populate company name
         userId: uid,
         companyId: activeCompanyId,
         status: "active",
@@ -1535,7 +1614,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         driverId,
         vehicleId,
         trailerId: trailerId || null,
-        deadlineISO
+        deadlineISO,
       });
 
       await addDoc(collection(db, "trabalhos"), {
@@ -1554,8 +1633,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         trailerId: trailerId || null,
         status: "pending",
         progress: 0,
-        deadlineDate: deadlineISO,
-        createdAt: new Date().toISOString(),
+        deadlineDate: deadlineISO, // Legacy fallback
+        createdAt: new Date().toISOString(), // Legacy fallback
+        assignedAt: new Date().toISOString(),
+        dueAt: deadlineISO,
       });
 
       // Update vehicle status
@@ -1590,84 +1671,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const markDeliveryComplete = async (
-    jobId: string,
-    route?: { origin: string; destination: string },
-  ) => {
-    try {
-      getCurrentUserId();
-      const job = jobs.find((j) => j.id === jobId);
-      if (!job) return;
-      const contract = contracts.find((c) => c.id === job.contractId);
-      if (contract && job.progress < contract.totalDeliveries) {
-        const updates: any = { progress: job.progress + 1 };
-        if (job.status === "pending") {
-          updates.status = "active";
-        }
-        if (route && contract.mode === "simple") {
-          const existingRoutes = job.completedRoutes || [];
-          updates.completedRoutes = [...existingRoutes, route];
-        }
-        await updateDoc(doc(db, "trabalhos", jobId), updates);
-      }
-    } catch (e) {
-      handleFirebaseError(e);
-    }
-  };
-
-  const updateDeliveryRoute = async (
-    jobId: string,
-    index: number,
-    route: { origin: string; destination: string },
-  ) => {
-    try {
-      getCurrentUserId();
-      const job = jobs.find((j) => j.id === jobId);
-      if (!job) return;
-      const existingRoutes = [...(job.completedRoutes || [])];
-
-      if (index >= 0 && index < job.progress) {
-        // Pad array if needed so we don't have holes
-        while (existingRoutes.length <= index) {
-          existingRoutes.push({
-            origin: "Ponto de Coleta",
-            destination: `Destino ${existingRoutes.length + 1}`,
-          });
-        }
-        existingRoutes[index] = route;
-        await updateDoc(doc(db, "trabalhos", jobId), {
-          completedRoutes: existingRoutes,
-        });
-      }
-    } catch (e) {
-      handleFirebaseError(e);
-    }
-  };
-
-  const unmarkDelivery = async (jobId: string) => {
-    try {
-      getCurrentUserId();
-      const job = jobs.find((j) => j.id === jobId);
-      if (job && job.progress > 0) {
-        const updates: any = { progress: job.progress - 1 };
-        if (updates.progress === 0 && job.status === "active") {
-          updates.status = "pending";
-        }
-        if (job.completedRoutes && job.completedRoutes.length > 0) {
-          updates.completedRoutes = job.completedRoutes.slice(0, -1);
-        }
-        await updateDoc(doc(db, "trabalhos", jobId), updates);
-      }
-    } catch (e) {
-      handleFirebaseError(e);
-    }
-  };
-
   const finishJob = async (jobId: string) => {
     try {
       getCurrentUserId();
-      await updateDoc(doc(db, "trabalhos", jobId), { status: "completed" });
       const job = jobs.find((j) => j.id === jobId);
+      let completionStatus: "on_time" | "late" = "on_time";
+      let completionTimeOffset = "";
+      const now = new Date();
+      
+      const referenceDueAt = job?.dueAt || job?.deadlineDate; // but dueAt is the architectural source for new
+      
+      if (referenceDueAt) {
+        const deadline = new Date(referenceDueAt);
+        const diffMs = deadline.getTime() - now.getTime();
+        
+        const formatTimeDiff = (ms: number) => {
+            const absMs = Math.abs(ms);
+            const d = Math.floor(absMs / (1000 * 60 * 60 * 24));
+            const h = Math.floor((absMs / (1000 * 60 * 60)) % 24);
+            
+            let text = "";
+            if (d > 0) text += `${d} dia${d > 1 ? 's' : ''}`;
+            if (h > 0) text += `${text ? ' e ' : ''}${h} hora${h > 1 ? 's' : ''}`;
+            if (d === 0 && h === 0) {
+              const m = Math.floor((absMs / 1000 / 60) % 60);
+              if (m > 0) text = `${m} minuto${m > 1 ? 's' : ''}`;
+            }
+            return text || "menos de 1 minuto";
+        };
+
+        if (diffMs >= 0) {
+            completionStatus = "on_time";
+            completionTimeOffset = `Restavam ${formatTimeDiff(diffMs)} para o prazo final.`;
+        } else {
+            completionStatus = "late";
+            completionTimeOffset = `Prazo excedido em ${formatTimeDiff(diffMs)}.`;
+        }
+      }
+
+      await updateDoc(doc(db, "trabalhos", jobId), { 
+        status: "completed",
+        completedAt: now.toISOString(),
+        completionStatus,
+        completionTimeOffset
+      });
       if (job) {
         if (job.vehicleId) {
           try {
@@ -1688,7 +1735,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
       }
-      alert("Trabalho finalizado com sucesso!");
+      // removed alert
     } catch (e) {
       console.error(e);
       handleFirebaseError(e);
@@ -1702,7 +1749,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         "[cancelJob] INICIO - Solicitando cancelamento para o jobId:",
         jobId,
       );
-      toast.info("[cancelJob] Iniciando cancelamento...");
       if (!jobId) {
         console.error("[cancelJob] ERRO: jobId é nulo ou indefinido!");
         toast.error("Erro: ID do trabalho ausente.");
@@ -1723,7 +1769,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       console.log(
         "[cancelJob] Referência do documento criada, chamando updateDoc...",
       );
-      toast.info("[cancelJob] Documento encontrado, atualizando status...");
 
       // Salva snapshot antigo para caso de rollback
       prevJobState = jobs.find((j) => j.id === jobId);
@@ -1737,7 +1782,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
       await updateDoc(docRef, { status: "cancelled" });
       console.log("[cancelJob] updateDoc 'trabalhos' concluído com sucesso.");
-      toast.info("[cancelJob] Status atualizado. Liberando veículos...");
 
       const job = prevJobState || jobs.find((j) => j.id === jobId);
       if (job) {
@@ -1752,10 +1796,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             await updateDoc(doc(db, "veiculos", job.vehicleId), {
               status: "available",
             });
-            toast.success("Veículo liberado.");
           } catch (err) {
             console.error("[cancelJob] Ignorado erro ao liberar veiculo", err);
-            toast.error("Erro liberando veículo: " + String(err));
           }
         }
         if (job.trailerId) {
@@ -1763,10 +1805,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             await updateDoc(doc(db, "reboques", job.trailerId), {
               status: "available",
             });
-            toast.success("Reboque liberado.");
           } catch (err) {
             console.error("[cancelJob] Ignorado erro ao liberar reboque", err);
-            toast.error("Erro liberando reboque: " + String(err));
           }
         }
       } else {
@@ -1890,7 +1930,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         await addDoc(collection(db, "notificacoes"), {
           userId: activeCompany.userId, // Send to the company owner
           titulo: "Nova Solicitação",
-          mensagem: `${currentUser?.name} solicitou entrada na frota ${activeCompany.fleetName}.`,
+          mensagem: `${currentUser?.name} solicitou entrada na empresa ${activeCompany.companyName}.`,
           tipo: "solicitacao",
           lida: false,
           createdAt: new Date().toISOString(),
@@ -1962,7 +2002,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       await addDoc(collection(db, "notificacoes"), {
         userId: req.motoristaId,
         titulo: "Solicitação Aprovada",
-        mensagem: `Sua solicitação para a frota ${company?.fleetName || ""} foi aprovada!`,
+        mensagem: `Sua solicitação para a empresa ${company?.companyName || ""} foi aprovada!`,
         tipo: "aprovado",
         lida: false,
         createdAt: new Date().toISOString(),
@@ -1989,7 +2029,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       await addDoc(collection(db, "notificacoes"), {
         userId: req.motoristaId,
         titulo: "Solicitação Recusada",
-        mensagem: `Sua solicitação para a frota ${company?.fleetName || ""} foi recusada.`,
+        mensagem: `Sua solicitação para a empresa ${company?.companyName || ""} foi recusada.`,
         tipo: "recusado",
         lida: false,
         createdAt: new Date().toISOString(),
@@ -2453,8 +2493,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (error) {
       console.error("Error during logOutApp signOut:", error);
     }
-    // State is automatically cleared by the onAuthStateChanged listener,
-    // but we can ensure localStorage/sessionStorage is also cleared directly here if needed.
+    
+    // Clear global state explicitly
+    setCurrentUser(null);
+    setActiveCompanyId(null);
+    setActiveRole(null);
+    setMemberships([]);
+    setAllCompanyMembers([]);
+    setUsers([]);
+    setFetchedMissingUsers([]);
+    setVehicles([]);
+    setTrailers([]);
+    setContracts([]);
+    setJobs([]);
+    setJobDemands([]);
+    setDriverRequests([]);
+    setNotifications([]);
+    setRecruitmentApplications([]);
+
+    // Clear session and local storage
     sessionStorage.clear();
     localStorage.removeItem("activeCompanyId");
     localStorage.removeItem("activeRole");
@@ -2580,6 +2637,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       currentUser,
       setCurrentUser,
       authInitialized,
+      membershipsLoaded,
       users: combinedUsers,
       allCompanyMembers,
       activeRole,
@@ -2588,11 +2646,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       trailers: trailers.filter((t) => t.companyId === activeCompanyId),
       contracts: contracts.filter((c) => c.companyId === activeCompanyId),
       jobs: jobs.filter((j) => j.companyId === activeCompanyId),
+      historicoTrips: historicoTrips.filter(t => t.empresaId === activeCompanyId),
       jobDemands: jobDemands.filter(
         (jd) =>
           jd.companyId === activeCompanyId || jd.driverId === currentUser?.id,
       ),
-      companies,
+      companies: companies.filter(c => memberships?.some(m => m.companyId === c.id)),
+      allCompanies: companies,
       activeCompanyId,
       setActiveCompanyId,
       driverRequests: driverRequests.filter(
@@ -2617,9 +2677,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       deleteContract,
       assignJob,
       startJob,
-      markDeliveryComplete,
-      updateDeliveryRoute,
-      unmarkDelivery,
       finishJob,
       cancelJob,
       deleteJob,
@@ -2650,6 +2707,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       approveRecruitmentApplication,
       rejectRecruitmentApplication,
       deleteRecruitmentApplication,
+      globalPeriodPreset,
+      setGlobalPeriodPreset,
+      globalStartDateStr,
+      setGlobalStartDateStr,
+      globalEndDateStr,
+      setGlobalEndDateStr,
     };
   }, [
     currentUser,
@@ -2661,6 +2724,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     trailers,
     contracts,
     jobs,
+    historicoTrips,
     jobDemands,
     companies,
     activeCompanyId,
@@ -2669,6 +2733,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     recruitmentApplications,
     activeRole,
     memberships,
+    globalPeriodPreset,
+    globalStartDateStr,
+    globalEndDateStr,
   ]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

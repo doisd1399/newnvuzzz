@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { PhotoProvider, PhotoView } from 'react-photo-view';
+import 'react-photo-view/dist/react-photo-view.css';
 import {
   ArrowLeft,
   Filter,
@@ -23,6 +25,9 @@ import {
   ArrowRight,
   DollarSign,
   ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronsDownUp,
 } from "lucide-react";
 
 import { cn } from "../../lib/utils";
@@ -57,6 +62,8 @@ export interface TripRecord {
   reboqueId: string;
   reboqueNome: string;
 
+  simuladorNome?: string;
+
   origem: string;
   destino: string;
   valor: number;
@@ -65,7 +72,70 @@ export interface TripRecord {
   criadoPor: string;
   dataLancamento: any;
   createdAt: any;
+  completedAt?: any;
+  dataFechamento?: any;
+  date?: any;
 }
+
+// --- Image Caching & Preloading Module ---
+const imageCacheMap = new Map<string, string>();
+const preloadQueue = new Set<string>();
+
+export const preloadComprovante = async (url: string): Promise<string> => {
+  if (!url) return "";
+  if (imageCacheMap.has(url)) return imageCacheMap.get(url)!;
+  if (preloadQueue.has(url)) {
+    // Se já está na fila, retornamos a própria url como fallback temporário
+    return url;
+  }
+
+  preloadQueue.add(url);
+  try {
+    const response = await fetch(url, { mode: "cors", credentials: "omit" });
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    imageCacheMap.set(url, objectUrl);
+    preloadQueue.delete(url);
+    return objectUrl;
+  } catch (err) {
+    // Fallback silencioso (talvez erro de CORS), salva a url direta para usar cache do navegador
+    const img = new Image();
+    img.src = url;
+    imageCacheMap.set(url, url);
+    preloadQueue.delete(url);
+    return url;
+  }
+};
+
+const CachedImageViewer = React.memo(({ url, alt, className }: { url: string; alt?: string; className?: string }) => {
+  const [displayUrl, setDisplayUrl] = useState<string>(imageCacheMap.get(url) || url);
+
+  useEffect(() => {
+    let active = true;
+    if (!imageCacheMap.has(url)) {
+      preloadComprovante(url).then(cachedObjUrl => {
+        if (active && cachedObjUrl) setDisplayUrl(cachedObjUrl);
+      });
+    } else {
+      setDisplayUrl(imageCacheMap.get(url)!);
+    }
+    return () => { active = false; };
+  }, [url]);
+
+  return (
+    <PhotoProvider>
+      <PhotoView src={displayUrl}>
+        <img
+          src={displayUrl}
+          alt={alt || "Comprovante"}
+          className={className}
+        />
+      </PhotoView>
+    </PhotoProvider>
+  );
+});
+// -----------------------------------------
+
 
 const DateRangeCalendar = ({
   startDate,
@@ -237,9 +307,313 @@ const DateRangeCalendar = ({
   );
 };
 
-export default function TripHistory() {
+const TripListItem = React.memo(({
+  trip,
+  comp,
+  isExpanded,
+  toggleExpand,
+  setSelectedTrip,
+  setEditingTrip,
+  setDeletingTrip,
+  canEdit,
+  canDelete,
+  formatCurrency,
+  formatDate,
+  formatTime
+}: {
+  trip: TripRecord;
+  comp: any;
+  isExpanded: boolean;
+  toggleExpand: (id: string) => void;
+  setSelectedTrip: (t: TripRecord) => void;
+  setEditingTrip: (t: TripRecord) => void;
+  setDeletingTrip: (t: TripRecord) => void;
+  canEdit: boolean;
+  canDelete: boolean;
+  formatCurrency: (v: number) => string;
+  formatDate: (d: any) => string;
+  formatTime: (d: any) => string;
+}) => {
+  const getCompanyColor = (name: string) => {
+    const colors = [
+      "bg-green-500",
+      "bg-blue-500",
+      "bg-purple-500",
+      "bg-orange-500",
+      "bg-pink-500",
+    ];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++)
+      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return colors[Math.abs(hash) % colors.length];
+  };
+
+  const getInitials = (name: string) => {
+    if (!name) return "E";
+    const parts = name.trim().split(" ");
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
+  };
+
+  return (
+    <div
+      onClick={() => toggleExpand(trip.id)}
+      className={cn(
+        "group relative bg-white dark:bg-[#121213] p-2 sm:p-2.5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-[0_1px_8px_-4px_rgba(0,0,0,0.05)] flex flex-col cursor-pointer transition-all hover:border-gray-200 dark:hover:border-gray-700 w-full"
+      )}
+    >
+      {/* Top Bar */}
+      <div className="flex items-center justify-between pb-1.5">
+        <div className="flex items-center gap-2 min-w-0">
+          {comp?.logoUrl ? (
+            <img
+              src={comp.logoUrl}
+              alt={trip.empresaNome || "Empresa"}
+              className="w-7 h-7 rounded-lg object-cover shrink-0"
+            />
+          ) : (
+            <div
+              className={cn(
+                "w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 text-[11px] font-bold tracking-wide",
+                getCompanyColor(trip.empresaNome || "Empresa"),
+              )}
+            >
+              {getInitials(trip.empresaNome || "Empresa")}
+            </div>
+          )}
+          <div className="flex flex-col min-w-0">
+            <span className="text-[13px] font-bold text-gray-900 dark:text-white leading-tight break-words whitespace-normal line-clamp-2">
+              {trip.empresaNome}
+            </span>
+            <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+              Contrato #
+              {trip.contratoNumero ||
+                trip.contratoId?.substring(0, 4) ||
+                "-"}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center justify-end shrink-0 ml-2">
+          <CalendarIcon
+            size={10}
+            className="text-gray-400 shrink-0"
+          />
+          <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400 ml-1 whitespace-nowrap">
+            {formatDate(trip.createdAt || trip.dataLancamento)} &bull;{" "}
+            {formatTime(trip.createdAt || trip.dataLancamento)}
+          </span>
+        </div>
+      </div>
+
+      <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
+
+      {/* Middle Grid Row 1 */}
+      <div className="grid grid-cols-2 py-1 sm:py-1.5 relative">
+        <div className="flex items-center gap-2 pr-2 min-w-0">
+          <User
+            size={12}
+            className="text-gray-500 dark:text-gray-400 shrink-0"
+          />
+          <div className="flex flex-col min-w-0">
+            <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+              Motorista
+            </span>
+            <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
+              {trip.motoristaNome}
+            </span>
+          </div>
+        </div>
+
+        {/* Vertical Divider */}
+        <div className="absolute left-[50%] top-1.5 bottom-1.5 w-px bg-gray-50 dark:bg-gray-800/60" />
+
+        <div className="flex items-center gap-2 pl-3 min-w-0">
+          <Gamepad2
+            size={12}
+            className="text-gray-500 dark:text-gray-400 shrink-0"
+          />
+          <div className="flex flex-col min-w-0">
+            <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+              Simulador
+            </span>
+            <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
+              {trip.simuladorNome || "-"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="flex flex-col animate-in fade-in slide-in-from-top-1 duration-200">
+          <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
+
+          {/* Middle Grid Row 2 */}
+          <div className="grid grid-cols-2 py-1 sm:py-1.5 relative">
+            <div className="flex items-center gap-2 pr-2 min-w-0">
+              <Truck
+                size={12}
+                className="text-gray-500 dark:text-gray-400 shrink-0"
+              />
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+                  Veículo
+                </span>
+                <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
+                  {trip.veiculoNome || "-"}
+                </span>
+              </div>
+            </div>
+
+            {/* Vertical Divider */}
+            <div className="absolute left-[50%] top-1.5 bottom-1.5 w-px bg-gray-50 dark:bg-gray-800/60" />
+
+            <div className="flex items-center gap-2 pl-3 min-w-0">
+              <Package
+                size={12}
+                className="text-gray-500 dark:text-gray-400 shrink-0"
+              />
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+                  Reboque
+                </span>
+                <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
+                  {trip.reboqueNome || "-"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
+
+          {/* Origin -> Destination */}
+          <div className="flex items-center gap-2 py-1 sm:py-1.5">
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              <MapPin
+                size={12}
+                className="text-green-500 fill-green-500 shrink-0"
+              />
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+                  Origem
+                </span>
+                <span className="text-[11px] font-medium text-gray-900 dark:text-gray-100 truncate">
+                  {trip.origem}
+                </span>
+              </div>
+            </div>
+            <ArrowRight
+              size={10}
+              className="text-gray-800 dark:text-gray-400 shrink-0 mx-1"
+            />
+            <div className="flex items-center gap-1.5 flex-1 min-w-0">
+              <MapPin
+                size={12}
+                className="text-blue-500 fill-blue-500 shrink-0"
+              />
+              <div className="flex flex-col min-w-0">
+                <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
+                  Destino
+                </span>
+                <span className="text-[11px] font-medium text-gray-900 dark:text-gray-100 truncate">
+                  {trip.destino}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Row (Badges & Actions) */}
+      <div className="flex items-center justify-between pt-2 mt-2 border-t border-gray-100 dark:border-gray-800/60">
+        <div className="flex items-center gap-1 bg-green-50 dark:bg-green-500/10 px-2 py-0.5 rounded-full border border-green-100/50 dark:border-transparent">
+          <div className="w-3 h-3 rounded-full border-[1px] border-green-500 flex items-center justify-center shrink-0">
+            <DollarSign
+              size={8}
+              className="stroke-[3] text-green-500"
+            />
+          </div>
+          <span className="text-[12px] font-bold text-gray-900 dark:text-green-400 tracking-tight">
+            {formatCurrency(trip.valor)}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <div className="w-px h-4 bg-gray-200 dark:bg-gray-800 mx-1" />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedTrip(trip);
+            }}
+            title="Visualizar Detalhes"
+            className="w-7 h-6 rounded-lg border border-blue-100/60 dark:border-gray-800 bg-blue-50/50 dark:bg-[#121213] flex items-center justify-center text-blue-500 hover:bg-blue-100 dark:hover:bg-gray-800 transition-colors"
+          >
+            <Eye size={12} className="stroke-[2]" />
+          </button>
+          {canEdit && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingTrip(trip);
+              }}
+              title="Editar Viagem"
+              className="w-7 h-6 rounded-lg border border-orange-100/60 dark:border-orange-900/30 bg-orange-50/50 dark:bg-orange-500/5 flex items-center justify-center text-orange-500 hover:bg-orange-100 dark:hover:bg-orange-500/10 transition-colors"
+            >
+              <Pencil size={11} className="stroke-[2]" />
+            </button>
+          )}
+          {canDelete && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDeletingTrip(trip);
+              }}
+              title="Excluir Viagem"
+              className="w-7 h-6 rounded-lg border border-red-100/60 dark:border-red-900/30 bg-red-50/50 dark:bg-red-500/5 flex items-center justify-center text-red-500 hover:bg-red-100 dark:hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 size={11} className="stroke-[2]" />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleExpand(trip.id);
+            }}
+            className="w-7 h-6 ml-0.5 rounded-lg flex items-center justify-center text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors border border-transparent hover:border-gray-200 dark:hover:border-gray-700"
+          >
+            {isExpanded ? (
+              <ChevronUp size={14} />
+            ) : (
+              <ChevronDown size={14} />
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+export default function TripHistory({
+  embeddedJob,
+  hideHeader = false,
+  isInsideAdminTab = false,
+  onTripDetailsOpen,
+}: {
+  embeddedJob?: any;
+  hideHeader?: boolean;
+  isInsideAdminTab?: boolean;
+  onTripDetailsOpen?: (isOpen: boolean) => void;
+} = {}) {
   const navigate = useNavigate();
-  const { currentUser, activeCompanyId, activeRole, companies } = useAppStore();
+  const {
+    currentUser,
+    activeCompanyId,
+    activeRole,
+    companies,
+    users,
+    allCompanyMembers,
+  } = useAppStore();
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(null);
@@ -247,13 +621,23 @@ export default function TripHistory() {
   const [deletingTrip, setDeletingTrip] = useState<TripRecord | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
+  const [expandedTrips, setExpandedTrips] = useState<Set<string>>(new Set());
+
+  const toggleExpand = React.useCallback((tripId: string) => {
+    setExpandedTrips((prev) => {
+      const next = new Set(prev);
+      if (next.has(tripId)) next.delete(tripId);
+      else next.add(tripId);
+      return next;
+    });
+  }, []);
 
   const currentCompany = companies.find((c: any) => c.id === activeCompanyId);
 
   const [filters, setFilters] = useState({
     simulador: currentCompany?.simulatorName || "",
     empresa: currentCompany?.companyName || "",
-    motorista: activeRole === "driver" ? currentUser?.name || "" : "",
+    motorista: currentUser?.name || "",
     periodoPreset: "mes", // 'todos', 'hoje', '7dias', 'mes', 'data'
     periodoInicio: "",
     periodoFim: "",
@@ -353,17 +737,36 @@ export default function TripHistory() {
   }, [activeCompanyId]);
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !activeCompanyId) return;
 
-    let q = query(collection(db, "historico_viagens"));
+    let q = query(
+      collection(db, "historico_viagens"),
+      where("empresaId", "==", activeCompanyId),
+    );
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const fetchedTrips = snapshot.docs.map((doc) => ({
+        let fetchedTrips = snapshot.docs.map((doc) => ({
           id: doc.id,
           ...doc.data(),
         })) as TripRecord[];
+
+        if (embeddedJob) {
+          fetchedTrips = fetchedTrips.filter(t => {
+            if (t.contratoId !== embeddedJob.contractId) return false;
+            if ((t as any).jobId && (t as any).jobId === embeddedJob.id) return true;
+            
+            // Time-based filtering fallback for trips that don't have jobId
+            const rawTripDate = t.createdAt?.toDate ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : null);
+            const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+            
+            const assignedAt = embeddedJob.assignedAt ? new Date(embeddedJob.assignedAt).getTime() : 0;
+            const completedAt = embeddedJob.completedAt ? new Date(embeddedJob.completedAt).getTime() : Date.now() + 86400000;
+            
+            return tripTime >= assignedAt && tripTime <= completedAt;
+          });
+        }
 
         // Sort client-side to avoid composite index requirements in Firestore
         fetchedTrips.sort((a, b) => {
@@ -397,78 +800,30 @@ export default function TripHistory() {
   }, [currentUser, activeCompanyId, activeRole]);
 
   // Client-side filtering
-  const getTripSimulator = React.useCallback(
-    (trip: TripRecord) => {
-      const comp = companies.find(
-        (c: any) =>
-          c.companyName === trip.empresaNome || c.id === trip.empresaId,
-      );
-      return comp?.simulatorName || "";
-    },
-    [companies],
-  );
-
-  const uniqueEmpresas = React.useMemo(() => {
-    const list = trips
-      .map((t) => t.empresaNome)
-      .filter((v, i, a) => v && v !== "-" && a.indexOf(v) === i)
-      .sort((a, b) => a.localeCompare(b));
-
-    // include companies from registry even if no trips yet
-    const registryComps = companies
-      .map((c: any) => c.companyName)
-      .filter(Boolean);
-    return Array.from(new Set([...list, ...registryComps])).sort();
-  }, [trips, companies]);
-
   const uniqueMotoristas = React.useMemo(() => {
-    if (!filters.empresa) return [];
+    if (!allCompanyMembers || allCompanyMembers.length === 0) {
+      // Fallback to trip drivers if members not loaded
+      const tripDrivers = trips
+        .map((t) => t.motoristaNome)
+        .filter((v, i, a) => v && v !== "-" && a.indexOf(v) === i);
+      return tripDrivers.sort((a, b) => a.localeCompare(b));
+    }
 
-    const tripDrivers = trips
-      .map((t) => {
-        if (t.empresaNome === filters.empresa) return t.motoristaNome;
-        return null;
-      })
-      .filter((v, i, a) => v && v !== "-" && a.indexOf(v) === i);
+    const memberIds = new Set(
+      allCompanyMembers
+        .filter((m) => m.companyId === activeCompanyId)
+        .map((m) => m.userId),
+    );
 
-    return tripDrivers.sort((a, b) => a.localeCompare(b));
-  }, [trips, filters.empresa]);
+    const companyUsers = users
+      .filter((u) => memberIds.has(u.id))
+      .map((u) => u.name)
+      .filter((v, i, a) => v && a.indexOf(v) === i);
 
-  const uniqueSimuladores = React.useMemo(() => {
-    // Collect simulators from trips matching current filters
-    const matchingTrips = trips.filter((t) => {
-      if (filters.empresa && t.empresaNome !== filters.empresa) return false;
-      if (filters.motorista && t.motoristaNome !== filters.motorista)
-        return false;
-      return true;
-    });
-
-    let sims = matchingTrips.map((t) => getTripSimulator(t)).filter(Boolean);
-
-    // Also include simulators from companies matching filter
-    const matchingComps = companies.filter((c: any) => {
-      if (filters.empresa && c.companyName !== filters.empresa) return false;
-      return true;
-    });
-    sims = [
-      ...sims,
-      ...matchingComps.map((c: any) => c.simulatorName).filter(Boolean),
-    ];
-
-    return Array.from(new Set(sims)).sort();
-  }, [trips, companies, filters.empresa, filters.motorista, getTripSimulator]);
+    return companyUsers.sort((a, b) => a.localeCompare(b));
+  }, [trips, allCompanyMembers, users, activeCompanyId]);
 
   const filteredTrips = trips.filter((trip) => {
-    if (filters.simulador) {
-      const sim = getTripSimulator(trip);
-      if (sim.toLowerCase() !== filters.simulador.toLowerCase()) return false;
-    }
-    if (
-      filters.empresa &&
-      trip.empresaNome.toLowerCase() !== filters.empresa.toLowerCase()
-    ) {
-      return false;
-    }
     if (
       filters.motorista &&
       trip.motoristaNome.toLowerCase() !== filters.motorista.toLowerCase()
@@ -515,9 +870,11 @@ export default function TripHistory() {
     }
 
     if (startDate || endDate) {
-      const tripDate = trip.createdAt?.toDate
-        ? trip.createdAt.toDate()
-        : new Date(trip.createdAt || trip.dataLancamento);
+      const ts = trip.completedAt || trip.dataFechamento || trip.date || trip.dataLancamento || trip.createdAt;
+      const tripDate = ts?.toDate
+        ? ts.toDate()
+        : new Date(ts);
+        
       if (startDate && tripDate < startDate) return false;
       if (endDate && tripDate > endDate) return false;
     }
@@ -531,14 +888,43 @@ export default function TripHistory() {
     0,
   );
 
-  const formatCurrency = (value: number) => {
+  // --- Image Preloading Logic ---
+  useEffect(() => {
+    // Preload top visible trips
+    const toPreload = filteredTrips.slice(0, 15).filter(t => !!t.comprovanteUrl);
+    toPreload.forEach(t => {
+      preloadComprovante(t.comprovanteUrl);
+    });
+  }, [filteredTrips]);
+
+  useEffect(() => {
+    // Notify parent when trip details are opened/closed
+    if (onTripDetailsOpen) {
+      onTripDetailsOpen(!!selectedTrip);
+    }
+    // Preload adjacent trips when a trip is selected
+    if (selectedTrip) {
+      const idx = filteredTrips.findIndex(t => t.id === selectedTrip.id);
+      if (idx > 0) {
+        const prev = filteredTrips[idx - 1];
+        if (prev.comprovanteUrl) preloadComprovante(prev.comprovanteUrl);
+      }
+      if (idx !== -1 && idx < filteredTrips.length - 1) {
+        const next = filteredTrips[idx + 1];
+        if (next.comprovanteUrl) preloadComprovante(next.comprovanteUrl);
+      }
+    }
+  }, [selectedTrip, filteredTrips, onTripDetailsOpen]);
+  // ------------------------------
+
+  const formatCurrency = React.useCallback((value: number) => {
     return new Intl.NumberFormat("pt-BR", {
       style: "currency",
       currency: "BRL",
     }).format(value);
-  };
+  }, []);
 
-  const formatDate = (timestamp: any) => {
+  const formatDate = React.useCallback((timestamp: any) => {
     if (!timestamp) return "";
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date
@@ -549,26 +935,18 @@ export default function TripHistory() {
       })
       .replace(". de ", " ")
       .replace(" de ", " ");
-  };
+  }, []);
 
-  const formatTime = (timestamp: any) => {
+  const formatTime = React.useCallback((timestamp: any) => {
     if (!timestamp) return "";
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
     });
-  };
+  }, []);
 
-  const getTripEntities = (trip: TripRecord) => {
-    return {
-      contractName: trip.contratoNumero || "Contrato não encontrado",
-      vehicleName: trip.veiculoNome || "Veículo não encontrado",
-      trailerName: trip.reboqueNome || "Reboque não encontrado",
-    };
-  };
-
-  const canEditTrip = (trip: TripRecord) => {
+  const canEditTrip = React.useCallback((trip: TripRecord) => {
     if (!currentUser) return false;
     if (activeRole === "admin") {
       return trip.empresaId === activeCompanyId;
@@ -577,11 +955,11 @@ export default function TripHistory() {
       return trip.motoristaId === currentUser.id;
     }
     return false;
-  };
+  }, [currentUser, activeRole, activeCompanyId]);
 
-  const canDeleteTrip = (trip: TripRecord) => {
+  const canDeleteTrip = React.useCallback((trip: TripRecord) => {
     return canEditTrip(trip);
-  };
+  }, [canEditTrip]);
 
   const confirmDeleteTrip = async () => {
     if (!deletingTrip) return;
@@ -595,114 +973,98 @@ export default function TripHistory() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-gray-50/50 dark:bg-[#09090b] min-h-[calc(100vh-3.5rem)] pb-24 md:pb-28 max-w-2xl mx-auto w-full relative">
+    <div
+      className={cn(
+        "flex flex-col w-full relative",
+        !embeddedJob && !isInsideAdminTab
+          ? "w-full max-w-7xl mx-auto min-h-[calc(100vh-64px)] bg-gray-50/50 dark:bg-[#09090b] pb-6"
+          : "pb-24" // Extra padding for the fixed footer in tab view
+      )}
+    >
       {/* Header Section */}
-      <div className="flex items-start justify-between mb-4 pt-2">
-        <div className="flex flex-col gap-0.5">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => navigate(-1)}
-              className="p-1 -ml-1 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-            >
-              <ArrowLeft size={20} className="stroke-[2.5]" />
-            </button>
-            <h1 className="text-lg md:text-xl font-bold text-gray-900 dark:text-white tracking-tight">
-              Histórico
-            </h1>
+      {!hideHeader && (
+        <div className="flex items-start justify-between mb-4 pt-2">
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              {!isInsideAdminTab && (
+                <button
+                  onClick={() => navigate(-1)}
+                  className="p-1 -ml-1 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                >
+                  <ArrowLeft size={20} className="stroke-[2.5]" />
+                </button>
+              )}
+              <h1 className="text-lg md:text-xl font-bold text-gray-900 dark:text-white tracking-tight">
+                Histórico
+              </h1>
+            </div>
+            <div className="flex items-center pl-8 mt-1.5">
+              <div className="flex items-center bg-transparent border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-0.5 hover:bg-gray-50 dark:hover:bg-[#1A1F26] transition-colors max-w-[160px] sm:max-w-[200px]">
+                <select
+                  value={filters.motorista}
+                  onChange={(e) =>
+                    setFilters({ ...filters, motorista: e.target.value })
+                  }
+                  className="bg-transparent text-[11px] sm:text-[12px] font-semibold text-gray-700 dark:text-gray-300 outline-none cursor-pointer pr-4 appearance-none truncate w-full"
+                  style={{
+                    backgroundImage: `url("data:image/svg+xml,%3Csvg stroke='currentColor' fill='none' stroke-width='2' viewBox='0 0 24 24' stroke-linecap='round' stroke-linejoin='round' height='1em' width='1em' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+                    backgroundRepeat: "no-repeat",
+                    backgroundPosition: "right center",
+                    backgroundSize: "12px",
+                  }}
+                >
+                  <option value="" className="bg-white dark:bg-[#121213]">
+                    Todos os Motoristas
+                  </option>
+                  {uniqueMotoristas.map((m) => (
+                    <option
+                      key={m}
+                      value={m}
+                      className="bg-white dark:bg-[#121213]"
+                    >
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
-          <p className="text-[12px] md:text-xs text-gray-500 dark:text-gray-400 pl-8">
-            Registro das suas viagens.
-          </p>
+          <div className="flex items-center gap-4 mt-1 mr-2">
+            <button
+              onClick={() => {
+                if (expandedTrips.size > 0) {
+                  setExpandedTrips(new Set());
+                } else {
+                  setExpandedTrips(new Set(filteredTrips.map((t) => t.id)));
+                }
+              }}
+              title={expandedTrips.size > 0 ? "Recolher Todos" : "Expandir Todos"}
+              className="flex justify-center items-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+            >
+              {expandedTrips.size > 0 ? (
+                <ChevronsDownUp size={18} className="stroke-[2.5]" />
+              ) : (
+                <ChevronsUpDown size={18} className="stroke-[2.5]" />
+              )}
+            </button>
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className={cn(
+                "flex justify-center items-center transition-colors",
+                showFilters
+                  ? "text-blue-600 dark:text-blue-400"
+                  : "text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300",
+              )}
+            >
+              <Settings2 size={18} className="stroke-[2.5]" />
+            </button>
+          </div>
         </div>
-        <button
-          onClick={() => setShowFilters(!showFilters)}
-          className={cn(
-            "flex justify-center items-center h-8 w-11 border rounded-xl shadow-sm transition-colors",
-            showFilters
-              ? "bg-blue-50 border-blue-200 text-blue-600 dark:bg-blue-500/10 dark:border-blue-900 dark:text-blue-400"
-              : "bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800",
-          )}
-        >
-          <Settings2 size={16} className="stroke-[2.5]" />
-        </button>
-      </div>
+      )}
 
       {/* Filter Card inline */}
       {showFilters && (
         <div className="bg-white dark:bg-[#121213] border border-gray-200 dark:border-gray-800 rounded-xl p-3 mb-5 shadow-sm flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
-          <div className="grid grid-cols-3 gap-2">
-            <div className="flex flex-col">
-              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                Empresa
-              </label>
-              <select
-                value={filters.empresa}
-                onChange={(e) =>
-                  setFilters({
-                    ...filters,
-                    empresa: e.target.value,
-                    motorista: "",
-                  })
-                }
-                className="w-full text-xs font-medium border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-lg px-2 py-1.5 text-gray-900 dark:text-white outline-none focus:border-blue-500 transition-colors h-8"
-              >
-                <option value="">Todas</option>
-                {uniqueEmpresas.map((e) => (
-                  <option key={e} value={e}>
-                    {e}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col">
-              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                Motorista
-              </label>
-              <select
-                value={filters.motorista}
-                onChange={(e) =>
-                  setFilters({ ...filters, motorista: e.target.value })
-                }
-                disabled={!filters.empresa}
-                className="w-full text-xs font-medium border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-lg px-2 py-1.5 text-gray-900 dark:text-white outline-none focus:border-blue-500 transition-colors h-8 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {!filters.empresa ? (
-                  <option value="">Selecione uma empresa primeiro</option>
-                ) : (
-                  <option value="">Todos</option>
-                )}
-                {filters.empresa &&
-                  uniqueMotoristas.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-              </select>
-            </div>
-            <div className="flex flex-col">
-              <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1">
-                Simulador
-              </label>
-              <select
-                value={filters.simulador}
-                onChange={(e) =>
-                  setFilters({
-                    ...filters,
-                    simulador: e.target.value,
-                  })
-                }
-                className="w-full text-xs font-medium border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-lg px-2 py-1.5 text-gray-900 dark:text-white outline-none focus:border-blue-500 transition-colors h-8"
-              >
-                <option value="">Todos</option>
-                {uniqueSimuladores.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
           <div>
             <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1 block">
               Período
@@ -762,7 +1124,12 @@ export default function TripHistory() {
       )}
 
       {/* List Section */}
-      <div className="flex flex-col gap-3 pb-32">
+      <div
+        className={cn(
+          "flex flex-col gap-3 w-full",
+          !embeddedJob ? "pb-12 px-0" : "pb-4 px-0"
+        )}
+      >
         {loading ? (
           <div className="flex justify-center p-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -773,303 +1140,95 @@ export default function TripHistory() {
           </div>
         ) : (
           filteredTrips.map((trip) => {
-            const entities = getTripEntities(trip);
-
-            const getCompanyColor = (name: string) => {
-              const colors = [
-                "bg-green-500",
-                "bg-blue-500",
-                "bg-purple-500",
-                "bg-orange-500",
-                "bg-pink-500",
-              ];
-              let hash = 0;
-              for (let i = 0; i < name.length; i++)
-                hash = name.charCodeAt(i) + ((hash << 5) - hash);
-              return colors[Math.abs(hash) % colors.length];
-            };
-
-            const getInitials = (name: string) => {
-              if (!name) return "E";
-              const parts = name.trim().split(" ");
-              if (parts.length >= 2) {
-                return (parts[0][0] + parts[1][0]).toUpperCase();
-              }
-              return name.slice(0, 2).toUpperCase();
-            };
-
-            const comp = companies.find(
-              (c: any) =>
-                c.companyName === trip.empresaNome || c.id === trip.empresaId,
-            );
+            const comp = companies.find((c: any) => c.id === trip.empresaId);
+            const isExpanded = expandedTrips.has(trip.id);
 
             return (
-              <div
+              <TripListItem
                 key={trip.id}
-                className="bg-white dark:bg-[#121213] p-2.5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-[0_1px_8px_-4px_rgba(0,0,0,0.05)] flex flex-col"
-              >
-                {/* Top Bar */}
-                <div className="flex items-center justify-between pb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    {comp?.logoUrl ? (
-                      <img
-                        src={comp.logoUrl}
-                        alt={trip.empresaNome || "Empresa"}
-                        className="w-7 h-7 rounded-lg object-cover shrink-0"
-                      />
-                    ) : (
-                      <div
-                        className={cn(
-                          "w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 text-[11px] font-bold tracking-wide",
-                          getCompanyColor(trip.empresaNome || "Empresa"),
-                        )}
-                      >
-                        {getInitials(trip.empresaNome || "Empresa")}
-                      </div>
-                    )}
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[13px] font-bold text-gray-900 dark:text-white leading-tight truncate">
-                        {trip.empresaNome}
-                      </span>
-                      <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 mt-0.5 truncate">
-                        Contrato #
-                        {entities.contractName
-                          .substring(entities.contractName.indexOf("#") + 1)
-                          .slice(0, 4) || trip.contratoId?.substring(0, 4)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-end shrink-0 ml-2">
-                    <CalendarIcon
-                      size={10}
-                      className="text-gray-400 shrink-0"
-                    />
-                    <span className="text-[10px] font-normal text-gray-500 dark:text-gray-400 ml-1 whitespace-nowrap">
-                      {formatDate(trip.createdAt || trip.dataLancamento)} &bull;{" "}
-                      {formatTime(trip.createdAt || trip.dataLancamento)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
-
-                {/* Middle Grid Row 1 */}
-                <div className="grid grid-cols-2 py-1.5 relative">
-                  <div className="flex items-center gap-2 pr-2 min-w-0">
-                    <User
-                      size={12}
-                      className="text-gray-500 dark:text-gray-400 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Motorista
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
-                        {trip.motoristaNome}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Vertical Divider */}
-                  <div className="absolute left-[50%] top-1.5 bottom-1.5 w-px bg-gray-50 dark:bg-gray-800/60" />
-
-                  <div className="flex items-center gap-2 pl-3 min-w-0">
-                    <Gamepad2
-                      size={12}
-                      className="text-gray-500 dark:text-gray-400 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Simulador
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
-                        {getTripSimulator(trip)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
-
-                {/* Middle Grid Row 2 */}
-                <div className="grid grid-cols-2 py-1.5 relative">
-                  <div className="flex items-center gap-2 pr-2 min-w-0">
-                    <Truck
-                      size={12}
-                      className="text-gray-500 dark:text-gray-400 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Veículo
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
-                        {entities.vehicleName}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Vertical Divider */}
-                  <div className="absolute left-[50%] top-1.5 bottom-1.5 w-px bg-gray-50 dark:bg-gray-800/60" />
-
-                  <div className="flex items-center gap-2 pl-3 min-w-0">
-                    <Package
-                      size={12}
-                      className="text-gray-500 dark:text-gray-400 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Reboque
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-800 dark:text-gray-200 truncate">
-                        {entities.trailerName}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
-
-                {/* Origin -> Destination */}
-                <div className="flex items-center gap-2 py-1.5">
-                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                    <MapPin
-                      size={12}
-                      className="text-green-500 fill-green-500 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Origem
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {trip.origem}
-                      </span>
-                    </div>
-                  </div>
-                  <ArrowRight
-                    size={10}
-                    className="text-gray-800 dark:text-gray-400 shrink-0 mx-1"
-                  />
-                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                    <MapPin
-                      size={12}
-                      className="text-blue-500 fill-blue-500 shrink-0"
-                    />
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[9px] text-gray-400 font-medium leading-tight mb-[1px]">
-                        Destino
-                      </span>
-                      <span className="text-[11px] font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {trip.destino}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom Row (Badges & Actions) */}
-                <div className="flex items-center justify-between pt-1.5 mt-auto">
-                  <div className="flex items-center gap-1 bg-green-50 dark:bg-green-500/10 px-2 py-0.5 rounded-full border border-green-100/50 dark:border-transparent">
-                    <div className="w-3 h-3 rounded-full border-[1px] border-green-500 flex items-center justify-center shrink-0">
-                      <DollarSign
-                        size={8}
-                        className="stroke-[3] text-green-500"
-                      />
-                    </div>
-                    <span className="text-[12px] font-bold text-gray-900 dark:text-green-400 tracking-tight">
-                      {formatCurrency(trip.valor)}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => setSelectedTrip(trip)}
-                      className="w-7 h-6 rounded-lg border border-blue-100/60 dark:border-gray-800 bg-blue-50/50 dark:bg-[#121213] flex items-center justify-center text-blue-500 hover:bg-blue-100 dark:hover:bg-gray-800 transition-colors"
-                    >
-                      <Eye size={12} className="stroke-[2]" />
-                    </button>
-                    {canEditTrip(trip) && (
-                      <button
-                        onClick={() => setEditingTrip(trip)}
-                        className="w-7 h-6 rounded-lg border border-orange-100/60 dark:border-orange-900/30 bg-orange-50/50 dark:bg-orange-500/5 flex items-center justify-center text-orange-500 hover:bg-orange-100 dark:hover:bg-orange-500/10 transition-colors"
-                      >
-                        <Pencil size={11} className="stroke-[2]" />
-                      </button>
-                    )}
-                    {canDeleteTrip(trip) && (
-                      <button
-                        onClick={() => setDeletingTrip(trip)}
-                        className="w-7 h-6 rounded-lg border border-red-100/60 dark:border-red-900/30 bg-red-50/50 dark:bg-red-500/5 flex items-center justify-center text-red-500 hover:bg-red-100 dark:hover:bg-red-500/10 transition-colors"
-                      >
-                        <Trash2 size={11} className="stroke-[2]" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
+                trip={trip}
+                comp={comp}
+                isExpanded={isExpanded}
+                toggleExpand={toggleExpand}
+                setSelectedTrip={setSelectedTrip}
+                setEditingTrip={setEditingTrip}
+                setDeletingTrip={setDeletingTrip}
+                canEdit={canEditTrip(trip)}
+                canDelete={canDeleteTrip(trip)}
+                formatCurrency={formatCurrency}
+                formatDate={formatDate}
+                formatTime={formatTime}
+              />
             );
           })
         )}
       </div>
 
       {/* Fixed Bottom Summary Bar */}
-      <div className="fixed bottom-[env(safe-area-inset-bottom,24px)] left-0 right-0 z-30 flex flex-col items-center pointer-events-none md:left-64">
-        {/* Expanded Summary Card */}
-        <div
-          className={cn(
-            "bg-white dark:bg-[#121213] rounded-2xl border border-gray-100 dark:border-gray-800 shadow-[0_4px_24px_-8px_rgba(0,0,0,0.12)] transition-all duration-300 overflow-hidden pointer-events-auto",
-            isSummaryExpanded
-              ? "max-h-[500px] opacity-100 scale-100 mb-3"
-              : "max-h-0 opacity-0 scale-95 mb-0",
-          )}
-        >
-          <div className="grid grid-cols-2 gap-px bg-gray-100 dark:bg-gray-800/50">
-            <div className="bg-white dark:bg-[#121213] p-4 flex items-center gap-3 min-w-[150px] sm:min-w-[180px]">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center shrink-0">
-                <File size={18} className="text-blue-500 fill-blue-500/20" />
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400 leading-tight">
-                  Total Realizado
+      {!hideHeader && (
+        <div className="fixed bottom-6 md:bottom-8 z-30 flex flex-col items-end pointer-events-none right-4 md:right-8 pb-[env(safe-area-inset-bottom,0px)]">
+          {/* Expanded Summary Card */}
+          <div
+            className={cn(
+              "bg-white dark:bg-[#20252D] rounded-xl border border-gray-100 dark:border-gray-700 shadow-[0_8px_24px_-8px_rgba(0,0,0,0.15)] transition-all duration-300 overflow-hidden pointer-events-auto origin-bottom-right mb-3",
+              isSummaryExpanded
+                ? "max-w-sm max-h-[500px] opacity-100 scale-100"
+                : "max-w-0 max-h-0 opacity-0 scale-95",
+            )}
+          >
+            <div className="grid grid-cols-2 gap-px bg-gray-100 dark:bg-gray-800/80">
+              <div className="bg-gray-50/50 dark:bg-[#20252D] p-3 sm:p-3.5 flex flex-col min-w-[120px] sm:min-w-[140px]">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-500 dark:text-gray-400 mb-0.5">
+                  Viagens
                 </span>
-                <span className="text-[15px] font-bold text-gray-900 dark:text-white leading-tight truncate">
-                  {totalViagens} viag.
+                <span className="text-[16px] font-bold text-gray-900 dark:text-white leading-tight">
+                  {totalViagens}
                 </span>
               </div>
-            </div>
-            <div className="bg-white dark:bg-[#121213] p-4 flex items-center gap-3 min-w-[150px] sm:min-w-[180px]">
-              <div className="w-10 h-10 rounded-xl bg-green-50 dark:bg-green-500/10 flex items-center justify-center shrink-0">
-                <DollarSign size={18} className="text-green-500" />
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400 leading-tight">
-                  Total Faturado
+              <div className="bg-gray-50/50 dark:bg-[#20252D] p-3 sm:p-3.5 flex flex-col min-w-[120px] sm:min-w-[140px]">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-500 dark:text-gray-400 mb-0.5">
+                  Ganhos
                 </span>
-                <span className="text-[15px] font-bold text-green-600 dark:text-green-400 leading-tight truncate">
+                <span className="text-[16px] font-bold text-green-600 dark:text-green-400 leading-tight">
                   {formatCurrency(faturamentoTotal)}
                 </span>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Toggle Button */}
-        <button
-          onClick={() => setIsSummaryExpanded(!isSummaryExpanded)}
-          className="w-12 h-12 bg-white dark:bg-[#121213] rounded-full border border-gray-100 dark:border-gray-800 shadow-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors pointer-events-auto"
-        >
-          <ChevronUp
-            size={20}
-            className={cn(
-              "transition-transform duration-300",
-              isSummaryExpanded && "rotate-180",
-            )}
-          />
-        </button>
-      </div>
+          {/* Toggle Button */}
+          <button
+            onClick={() => setIsSummaryExpanded(!isSummaryExpanded)}
+            className="w-10 h-10 rounded-xl shadow-[0_4px_12px_rgba(0,0,0,0.12)] flex items-center justify-center transition-all pointer-events-auto bg-white dark:bg-[#2A313C] text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-[#323945] border border-gray-200/60 dark:border-gray-700"
+          >
+            <ChevronUp
+              size={20}
+              className={cn(
+                "transition-transform duration-300",
+                isSummaryExpanded && "rotate-180",
+              )}
+            />
+          </button>
+        </div>
+      )}
 
       {/* Modal Detailed View */}
       {selectedTrip &&
         (() => {
-          const selectedEntities = getTripEntities(selectedTrip);
+          const selectedIndex = filteredTrips.findIndex(t => t.id === selectedTrip.id);
+          
+          const handlePrevTrip = () => {
+            if (selectedIndex > 0) {
+              setSelectedTrip(filteredTrips[selectedIndex - 1]);
+            }
+          };
+
+          const handleNextTrip = () => {
+            if (selectedIndex !== -1 && selectedIndex < filteredTrips.length - 1) {
+              setSelectedTrip(filteredTrips[selectedIndex + 1]);
+            }
+          };
+
           return (
             <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 md:p-4 bg-gray-900/40 backdrop-blur-sm sm:pb-8">
               <div className="bg-white dark:bg-[#121213] w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -1077,115 +1236,193 @@ export default function TripHistory() {
                   <h3 className="font-bold text-gray-900 dark:text-white text-[15px]">
                     Detalhes da Viagem
                   </h3>
-                  <button
-                    onClick={() => setSelectedTrip(null)}
-                    className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-full transition-colors"
-                  >
-                    <X size={20} />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center space-x-1 mr-1">
+                      <button
+                        onClick={handlePrevTrip}
+                        disabled={selectedIndex <= 0}
+                        className={cn(
+                          "p-1.5 rounded-lg border transition-colors",
+                          selectedIndex <= 0
+                            ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
+                            : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        )}
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                      <button
+                        onClick={handleNextTrip}
+                        disabled={selectedIndex === -1 || selectedIndex >= filteredTrips.length - 1}
+                        className={cn(
+                          "p-1.5 rounded-lg border transition-colors",
+                          selectedIndex === -1 || selectedIndex >= filteredTrips.length - 1
+                            ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
+                            : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        )}
+                      >
+                        <ChevronRight size={16} />
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setSelectedTrip(null)}
+                      className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-full transition-colors"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-5 overflow-y-auto w-full">
-                  {/* Trip General Information */}
-                  <div className="space-y-4 mb-6">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Data
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold">
-                        {formatDate(
-                          selectedTrip.createdAt || selectedTrip.dataLancamento,
-                        )}{" "}
-                        às{" "}
-                        {formatTime(
-                          selectedTrip.createdAt || selectedTrip.dataLancamento,
-                        )}
-                      </span>
+                <div className="p-3 sm:p-4 overflow-y-auto w-full">
+                  {/* Trip General Information Compact */}
+                  <div className="mb-4">
+                    {/* Header Row (Company, Driver, Date) */}
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <Building2 size={12} className="text-blue-500" />
+                          <span className="text-[12px] font-bold text-gray-900 dark:text-white leading-none">
+                            {selectedTrip.empresaNome}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <User size={12} className="text-gray-400" />
+                          <span className="text-[11px] font-medium text-gray-600 dark:text-gray-400">
+                            {selectedTrip.motoristaNome}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="flex flex-col items-end">
+                        <div className="flex items-center justify-center gap-1 bg-gray-100/80 dark:bg-gray-800/80 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded text-[10px] font-semibold mb-1 border border-gray-200 dark:border-gray-700">
+                          <CalendarIcon size={11} className="shrink-0" />
+                          <span className="whitespace-nowrap">
+                            {formatDate(selectedTrip.createdAt || selectedTrip.dataLancamento)}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">
+                          {formatTime(selectedTrip.createdAt || selectedTrip.dataLancamento)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Motorista
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold truncate max-w-[200px] text-right">
-                        {selectedTrip.motoristaNome}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Empresa
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold truncate max-w-[200px] text-right">
-                        {selectedTrip.empresaNome}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Contrato
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold text-right">
-                        {selectedEntities.contractName}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Veículo
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold text-right">
-                        {selectedEntities.vehicleName}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Reboque
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold text-right">
-                        {selectedEntities.trailerName}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Origem
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold truncate max-w-[200px] text-right">
-                        {selectedTrip.origem}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Destino
-                      </span>
-                      <span className="text-gray-900 dark:text-white font-semibold truncate max-w-[200px] text-right">
-                        {selectedTrip.destino}
-                      </span>
-                    </div>
-                    <div className="w-full h-px bg-gray-100 dark:bg-gray-800"></div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-500 dark:text-gray-400 font-medium">
-                        Valor Recebido
-                      </span>
-                      <span className="text-green-600 dark:text-green-500 font-bold text-base text-right">
-                        {formatCurrency(selectedTrip.valor)}
-                      </span>
+
+                    <div className="flex flex-col rounded-lg border border-gray-200 dark:border-gray-800/80 bg-white dark:bg-[#1A1F26] overflow-hidden shadow-sm">
+                      {/* Grid details */}
+                      <div className="grid grid-cols-2 relative">
+                        {/* Contract */}
+                        <div className="flex items-center gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
+                          <div className="w-7 h-7 rounded-md bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center shrink-0 border border-indigo-100 dark:border-indigo-500/20">
+                            <FileText size={12} className="text-indigo-600 dark:text-indigo-400" />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                              Contrato
+                            </span>
+                            <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
+                              {selectedTrip.contratoNumero || "-"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="absolute left-[50%] top-2 bottom-2 w-px bg-gray-100 dark:bg-gray-800/60" />
+
+                        {/* Simulator */}
+                        <div className="flex items-center gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
+                          <div className="w-7 h-7 rounded-md bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center shrink-0 border border-orange-100 dark:border-orange-500/20">
+                            <Gamepad2 size={12} className="text-orange-600 dark:text-orange-400" />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                              Simulador
+                            </span>
+                            <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
+                              {selectedTrip.simuladorNome || "-"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="w-full h-px bg-gray-100 dark:bg-gray-800/60" />
+
+                      <div className="grid grid-cols-2 relative">
+                        {/* Vehicle */}
+                        <div className="flex items-center gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
+                          <div className="w-7 h-7 rounded-md bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center shrink-0 border border-blue-100 dark:border-blue-500/20">
+                            <Truck size={12} className="text-blue-600 dark:text-blue-400" />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                              Veículo
+                            </span>
+                            <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
+                              {selectedTrip.veiculoNome || "-"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="absolute left-[50%] top-2 bottom-2 w-px bg-gray-100 dark:bg-gray-800/60" />
+
+                        {/* Trailer */}
+                        <div className="flex items-center gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
+                          <div className="w-7 h-7 rounded-md bg-purple-50 dark:bg-purple-500/10 flex items-center justify-center shrink-0 border border-purple-100 dark:border-purple-500/20">
+                            <Package size={12} className="text-purple-600 dark:text-purple-400" />
+                          </div>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                              Reboque
+                            </span>
+                            <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
+                              {selectedTrip.reboqueNome || "-"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="w-full h-px bg-gray-100 dark:bg-gray-800/60" />
+
+                      {/* Route */}
+                      <div className="flex items-center justify-between p-2 sm:p-2.5 bg-slate-50/50 dark:bg-[#1A1F26]">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <MapPin size={14} className="text-green-500 shrink-0" />
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">Origem</span>
+                            <span className="text-[11px] font-semibold text-gray-900 dark:text-gray-100 truncate">{selectedTrip.origem}</span>
+                          </div>
+                        </div>
+                        <ArrowRight size={12} className="text-gray-400 shrink-0 mx-1.5" />
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <MapPin size={14} className="text-blue-500 shrink-0" />
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">Destino</span>
+                            <span className="text-[11px] font-semibold text-gray-900 dark:text-gray-100 truncate">{selectedTrip.destino}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="w-full h-px bg-gray-100 dark:bg-gray-800/60" />
+
+                      {/* Earnings */}
+                      <div className="flex items-center justify-between p-2.5 sm:p-3 bg-white dark:bg-[#1A1F26]">
+                        <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Valor Recebido</span>
+                        <div className="flex items-center gap-1 bg-green-50 dark:bg-green-500/10 px-2 py-1.5 rounded-md border border-green-100 dark:border-transparent">
+                          <DollarSign size={12} className="stroke-[3] text-green-500" />
+                          <span className="text-[13px] font-bold text-gray-900 dark:text-green-400 tracking-tight">
+                            {formatCurrency(selectedTrip.valor)}
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
                   {/* Receipt Image */}
                   {selectedTrip.comprovanteUrl && (
-                    <div className="mt-6 mb-4">
-                      <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 block mb-3">
+                    <div className="mt-4 mb-2">
+                      <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 block mb-2">
                         Comprovante de Entrega
                       </span>
-                      <div className="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-                        <img
-                          src={selectedTrip.comprovanteUrl}
-                          alt="Comprovante"
-                          className="w-full h-auto object-contain max-h-[350px]"
+                      <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 z-0 relative flex justify-center items-center">
+                        <CachedImageViewer 
+                          url={selectedTrip.comprovanteUrl} 
+                          className="w-full h-auto object-contain max-h-[180px] cursor-pointer" 
                         />
                       </div>
                     </div>
@@ -1207,28 +1444,28 @@ export default function TripHistory() {
 
       {/* Delete Confirmation Modal */}
       {deletingTrip && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 md:p-4 bg-gray-900/40 backdrop-blur-sm sm:pb-8">
-          <div className="bg-white dark:bg-[#121213] w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col">
-            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#121213] w-full max-w-sm rounded-[24px] shadow-xl overflow-hidden flex flex-col">
+            <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
               <h3 className="font-bold text-gray-900 dark:text-white text-[15px]">
                 Confirmar Exclusão
               </h3>
               <button
                 onClick={() => setDeletingTrip(null)}
-                className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                className="p-1 -mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
               >
-                <X size={20} />
+                <X size={18} />
               </button>
             </div>
 
-            <div className="p-6 text-center">
-              <div className="w-16 h-16 bg-red-50 dark:bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Trash2 size={28} className="text-red-500" />
+            <div className="p-5 text-center">
+              <div className="w-14 h-14 bg-red-50 dark:bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-3">
+                <Trash2 size={24} className="text-red-500" />
               </div>
-              <h4 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+              <h4 className="text-[17px] font-semibold text-gray-900 dark:text-white mb-2">
                 Excluir Viagem?
               </h4>
-              <p className="text-sm text-gray-500 dark:text-gray-400">
+              <p className="text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
                 Tem certeza que deseja excluir esta viagem? Esta ação não pode
                 ser desfeita e os dados serão perdidos permanentemente.
               </p>
@@ -1238,14 +1475,14 @@ export default function TripHistory() {
               <button
                 type="button"
                 onClick={() => setDeletingTrip(null)}
-                className="flex-1 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white font-semibold py-2.5 rounded-xl transition-colors"
+                className="flex-1 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white font-semibold py-2 px-3 text-[14px] rounded-xl transition-colors"
               >
                 Cancelar
               </button>
               <button
                 type="button"
                 onClick={confirmDeleteTrip}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl transition-colors"
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-3 text-[14px] rounded-xl transition-colors"
               >
                 Excluir Viagem
               </button>

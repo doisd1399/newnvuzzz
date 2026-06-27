@@ -1,9 +1,22 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { db } from "../../lib/firebase";
 import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { useAppStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
+  import { getJobRealTimestamp } from "../../lib/utils";
+  import { getDriverLevelData } from "../../lib/levelUtils";
 import {
+  TrendingUp,
+  Target,
+  BadgeCheck,
+  ChevronRight,
+  Crosshair,
+  Route,
+  X,
+  Goal,
+  Gauge,
   CheckCircle,
   Truck,
   Car,
@@ -26,9 +39,30 @@ import {
   Check,
   LayoutDashboard,
   User as UserIcon,
+  Navigation,
+  Lock,
+  History,
+  Trophy,
+  DollarSign,
+  Star,
+  Sparkles,
+  Wallet,
+  Award,
+  Activity,
+  AlertTriangle,
+  Hourglass,
+  CalendarDays,
+  Banknote,
+  X
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 import { ProfileModal } from "../../components/ProfileModal";
+import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
+
+
+
+
 
 export default function Profile() {
   const {
@@ -42,11 +76,14 @@ export default function Profile() {
     requestNewJobDemand,
     activeCompanyId,
     setActiveCompanyId,
+    allCompanyMembers,
     memberships,
+    historicoTrips,
   } = useAppStore();
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [periodFilter, setPeriodFilter] = useState<
     "all" | "7d" | "15d" | "custom"
@@ -92,13 +129,13 @@ export default function Profile() {
     ? trailers.find((t) => t.id === activeTrailerId)
     : null;
 
-  // Historical jobs logic (only completed ones)
+  // Historical jobs logic (xp calculation only looks at completed)
   const allDriverJobs = jobs.filter(
     (j) => j.driverId === currentUser.id && j.id !== activeJob?.id,
   );
   const pastJobs = allDriverJobs.filter((j) => j.status === "completed");
 
-  const filteredPastJobs = pastJobs.filter((job) => {
+  const filteredHistoryJobs = pastJobs.filter((job) => {
     if (periodFilter === "all") return true;
 
     const dateStr =
@@ -136,21 +173,121 @@ export default function Profile() {
       return true;
     }
     return true;
+  }).sort((a, b) => {
+    // 1. Logs de depuração temporários para validar a ordem no console
+    const tsA = getJobRealTimestamp(a, historicoTrips);
+    const tsB = getJobRealTimestamp(b, historicoTrips);
+    const dateA = new Date(tsA);
+    const dateB = new Date(tsB);
+    
+    const contractA = contracts.find((c) => c.id === a.contractId)?.name || "";
+    const contractB = contracts.find((c) => c.id === b.contractId)?.name || "";
+    
+    // Fallback if they exactly match
+    if (tsB !== tsA) {
+      console.log(`[SORT DEBUG] ${contractA} vs ${contractB} | ${dateA.toLocaleString()} vs ${dateB.toLocaleString()} | sort: ${tsB - tsA}`);
+      return tsB - tsA;
+    }
+    
+    console.log(`[SORT DEBUG] ${contractA} vs ${contractB} | Fallback string comparison`);
+    return contractA.localeCompare(contractB);
   });
 
   const displayDeliveries =
-    filteredPastJobs.reduce((acc, job) => acc + job.progress, 0) +
+    filteredHistoryJobs.reduce((acc, job) => acc + job.progress, 0) +
     (periodFilter === "all" && activeJob ? activeJob.progress : 0);
-  const displayCompleted = filteredPastJobs.length;
+  const displayCompleted = filteredHistoryJobs.filter(j => j.status === 'completed').length;
 
-  const totalAllTimeDeliveries =
-    pastJobs.reduce((acc, job) => acc + job.progress, 0) +
-    (activeJob ? activeJob.progress : 0);
-  const xp = totalAllTimeDeliveries * 150 + pastJobs.length * 50;
-  const calculatedLevel = Math.floor(xp / 1000) + 1;
-  const displayLevel = calculatedLevel;
-  const currentLevelXp = xp % 1000;
-  const xpProgress = (currentLevelXp / 1000) * 100;
+  const levelData = getDriverLevelData(currentUser.id, jobs, contracts, historicoTrips);
+  const displayLevel = levelData.displayLevel;
+  const currentLevelXp = levelData.currentLevelXp;
+  const xpProgress = levelData.xpProgress;
+
+  const totalGanhos = historicoTrips
+    .filter((t) => t.motoristaId === currentUser.id)
+    .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
+  
+  const totalViagens = historicoTrips.filter((t) => t.motoristaId === currentUser.id).length;
+
+  const currentActiveCompany = activeCompanyId
+    ? companies.find((c) => c.id === activeCompanyId)
+    : null;
+
+  const [globalRank, setGlobalRank] = useState<{ position: number; total: number; diffToNext: number | null } | null>(null);
+
+  const formatCurrency = (val?: number) => {
+    if (val === undefined) return "R$ 0,00";
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency: "BRL",
+    }).format(val);
+  };
+
+  useEffect(() => {
+    if (!currentActiveCompany?.simulatorName || !currentUser?.id) return;
+
+    // Consulta Otimizada: Apenas membros e viagens da empresa atual para calcular a posição no leaderboard local
+    const q = query(collection(db, "historico_viagens"), where("empresaId", "==", currentActiveCompany.id));
+    
+    // Obter apenas os membros da empresa atual
+    const membersQ = query(collection(db, "companyMembers"), where("companyId", "==", currentActiveCompany.id));
+
+    let unsubTrips: () => void;
+    let unsubMembers: () => void;
+
+    // Calculado dinamicamente e atualizado automaticamente para o contexto da empresa
+    unsubTrips = onSnapshot(q, (snap) => {
+      const earningsByDriver: Record<string, number> = {};
+      
+      snap.docs.forEach((doc) => {
+        const data = doc.data();
+        const mId = data.motoristaId;
+        const valor = Number(data.valor) || 0;
+        earningsByDriver[mId] = (earningsByDriver[mId] || 0) + valor;
+      });
+
+      // Busca onSnapshot pros members tambem para dinamismo
+      unsubMembers = onSnapshot(membersQ, (memSnap) => {
+        const driversInCompany = new Set<string>();
+        memSnap.docs.forEach((md) => {
+          driversInCompany.add(md.data().userId);
+        });
+
+        // Garantir que motoristas com trips entrem
+        Object.keys(earningsByDriver).forEach((dId) => driversInCompany.add(dId));
+        // Garantir o user atual
+        driversInCompany.add(currentUser.id);
+
+        const leaderboard = Array.from(driversInCompany).map((driverId) => ({
+          id: driverId,
+          ganhos: earningsByDriver[driverId] || 0,
+        }));
+
+        // Ordem decrescente
+        leaderboard.sort((a, b) => b.ganhos - a.ganhos);
+
+        const position = leaderboard.findIndex((item) => item.id === currentUser.id) + 1;
+        
+        let diffToNext = null;
+        if (position > 1) {
+          const nextPerson = leaderboard[position - 2];
+          const currentGanhos = earningsByDriver[currentUser.id] || 0;
+          diffToNext = nextPerson.ganhos - currentGanhos;
+        }
+
+        setGlobalRank({
+          position: position > 0 ? position : leaderboard.length,
+          total: leaderboard.length,
+          diffToNext: diffToNext
+        });
+      });
+    });
+
+    return () => {
+      if (unsubTrips) unsubTrips();
+      if (unsubMembers) unsubMembers();
+    };
+  }, [currentActiveCompany?.simulatorName, companies, currentUser.id]);
 
   const handleRequestWork = async () => {
     try {
@@ -168,9 +305,6 @@ export default function Profile() {
     }
   };
 
-  const currentActiveCompany = activeCompanyId
-    ? companies.find((c) => c.id === activeCompanyId)
-    : null;
   const currentMembership = activeCompanyId
     ? currentUser.memberships?.[activeCompanyId] ||
       memberships.find((m) => m.companyId === activeCompanyId)
@@ -180,8 +314,10 @@ export default function Profile() {
     : "Recente";
 
   const pageOptions = [
-    { id: "dashboard", label: "Painel", icon: LayoutDashboard },
+    { id: "dashboard", label: "Painel Operacional", icon: LayoutDashboard },
     { id: "profile", label: "Meu Perfil", icon: UserIcon },
+    { id: "history", label: "Histórico de Viagens", icon: History },
+    { id: "reports", label: "Relatórios", icon: Activity },
   ];
 
   const activePageDetails =
@@ -189,281 +325,276 @@ export default function Profile() {
   const ActiveIcon = activePageDetails.icon;
 
   const renderPageSelector = () => (
-    <div className="relative z-20 mt-4 mb-6">
-      <button
-        onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
-        className="w-full bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[18px] p-4 flex items-center justify-between shadow-sm active:scale-[0.99] transition-transform"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-[#2A2F3A] text-slate-700 dark:text-slate-300 flex items-center justify-center">
-            <ActiveIcon size={18} />
-          </div>
-          <span className="text-[16px] font-semibold text-slate-900 dark:text-white">
-            {activePageDetails.label}
-          </span>
-        </div>
-        <ChevronDown
-          size={20}
+    <div className="w-full flex flex-col gap-2 sm:gap-3 mt-1 sm:mt-2 mb-2 sm:mb-3 z-20">
+      <div className="w-full flex flex-row items-stretch justify-between gap-2 sm:gap-4">
+        <div
           className={cn(
-            "text-slate-400 transition-transform",
-            isPageSelectorOpen && "rotate-180",
+            "min-w-0 sm:flex-1",
+            activeTab === "dashboard" ? "flex-[4.5]" : "flex-1"
           )}
-        />
-      </button>
+        >
+          <button
+            onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
+            className="w-full h-9 sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg sm:rounded-[12px] px-2 sm:px-4 flex items-center justify-center gap-1.5 sm:gap-[12px] shadow-sm active:scale-[0.99] transition-transform"
+          >
+            <ActiveIcon
+              size={14}
+              className="text-slate-600 dark:text-slate-400 shrink-0 sm:!w-[20px] sm:!h-[20px]"
+            />
+            <span className="text-[11px] sm:text-[16px] font-semibold text-slate-800 dark:text-slate-200 truncate leading-none sm:leading-none">
+              {activePageDetails.label}
+            </span>
+            <ChevronDown
+              size={14}
+              className={cn(
+                "text-slate-400 shrink-0 transition-transform sm:!w-[20px] sm:!h-[20px]",
+                isPageSelectorOpen && "rotate-180",
+              )}
+            />
+          </button>
+        </div>
+
+        {activeTab === "dashboard" && (
+          <div className="min-w-0 sm:flex-1 flex-[5.5]">
+            <button
+              onClick={() => {
+                if (!activeJob || activeJob.status !== "active") {
+                  alert("Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.");
+                  return;
+                }
+                navigate("/driver/trip");
+              }}
+              className={cn(
+                "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
+                activeJob?.status === "active" ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800" : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80"
+              )}
+            >
+              {activeJob?.status === "active" ? (
+                <Navigation size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+              ) : (
+                <Lock size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+              )}
+              <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
+                Lançar Viagem
+              </span>
+            </button>
+          </div>
+        )}
+
+        {activeTab === "profile" && (
+          <div className="shrink-0 relative">
+            <button
+              onClick={() => setIsConfigMenuOpen(!isConfigMenuOpen)}
+              className="w-9 h-9 sm:w-[56px] sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg sm:rounded-[12px] flex items-center justify-center shadow-sm active:scale-[0.99] transition-transform hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
+            >
+              <Settings size={16} className="text-slate-600 dark:text-slate-400 sm:!w-[22px] sm:!h-[22px]" />
+            </button>
+
+            {isConfigMenuOpen && (
+              <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg shadow-lg overflow-hidden z-30 animate-in fade-in zoom-in-95">
+                <button
+                  onClick={() => {
+                    setIsConfigMenuOpen(false);
+                    setIsEditProfileOpen(true);
+                  }}
+                  className="w-full flex items-center gap-2 px-4 py-3 text-[13px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors"
+                >
+                  <Edit size={16} className="text-slate-500" />
+                  Editar Perfil
+                </button>
+                <button
+                  onClick={() => {
+                    setIsConfigMenuOpen(false);
+                    setIsInfoOpen(!isInfoOpen);
+                  }}
+                  className="w-full flex items-center gap-2 px-4 py-3 text-[13px] text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors border-t border-slate-100 dark:border-slate-800/60"
+                >
+                  <Info size={16} className="text-slate-500" />
+                  {isInfoOpen ? "Ocultar Info" : "Ver Informações"}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {isPageSelectorOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-20"
-            onClick={() => setIsPageSelectorOpen(false)}
-          />
-          <div className="absolute top-[calc(100%+8px)] left-0 right-0 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[18px] shadow-xl z-30 overflow-hidden animate-in fade-in slide-in-from-top-2">
-            {pageOptions.map((opt) => {
-              const Icon = opt.icon;
-              return (
-                <button
-                  key={opt.id}
-                  onClick={() => {
-                    setIsPageSelectorOpen(false);
+        <div className="w-full bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-2">
+          {pageOptions.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <button
+                key={opt.id}
+                onClick={() => {
+                  setIsPageSelectorOpen(false);
+                  if (opt.id === "history") {
+                    navigate("/driver/history");
+                  } else if (opt.id === "reports") {
+                    navigate("/driver/reports");
+                  } else {
                     setActiveTab(opt.id as "dashboard" | "profile");
-                  }}
+                  }
+                }}
+                className={cn(
+                  "w-full flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
+                  activeTab === opt.id
+                    ? "bg-slate-50 dark:bg-[#2A2F3A]"
+                    : "",
+                )}
+              >
+                <Icon
+                  size={16}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3.5 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
-                    activeTab === opt.id ? "bg-slate-50 dark:bg-[#2A2F3A]" : "",
+                    activeTab === opt.id
+                      ? "text-blue-600"
+                      : "text-slate-500",
+                  )}
+                />
+                <span
+                  className={cn(
+                    "text-[13px] sm:text-[14px] font-semibold",
+                    activeTab === opt.id
+                      ? "text-blue-700 dark:text-blue-400"
+                      : "text-slate-600 dark:text-slate-300",
                   )}
                 >
-                  <div
-                    className={cn(
-                      "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
-                      activeTab === opt.id
-                        ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
-                        : "bg-slate-100 dark:bg-[#2A2F3A] text-slate-600 dark:text-slate-400",
-                    )}
-                  >
-                    <Icon size={18} />
-                  </div>
-                  <span
-                    className={cn(
-                      "text-[15px] font-semibold",
-                      activeTab === opt.id
-                        ? "text-slate-900 dark:text-white"
-                        : "text-slate-600 dark:text-slate-300",
-                    )}
-                  >
-                    {opt.label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </>
+                  {opt.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       )}
     </div>
   );
 
   return (
-    <div className="max-w-4xl mx-auto w-full pb-10">
+    <div className="max-w-7xl mx-auto w-full pb-6">
       {/* iOS Style Nav Bar Content */}
-      <div className="flex items-center justify-center px-4 py-3 mb-2 sm:mb-4"></div>
+      <div className="flex items-center justify-center px-4 py-0 sm:py-2"></div>
 
-      <div className="space-y-6 sm:space-y-8 px-4 sm:px-6 w-full box-border">
+      <div className="space-y-3 sm:space-y-4 px-4 sm:px-6 w-full box-border">
         {/* Action Buttons */}
 
         {/* Profile Header (Corp Card Style) */}
-        <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[16px] sm:rounded-[20px] p-3 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-3 shadow-sm relative z-30 w-full box-border overflow-visible">
-          <div className="flex items-center gap-3 min-w-0 w-full sm:w-auto flex-1">
-            <div className="w-12 h-12 bg-slate-900 dark:bg-[#2A2F3A] rounded-xl overflow-hidden flex items-center justify-center shrink-0 border border-slate-200 dark:border-[#3A3F4A] shadow-sm relative">
-              {currentUser.avatar || currentUser.photoURL ? (
-                <img
-                  src={currentUser.avatar || currentUser.photoURL}
-                  alt={currentUser.name}
-                  className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <span className="text-xl font-bold text-white tracking-tighter">
-                  {currentUser.name.substring(0, 2).toUpperCase()}
-                </span>
-              )}
-            </div>
-            <div className="flex flex-col min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 w-full">
-                <h2 className="text-[15px] sm:text-[16px] font-bold text-slate-900 dark:text-white leading-tight truncate">
-                  {currentUser.name}
-                </h2>
-                <ShieldCheck
-                  size={14}
-                  className="text-blue-500 shrink-0"
-                  fill="currentColor"
-                />
-              </div>
-              <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-0.5 font-medium truncate">
-                {currentUser.roles?.includes("admin")
-                  ? "Administrador"
-                  : "Motorista Parceiro"}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center sm:pl-4 sm:border-l border-slate-200 dark:border-[#2A2F3A] shrink-0 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 mt-2 sm:mt-0 relative z-20">
-            <div className="flex flex-col relative w-full sm:w-[180px]">
-              <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mb-1">
-                Simulador
-              </span>
-              <button
-                onClick={() => setIsSimulatorMenuOpen(!isSimulatorMenuOpen)}
-                className="flex items-center justify-between gap-1.5 bg-slate-50 dark:bg-[#1A1F26] hover:bg-slate-100 dark:hover:bg-[#2A2F3A] transition-colors border border-slate-200 dark:border-[#2A2F3A] shadow-sm rounded-[10px] px-2.5 py-1.5 w-full active:scale-[0.98]"
-              >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <Gamepad2
-                    size={14}
-                    className="text-slate-500 dark:text-slate-400 shrink-0"
+        <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[14px] sm:rounded-[16px] flex flex-col shadow-sm relative z-30 w-full box-border">
+          <div className="p-3 sm:p-4 flex items-start sm:items-center justify-between gap-3 w-full">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="w-12 h-12 sm:w-14 sm:h-14 bg-slate-900 dark:bg-[#2A2F3A] rounded-lg overflow-hidden flex items-center justify-center shrink-0 border border-slate-200 dark:border-[#3A3F4A] shadow-sm relative">
+                {currentUser.avatar || currentUser.photoURL ? (
+                  <img
+                    src={currentUser.avatar || currentUser.photoURL}
+                    alt={currentUser.name}
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
                   />
-                  <span className="text-[12px] sm:text-[13px] font-semibold text-slate-800 dark:text-slate-200 truncate">
-                    {currentActiveCompany?.simulatorName || "Nenhum"}
+                ) : (
+                  <span className="text-base sm:text-lg font-bold text-white tracking-tighter">
+                    {currentUser.name.substring(0, 2).toUpperCase()}
                   </span>
+                )}
+              </div>
+              <div className="flex flex-col flex-1 min-w-0 justify-center">
+                <div className="flex items-center gap-1.5 w-full">
+                  <h2 className="text-[11px] sm:text-[13px] font-bold text-slate-900 dark:text-white leading-none whitespace-nowrap">
+                    {currentUser.name}
+                  </h2>
                 </div>
-                <ChevronDown
-                  size={14}
-                  className={cn(
-                    "text-slate-400 shrink-0 transition-transform",
-                    isSimulatorMenuOpen && "rotate-180",
-                  )}
-                />
-              </button>
+                <p className="text-[9px] sm:text-[11px] text-slate-500 dark:text-slate-400 font-medium leading-none mt-1 whitespace-nowrap">
+                  {currentUser.roles?.includes("admin")
+                    ? "Administrador"
+                    : "Motorista Parceiro"}
+                </p>
+              </div>
+            </div>
 
-              {isSimulatorMenuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-30"
-                    onClick={() => setIsSimulatorMenuOpen(false)}
-                  />
-                  <div className="absolute right-0 left-0 sm:left-auto top-[calc(100%+8px)] w-full sm:w-[180px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[16px] shadow-xl z-40 overflow-hidden animate-in fade-in zoom-in-95 origin-top-right">
-                    {companies
-                      .filter(
-                        (c) =>
-                          currentUser?.roles?.includes("admin") ||
-                          memberships?.some((m) => m.companyId === c.id),
-                      )
-                      .map((c) => {
-                        const isSelected = c.id === activeCompanyId;
-                        return (
-                          <button
-                            key={c.id}
-                            onClick={() => {
-                              setActiveCompanyId(c.id);
-                              setIsSimulatorMenuOpen(false);
-                            }}
-                            className={cn(
-                              "w-full flex items-center justify-between px-4 py-3 border-b border-slate-50 dark:border-[#2A2F3A]/50 last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A]/30 transition-colors text-left",
-                              isSelected ? "bg-slate-50 dark:bg-[#2A2F3A]" : "",
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                "text-[13px] sm:text-[14px] font-semibold truncate mr-2",
-                                isSelected
-                                  ? "text-slate-900 dark:text-white"
-                                  : "text-slate-600 dark:text-slate-300",
-                              )}
-                            >
-                              {c.simulatorName || "Global Truck"}
-                            </span>
-                            {isSelected && (
-                              <Check
-                                size={16}
-                                className="text-blue-600 dark:text-blue-400 shrink-0"
-                              />
-                            )}
-                          </button>
-                        );
-                      })}
-                    {companies.filter(
-                      (c) =>
-                        currentUser?.roles?.includes("admin") ||
-                        memberships?.some((m) => m.companyId === c.id),
-                    ).length === 0 && (
-                      <div className="px-4 py-3 text-[13px] text-slate-500 text-center">
-                        Nenhum simulador disponível
-                      </div>
-                    )}
+            <div className="flex items-center pl-3 sm:pl-4 border-l border-slate-200 dark:border-[#2A2F3A] shrink-0 w-auto">
+              <div className="flex flex-col w-auto min-w-0 justify-center">
+                <span className="text-[8px] sm:text-[9px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider mb-0.5 px-0.5 whitespace-nowrap">
+                  Simulador
+                </span>
+                <button
+                  onClick={() => setIsSimulatorMenuOpen(!isSimulatorMenuOpen)}
+                  className="flex items-center justify-between gap-1.5 bg-slate-50 dark:bg-[#1A1F26] hover:bg-slate-100 dark:hover:bg-[#2A2F3A] transition-colors border border-slate-200 dark:border-[#2A2F3A] shadow-sm rounded-md px-1.5 py-1 w-auto active:scale-[0.98]"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Truck
+                      size={10}
+                      className="text-slate-500 dark:text-slate-400 shrink-0"
+                    />
+                    <span className="text-[9px] sm:text-[10px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                      {currentActiveCompany?.simulatorName || "G. Truck"}
+                    </span>
                   </div>
-                </>
-              )}
+                  <ChevronDown
+                    size={10}
+                    className={cn(
+                      "text-slate-400 shrink-0 transition-transform ml-1",
+                      isSimulatorMenuOpen && "rotate-180",
+                    )}
+                  />
+                </button>
+              </div>
             </div>
           </div>
+
+          {isSimulatorMenuOpen && (
+            <div className="border-t border-slate-100 dark:border-[#2A2F3A] p-2 sm:p-3 bg-slate-50/50 dark:bg-[#1A1F26]/50 rounded-b-[14px] sm:rounded-b-[16px] animate-in fade-in slide-in-from-top-2">
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-2">Selecione o Simulador:</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {companies
+                  .filter((c) => memberships?.some((m) => m.companyId === c.id))
+                  .map((c) => {
+                    const isSelected = c.id === activeCompanyId;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => {
+                          setActiveCompanyId(c.id);
+                          setIsSimulatorMenuOpen(false);
+                        }}
+                        className={cn(
+                          "w-full flex items-center justify-between px-3 py-2 border border-transparent rounded-md transition-colors text-left",
+                          isSelected
+                            ? "bg-white dark:bg-[#2A2F3A] border-slate-200 dark:border-[#3A3F4A] shadow-sm"
+                            : "hover:bg-white dark:hover:bg-[#2A2F3A] hover:border-slate-200 dark:hover:border-[#3A3F4A]",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "text-[11px] sm:text-[12px] font-semibold truncate mr-2",
+                            isSelected
+                              ? "text-slate-900 dark:text-white"
+                              : "text-slate-600 dark:text-slate-300",
+                          )}
+                        >
+                          {c.simulatorName || "Global Truck"}
+                        </span>
+                        {isSelected && (
+                          <Check
+                            size={14}
+                            className="text-blue-600 dark:text-blue-400 shrink-0"
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                {companies.filter((c) =>
+                    memberships?.some((m) => m.companyId === c.id)
+                ).length === 0 && (
+                  <div className="px-4 py-3 text-[13px] text-slate-500 text-center col-span-full">
+                    Nenhuma empresa disponível
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {renderPageSelector()}
 
         {activeTab === "profile" && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
-            {/* Unified Horizontal Stats Card */}
-            <div className="flex items-center justify-between bg-white dark:bg-[#121214] border border-slate-200 dark:border-[#27272A] shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] dark:shadow-none rounded-[16px] p-4 relative overflow-hidden">
-              {/* Entregas */}
-              <div className="flex-1 flex flex-col items-center justify-center relative">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <Truck
-                    size={14}
-                    className="text-indigo-500 dark:text-indigo-400"
-                  />
-                  <span className="text-[11px] sm:text-[12px] font-semibold text-slate-500 dark:text-[#A1A1AA] uppercase tracking-wider">
-                    Entregas
-                  </span>
-                </div>
-                <span className="text-[24px] sm:text-[28px] font-bold text-slate-900 dark:text-[#FAFAFA] leading-none tracking-tight">
-                  {displayDeliveries}
-                </span>
-              </div>
-
-              {/* Divider */}
-              <div className="w-px h-12 bg-slate-200 dark:bg-[#27272A]"></div>
-
-              {/* Concluídos */}
-              <div className="flex-1 flex flex-col items-center justify-center relative">
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <CheckCircle
-                    size={14}
-                    className="text-emerald-500 dark:text-emerald-400"
-                  />
-                  <span className="text-[11px] sm:text-[12px] font-semibold text-slate-500 dark:text-[#A1A1AA] uppercase tracking-wider">
-                    Concluídos
-                  </span>
-                </div>
-                <span className="text-[24px] sm:text-[28px] font-bold text-slate-900 dark:text-[#FAFAFA] leading-none tracking-tight">
-                  {displayCompleted}
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  className="flex items-center justify-center gap-2 py-3 bg-gray-100 dark:bg-[#2A2F3A] hover:bg-gray-200 dark:hover:bg-[#3A3F4A] text-gray-700 dark:text-gray-200 rounded-xl font-semibold text-[13px] transition-colors shadow-sm"
-                  onClick={() => setIsEditProfileOpen(true)}
-                >
-                  <Edit size={16} />
-                  Editar Perfil
-                </button>
-                <button
-                  className="flex items-center justify-center gap-2 py-3 bg-gray-100 dark:bg-[#2A2F3A] hover:bg-gray-200 dark:hover:bg-[#3A3F4A] text-gray-700 dark:text-gray-200 rounded-xl font-semibold text-[13px] transition-colors shadow-sm"
-                  onClick={() => setIsInfoOpen(!isInfoOpen)}
-                >
-                  <Info size={16} />
-                  {isInfoOpen ? "Ocultar Info" : "Ver Informações"}
-                </button>
-              </div>
-
-              {!activeJob && currentUser.isOnline && (
-                <Button
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-12 font-bold text-[14px] shadow-sm tracking-tight transition-all"
-                  onClick={handleRequestWork}
-                >
-                  <Package size={18} className="mr-2" />
-                  Solicitar Nova Operação
-                </Button>
-              )}
-            </div>
-
+          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
             {/* Driver Details Info Card */}
             {isInfoOpen && (
               <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[16px] p-4 sm:p-5 shadow-sm space-y-4 animate-in fade-in slide-in-from-top-2">
@@ -513,9 +644,7 @@ export default function Profile() {
                           Empresa Ativa / Vínculo
                         </p>
                         <p className="text-[14px] font-bold text-slate-900 dark:text-white truncate">
-                          {currentActiveCompany?.fleetName ||
-                            currentActiveCompany?.companyName ||
-                            "Carregando..."}
+                          {currentActiveCompany?.companyName || "Carregando..."}
                           <span className="text-slate-500 font-medium ml-1 text-[13px]">
                             • Desde {currentFormattedDate}
                           </span>
@@ -526,6 +655,109 @@ export default function Profile() {
                 </div>
               </div>
             )}
+
+            <DriverPerformanceCard 
+              historicoTrips={historicoTrips}
+              driverId={currentUser?.id}
+              activeCompanyId={activeCompanyId}
+              allCompanyMembers={allCompanyMembers}
+              posicaoRanking={globalRank?.position || "--"}
+              totalRanking={globalRank?.total || "--"}
+              currentUser={currentUser}
+            />
+
+        {/* Dashboard Stats List */}
+        <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="bg-white dark:bg-[#1A1F26] rounded-2xl border border-slate-200 dark:border-slate-800/60 shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.2)] overflow-hidden flex flex-col">
+            <div className="bg-slate-100 dark:bg-slate-800/80 px-4 py-2 border-b border-slate-200 dark:border-slate-800/60 flex items-center justify-center">
+              <h3 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Estatísticas Operacionais</h3>
+            </div>
+            <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800/60">
+              {/* List Item 1: Ranking */}
+              <div className="flex items-center p-3">
+                <div className="flex items-center gap-2.5 w-full">
+                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
+                    <Trophy size={13} className="text-teal-600 dark:text-teal-400" />
+                  </div>
+                  <div className="flex flex-col flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Ranking Global:</span>
+                      <span className="text-[12px] font-bold text-slate-900 dark:text-white">
+                        #{globalRank?.position || "--"} <span className="text-slate-400 dark:text-slate-500 font-normal">/ {globalRank ? new Intl.NumberFormat("pt-BR").format(globalRank.total) : "--"}</span>
+                      </span>
+                    </div>
+                    {globalRank?.diffToNext != null && globalRank.diffToNext > 0 && (
+                      <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500 mt-0.5">
+                        Faltam <strong className="text-teal-600 dark:text-teal-400 font-semibold">{formatCurrency(globalRank.diffToNext)}</strong> para o próximo
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* List Item 2: Ganhos */}
+              <div className="flex items-center p-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
+                    <Wallet size={13} className="text-teal-600 dark:text-teal-400" />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Ganhos Acumulados:</span>
+                    <span className="text-[12px] font-bold text-slate-900 dark:text-white">
+                      {new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(totalGanhos)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* List Item 3: Viagens */}
+              <div className="flex items-center p-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
+                    <Navigation size={13} className="text-teal-600 dark:text-teal-400" />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Viagens Realizadas:</span>
+                    <span className="text-[12px] font-bold text-slate-900 dark:text-white">
+                      {totalViagens}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* List Item 4: Nível */}
+              <div className="flex items-center p-3">
+                <div className="flex items-center gap-2.5 flex-1">
+                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
+                    <Award size={13} className="text-teal-600 dark:text-teal-400" />
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 shrink-0">Nível {displayLevel}:</span>
+                    <div className="flex items-center gap-2 flex-1 max-w-[140px]">
+                      <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-800/80 rounded-full overflow-hidden">
+                        <div className="h-full bg-teal-500 rounded-full" style={{ width: `${Math.max(2, xpProgress)}%` }}></div>
+                      </div>
+                      <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
+                        {Math.floor(currentLevelXp)}/1k ({Math.round(xpProgress)}%)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+            <div className="flex flex-col gap-3">
+              {!activeJob && currentUser.isOnline && (
+                <Button
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-12 font-bold text-[14px] shadow-sm tracking-tight transition-all"
+                  onClick={handleRequestWork}
+                >
+                  <Package size={18} className="mr-2" />
+                  Solicitar Nova Operação
+                </Button>
+              )}
+            </div>
 
             {/* Date Filter */}
             <div className="flex flex-col gap-3">
@@ -582,28 +814,7 @@ export default function Profile() {
               )}
             </div>
 
-            {/* Level Progress Section iOS Style */}
-            <div className="bg-white dark:bg-[#1A1F26] rounded-2xl p-4 sm:p-5 border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-baseline gap-2">
-                  <h3 className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa] tracking-tight">
-                    Nível {displayLevel}
-                  </h3>
-                  <span className="text-[11px] font-semibold text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 px-1.5 py-0.5 rounded">
-                    {Math.floor(currentLevelXp)} / 1000 XP
-                  </span>
-                </div>
-                <span className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa]">
-                  {Math.round(xpProgress)}%
-                </span>
-              </div>
-              <div className="h-2 w-full bg-gray-100 dark:bg-[#27272a] rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[#00D1FF] shadow-[0_0_10px_rgba(0,209,255,0.4)] rounded-full transition-all duration-1000 ease-out"
-                  style={{ width: `${Math.max(2, xpProgress)}%` }}
-                ></div>
-              </div>
-            </div>
+
 
             {/* Active Job Section */}
             <div>
@@ -680,12 +891,9 @@ export default function Profile() {
               <h3 className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 px-1">
                 Histórico
               </h3>
-              {filteredPastJobs.length > 0 ? (
+              {filteredHistoryJobs.length > 0 ? (
                 <div className="space-y-3">
-                  {filteredPastJobs
-                    .slice()
-                    .reverse()
-                    .map((job) => {
+                  {filteredHistoryJobs.map((job) => {
                       const contract = contracts.find(
                         (c) => c.id === job.contractId,
                       );
@@ -697,12 +905,69 @@ export default function Profile() {
                         ? trailers.find((t) => t.id === jobTrailerId)
                         : null;
 
-                      const completedAt = job.completedAt
-                        ? new Date(job.completedAt)
-                        : new Date();
-                      const deadline = new Date(job.deadlineDate);
-                      const onTime = completedAt <= deadline;
+                      const parseDateSafe = (d: any): Date | null => {
+                        if (!d) return null;
+                        if (d.toDate && typeof d.toDate === "function") return d.toDate();
+                        if (d.seconds) return new Date(d.seconds * 1000);
+                        const date = new Date(d);
+                        if (isNaN(date.getTime())) return null;
+                        return date;
+                      };
+
+                      const rawCompletedAt = parseDateSafe(job.completedAt);
+                      const rawDeadline = parseDateSafe(job.dueAt || job.deadlineDate);
+                      const rawAssignedAt = parseDateSafe(job.assignedAt || job.createdAt);
                       const isExpanded = expandedJobId === job.id;
+
+                      const jobTrips = historicoTrips.filter(t => {
+                        if (t.jobId && t.jobId === job.id) return true;
+                        if (t.contratoId !== job.contractId) return false;
+                        if (t.motoristaId !== currentUser.id) return false;
+                        
+                        const rawTripDate = parseDateSafe(t.createdAt || t.dataLancamento);
+                        const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+                        const assignedTime = rawAssignedAt ? rawAssignedAt.getTime() : 0;
+                        const completedTime = rawCompletedAt ? rawCompletedAt.getTime() : Date.now() + 86400000;
+                        
+                        return tripTime >= assignedTime && tripTime <= completedTime;
+                      });
+                      
+                      const totalGanhos = jobTrips.reduce((acc, curr) => {
+                        let v = Number(curr.valor);
+                        if (isNaN(v) && typeof curr.valor === "string") {
+                          v = parseFloat(curr.valor.replace(/\D/g, "")) / 100;
+                        }
+                        return acc + (isNaN(v) ? 0 : v);
+                      }, 0);
+                      
+                      let tempoExecucao = "-";
+                      let tempoRestanteOuAtraso = "-";
+                      let isAtrasado = false;
+                      let prazoTotal = "-";
+                      
+                      if (rawAssignedAt && rawDeadline) {
+                        const diffTotalMs = rawDeadline.getTime() - rawAssignedAt.getTime();
+                        const totalDays = Math.floor(diffTotalMs / (1000 * 60 * 60 * 24));
+                        prazoTotal = `${totalDays} dia${totalDays > 1 ? "s" : ""}`;
+                      }
+                      
+                      if (rawAssignedAt && rawCompletedAt) {
+                        const diffExecMs = rawCompletedAt.getTime() - rawAssignedAt.getTime();
+                        const execD = Math.floor(diffExecMs / (1000 * 60 * 60 * 24));
+                        const execH = Math.floor((diffExecMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                        const execM = Math.floor((diffExecMs % (1000 * 60 * 60)) / (1000 * 60));
+                        tempoExecucao = execD > 0 ? `${execD}d ${execH}h ${execM}min` : `${execH}h ${execM}min`;
+                      }
+                      
+                      if (rawCompletedAt && rawDeadline) {
+                        const diffRestMs = rawDeadline.getTime() - rawCompletedAt.getTime();
+                        isAtrasado = diffRestMs < 0;
+                        const absRest = Math.abs(diffRestMs);
+                        const restD = Math.floor(absRest / (1000 * 60 * 60 * 24));
+                        const restH = Math.floor((absRest % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                        const restM = Math.floor((absRest % (1000 * 60 * 60)) / (1000 * 60));
+                        tempoRestanteOuAtraso = restD > 0 ? `${restD}d ${restH}h ${restM}min` : `${restH}h ${restM}min`;
+                      }
 
                       return (
                         <div
@@ -715,115 +980,143 @@ export default function Profile() {
                           )}
                         >
                           <button
-                            className="w-full flex items-center justify-between p-4 focus:outline-none"
+                            className="w-full flex flex-col p-3 focus:outline-none"
                             onClick={() =>
                               setExpandedJobId(isExpanded ? null : job.id)
                             }
                           >
-                            <div className="flex items-start gap-4 min-w-0 pr-4 w-full">
-                              <div
-                                className={cn(
-                                  "w-10 h-10 mt-1 rounded-full flex items-center justify-center shrink-0 border",
-                                  onTime
-                                    ? "bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-800/30 text-green-600 dark:text-green-400"
-                                    : "bg-orange-50 dark:bg-orange-900/20 border-orange-100 dark:border-orange-800/30 text-orange-600 dark:text-orange-400",
-                                )}
-                              >
-                                {onTime ? (
-                                  <CheckCircle size={18} />
-                                ) : (
-                                  <AlertCircle size={18} />
-                                )}
-                              </div>
-                              <div className="min-w-0 text-left flex-1">
-                                <div className="flex items-center flex-wrap gap-2 mb-1">
-                                  <h4 className="font-semibold text-gray-900 dark:text-[#fafafa] text-[14px] tracking-tight truncate">
+                            <div className="flex items-center justify-between w-full">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {/* Check / Cross */}
+                                <div className={cn(
+                                  "w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0",
+                                  isAtrasado
+                                    ? "bg-amber-100 dark:bg-amber-500/20"
+                                    : "bg-emerald-100 dark:bg-emerald-500/20"
+                                )}>
+                                  {isAtrasado 
+                                    ? <X size={16} className="text-amber-600 dark:text-amber-400" strokeWidth={3} />
+                                    : <Check size={16} className="text-emerald-600 dark:text-emerald-400" strokeWidth={3} />}
+                                </div>
+                                
+                                {/* Name and Badge */}
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <h4 className="text-[15px] sm:text-[16px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
                                     {contract?.name || "Contrato"}
                                   </h4>
-                                  <span
-                                    className={cn(
-                                      "text-[10px] font-bold tracking-widest uppercase px-1.5 py-0.5 rounded-md",
-                                      onTime
-                                        ? "bg-green-100/50 dark:bg-green-500/10 text-green-700 dark:text-green-400"
-                                        : "bg-orange-100/50 dark:bg-orange-500/10 text-orange-700 dark:text-orange-400",
-                                    )}
-                                  >
-                                    {onTime ? "No Prazo" : "Atrasado"}
+                                  <span className={cn(
+                                    "h-[16px] px-1.5 text-[9px] font-bold tracking-wide rounded uppercase flex items-center justify-center shrink-0 leading-none",
+                                    isAtrasado 
+                                      ? "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400" 
+                                      : "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"
+                                  )}>
+                                    {isAtrasado ? "O prazo expirou" : "Dentro do prazo"}
                                   </span>
                                 </div>
-                                <div className="flex flex-col gap-1 mt-1 text-left">
-                                  <div className="text-[12px] text-gray-600 dark:text-[#a1a1aa] font-medium flex items-center gap-1.5 min-w-0">
-                                    <Package
-                                      size={13}
-                                      className="text-gray-400 shrink-0"
-                                    />
-                                    <span className="truncate">
-                                      {job.progress}{" "}
-                                      {job.progress === 1
-                                        ? "entrega"
-                                        : "entregas"}
-                                    </span>
-                                  </div>
-                                  {trailer && (
-                                    <div className="text-[12px] text-gray-600 dark:text-[#a1a1aa] flex items-center gap-1.5 min-w-0">
-                                      <Truck
-                                        size={13}
-                                        className="text-gray-400 shrink-0"
-                                      />{" "}
-                                      <span className="truncate">
-                                        {trailer.name}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {vehicle && (
-                                    <div className="text-[12px] text-gray-600 dark:text-[#a1a1aa] flex items-center gap-1.5 min-w-0">
-                                      <Car
-                                        size={13}
-                                        className="text-gray-400 shrink-0"
-                                      />{" "}
-                                      <span className="truncate">
-                                        {vehicle.name}
-                                      </span>
-                                    </div>
-                                  )}
-                                </div>
+                              </div>
+                              <div className="text-gray-400 dark:text-gray-500 shrink-0 ml-2">
+                                {isExpanded ? (
+                                  <ChevronUp size={18} />
+                                ) : (
+                                  <ChevronDown size={18} />
+                                )}
                               </div>
                             </div>
-                            <div className="text-gray-400 dark:text-gray-500 shrink-0 self-start mt-2">
-                              {isExpanded ? (
-                                <ChevronUp size={18} />
-                              ) : (
-                                <ChevronDown size={18} />
-                              )}
+
+                            {/* Divider */}
+                            <div className="h-px w-full bg-gray-100 dark:bg-gray-800/60 my-2.5"></div>
+
+                            {/* Info row */}
+                            <div className="flex items-center justify-start w-full gap-x-2 sm:gap-x-4 gap-y-1.5 overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <Package size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                  {job.progress} {job.progress === 1 ? "viagem" : "viagens"}
+                                </span>
+                              </div>
+                              
+                              <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
+                              
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <Truck size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                  {trailer?.name || "Nenhum"}
+                                </span>
+                              </div>
+                              
+                              <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
+                              
+                              <div className="flex items-center gap-1.5 shrink-0 pr-1">
+                                <Truck size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
+                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                  {vehicle?.name || "Nenhum"}
+                                </span>
+                              </div>
                             </div>
                           </button>
 
                           {isExpanded && (
                             <div className="px-4 pb-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                              <div className="pt-3 border-t border-gray-100 dark:border-[#2A2F3A] flex flex-col gap-2">
-                                <div className="flex justify-between items-center text-[12px]">
-                                  <span className="text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                                    <CheckCircle
-                                      size={14}
-                                      className="text-gray-400"
-                                    />{" "}
-                                    Conclusão
-                                  </span>
-                                  <span className="font-medium text-gray-900 dark:text-[#fafafa]">
-                                    {completedAt.toLocaleDateString("pt-BR")}
-                                  </span>
+                              <div className="bg-gray-50 dark:bg-[#202024] rounded-xl border border-gray-100 dark:border-gray-800/60 p-2.5 mb-3 space-y-2">
+                                {/* Total de Ganhos */}
+                                <div className="flex items-center gap-2">
+                                  <Banknote size={11} className="text-green-500 dark:text-green-400 shrink-0" strokeWidth={2.5}/>
+                                  <div className="flex items-center gap-2 min-w-0 w-full">
+                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Total de ganhos:</span>
+                                    <span className="text-[11.5px] font-semibold text-green-600 dark:text-green-400 truncate">
+                                      {formatCurrency(totalGanhos)}
+                                    </span>
+                                  </div>
                                 </div>
-                                <div className="flex justify-between items-center text-[12px]">
-                                  <span className="text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                                    <Clock
-                                      size={14}
-                                      className="text-gray-400"
-                                    />{" "}
-                                    Prazo Base
-                                  </span>
-                                  <span className="font-medium text-gray-900 dark:text-[#fafafa]">
-                                    {deadline.toLocaleDateString("pt-BR")}
-                                  </span>
+
+                                {/* Prazo total */}
+                                <div className="flex items-center gap-2">
+                                  <CalendarDays size={11} className="text-gray-400 dark:text-gray-500 shrink-0" strokeWidth={2.5}/>
+                                  <div className="flex items-center gap-2 min-w-0 w-full">
+                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Prazo total:</span>
+                                    <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
+                                      {prazoTotal}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Execução */}
+                                <div className="flex items-center gap-2">
+                                  <Clock size={11} className="text-gray-400 dark:text-gray-500 shrink-0" strokeWidth={2.5}/>
+                                  <div className="flex items-center gap-2 min-w-0 w-full">
+                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Execução:</span>
+                                    <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
+                                      {tempoExecucao}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Tempo restante / Atraso */}
+                                <div className="flex items-center gap-2">
+                                  <Hourglass size={11} className={cn("shrink-0", isAtrasado ? "text-red-500 dark:text-red-400" : "text-gray-400 dark:text-gray-500")} strokeWidth={2.5}/>
+                                  <div className="flex items-center gap-2 min-w-0 w-full">
+                                    <span className={cn("text-[10px] font-medium shrink-0", isAtrasado ? "text-red-600/80 dark:text-red-400/80" : "text-gray-500 dark:text-gray-400")}>
+                                      {isAtrasado ? 'Atraso:' : 'Tempo restante:'}
+                                    </span>
+                                    <span className={cn("text-[11.5px] font-semibold truncate", isAtrasado ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-[#fafafa]")}>
+                                      {tempoRestanteOuAtraso}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Result Message */}
+                              <div className={cn("flex items-center gap-2 rounded-xl px-3 py-2 border", isAtrasado ? "bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20" : "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20")}>
+                                <div className={cn("shrink-0 w-[17px] h-[17px] rounded-full flex items-center justify-center", isAtrasado ? "bg-amber-200/50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400" : "bg-emerald-200/50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400")}>
+                                  {isAtrasado ? <X size={10} strokeWidth={3} /> : <Check size={10} strokeWidth={3} />}
+                                </div>
+                                <div className="flex flex-col justify-center">
+                                  <h4 className={cn("text-[12px] font-semibold mb-0.5 tracking-tight leading-none", isAtrasado ? "text-amber-800 dark:text-amber-500" : "text-emerald-800 dark:text-emerald-500")}>Resultado da operação</h4>
+                                  <p className={cn("text-[10px] font-normal leading-tight", isAtrasado ? "text-amber-700/80 dark:text-amber-400/80" : "text-emerald-700/80 dark:text-emerald-400/80")}>
+                                    {isAtrasado 
+                                      ? "Não foi concluído no prazo estabelecido."
+                                      : "Dentro do prazo estabelecido."}
+                                  </p>
                                 </div>
                               </div>
                             </div>

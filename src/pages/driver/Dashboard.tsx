@@ -31,11 +31,26 @@ import {
   LayoutDashboard,
   User as UserIcon,
   ChevronDown,
+  Lock,
+  History,
+  Activity,
+  Award,
+  Check,
+  CheckCircle2,
+  TrendingUp,
+  ChevronRight,
+  CalendarDays,
 } from "lucide-react";
 import { format, differenceInDays } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
+import { db } from "../../lib/firebase";
+import { query, collection, where, onSnapshot } from "firebase/firestore";
 import ErrorBoundary from "../../components/ErrorBoundary";
+import TripHistory from "./TripHistory";
+
+import { getJobRealTimestamp } from "../../lib/utils";
+import { OperationResultModal, OperationResultData } from "../../components/OperationResultModal";
 
 function DashboardComponent({
   isIntegrated = false,
@@ -53,9 +68,6 @@ function DashboardComponent({
     trailers,
     startJob,
     finishJob,
-    markDeliveryComplete,
-    updateDeliveryRoute,
-    unmarkDelivery,
     companies,
     requestJoinCompany,
     cancelRequestJoinCompany,
@@ -64,8 +76,15 @@ function DashboardComponent({
     updateUserOnlineStatus,
     activeCompanyId,
     allCompanyMembers,
+    historicoTrips,
   } = useAppStore();
   const [searchTerm, setSearchTerm] = useState("");
+  const [now, setNow] = useState(new Date());
+
+  React.useEffect(() => {
+    const timerId = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(timerId);
+  }, []);
 
   const [isRequestingId, setIsRequestingId] = useState<string | null>(null);
   const [isContractModalOpen, setIsContractModalOpen] = useState(false);
@@ -74,10 +93,9 @@ function DashboardComponent({
 
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
-  const [isRouteModalOpen, setIsRouteModalOpen] = useState(false);
-  const [routeModalTarget, setRouteModalTarget] = useState<number>(-1);
-  const [routeOrigin, setRouteOrigin] = useState("");
-  const [routeDestination, setRouteDestination] = useState("");
+  const [isFinishing, setIsFinishing] = useState(false);
+  const [showOperationResultModal, setShowOperationResultModal] = useState(false);
+  const [operationResultData, setOperationResultData] = useState<OperationResultData | null>(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -88,7 +106,7 @@ function DashboardComponent({
     const validJobs = jobs.filter(
       (j) =>
         j.driverId === currentUser?.id &&
-        j.status === "active" &&
+        (j.status === "active" || j.status === "awaiting_completion") &&
         contracts.some((c) => c.id === j.contractId),
     );
 
@@ -104,10 +122,10 @@ function DashboardComponent({
 
   const pendingDriverJobs = useMemo(() => {
     const valid = jobs.filter(
-      (j) => 
-        j.driverId === currentUser?.id && 
-        j.status === "pending" && 
-        contracts.some((c) => c.id === j.contractId)
+      (j) =>
+        j.driverId === currentUser?.id &&
+        j.status === "pending" &&
+        contracts.some((c) => c.id === j.contractId),
     );
     valid.sort((a, b) => {
       const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -127,21 +145,11 @@ function DashboardComponent({
     [myJob, vehicles],
   );
 
-  const trailer = useMemo(
-    () => {
-      const tId = myJob?.trailerId || contract?.trailerId;
-      const foundTrailer = tId ? trailers.find((t) => t.id === tId) : null;
-      console.log("[Driver Dashboard] Contrato recebido/carregado na tela:", { 
-        jobId: myJob?.id,
-        contractId: contract?.id,
-        vehicleId: myJob?.vehicleId,
-        trailerId: tId,
-        foundTrailer
-      });
-      return foundTrailer;
-    },
-    [myJob, contract, trailers],
-  );
+  const trailer = useMemo(() => {
+    const tId = myJob?.trailerId || contract?.trailerId;
+    const foundTrailer = tId ? trailers.find((t) => t.id === tId) : null;
+    return foundTrailer;
+  }, [myJob, contract, trailers]);
 
   const unassignedContracts = useMemo(
     () =>
@@ -159,18 +167,30 @@ function DashboardComponent({
         .filter(
           (j) => j.driverId === currentUser?.id && j.status === "completed",
         )
-        .sort(
-          (a, b) =>
-            new Date(b.createdAt || 0).getTime() -
-            new Date(a.createdAt || 0).getTime(),
-        ),
-    [jobs, currentUser?.id],
+        .sort((a, b) => {
+          const dateA = getJobRealTimestamp(a, historicoTrips);
+          const dateB = getJobRealTimestamp(b, historicoTrips);
+          
+          const contractA = contracts.find((c) => c.id === a.contractId)?.name || "";
+          const contractB = contracts.find((c) => c.id === b.contractId)?.name || "";
+
+          if (dateB !== dateA) {
+            console.log(`[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | ${new Date(dateA).toLocaleString()} vs ${new Date(dateB).toLocaleString()} | sort: ${dateB - dateA}`);
+            return dateB - dateA;
+          }
+          
+          console.log(`[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | Fallback string comparison`);
+          return contractA.localeCompare(contractB);
+        }),
+    [jobs, contracts, currentUser?.id, historicoTrips],
   );
   // -------------------------
 
   const pageOptions = [
-    { id: "/driver", label: "Painel", icon: LayoutDashboard },
+    { id: "/driver", label: "Painel Operacional", icon: LayoutDashboard },
     { id: "/driver/profile", label: "Meu Perfil", icon: UserIcon },
+    { id: "/driver/history", label: "Histórico de Viagens", icon: History },
+    { id: "/driver/reports", label: "Relatórios", icon: Activity },
   ];
 
   const activePageDetails =
@@ -190,36 +210,82 @@ function DashboardComponent({
   );
   console.log("- Componente quebra?: validando renderização do Dashboard");
 
-  const renderPageSelector = () => (
-    <div className="relative z-20 mb-4">
-      <button
-        onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
-        className="w-full bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[18px] p-4 flex items-center justify-between shadow-sm active:scale-[0.99] transition-transform"
-      >
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-[#2A2F3A] text-slate-700 dark:text-slate-300 flex items-center justify-center">
-            <ActiveIcon size={18} />
-          </div>
-          <span className="text-[16px] font-semibold text-slate-900 dark:text-white">
-            {activePageDetails.label}
-          </span>
-        </div>
-        <ChevronDown
-          size={20}
-          className={cn(
-            "text-slate-400 transition-transform",
-            isPageSelectorOpen && "rotate-180",
-          )}
-        />
-      </button>
+  const renderTopControls = (showLaunchTrip = false) => {
+    if (isIntegrated) return null;
 
-      {isPageSelectorOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-20"
-            onClick={() => setIsPageSelectorOpen(false)}
-          />
-          <div className="absolute top-[calc(100%+8px)] left-0 right-0 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[18px] shadow-xl z-30 overflow-hidden animate-in fade-in slide-in-from-top-2">
+    return (
+      <div className="w-full flex flex-col gap-2 sm:gap-3 mb-2 sm:mb-3">
+        <div
+          className={cn(
+            "w-full flex flex-row flex-nowrap items-stretch gap-2 sm:gap-4",
+            !showLaunchTrip && "max-w-sm"
+          )}
+        >
+          {!isIntegrated && (
+            <div
+              className={cn(
+                "min-w-0 sm:flex-1",
+                 showLaunchTrip ? "flex-[4.5]" : "flex-1"
+              )}
+            >
+              <button
+                onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
+                className="w-full h-9 sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg sm:rounded-[12px] px-2 sm:px-4 flex items-center justify-center gap-1.5 sm:gap-[12px] shadow-sm active:scale-[0.99] transition-transform"
+              >
+                <ActiveIcon
+                  size={14}
+                  className="text-slate-600 dark:text-slate-400 shrink-0 sm:!w-[20px] sm:!h-[20px]"
+                />
+                <span className="text-[11px] sm:text-[16px] font-semibold text-slate-800 dark:text-slate-200 truncate leading-none sm:leading-none">
+                  {activePageDetails.label}
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={cn(
+                    "text-slate-400 shrink-0 transition-transform sm:!w-[20px] sm:!h-[20px]",
+                    isPageSelectorOpen && "rotate-180",
+                  )}
+                />
+              </button>
+            </div>
+          )}
+
+          {showLaunchTrip && (
+            <div
+              className={cn(
+                 "min-w-0 sm:flex-1",
+                 isIntegrated ? "flex-1" : "flex-[5.5]"
+              )}
+            >
+              <button
+                onClick={() => {
+                  if (!myJob) {
+                    alert("Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.");
+                    return;
+                  }
+                  navigate("/driver/trip");
+                }}
+                className={cn(
+                  "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
+                  myJob ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800" : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80"
+                )}
+              >
+                {myJob ? (
+                  <Navigation size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                ) : (
+                  <Lock size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                )}
+                <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
+                  Lançar Viagem
+                </span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Dropdown in normal document flow */}
+        {!isIntegrated && isPageSelectorOpen && (
+          <div className="w-full bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-2">
             {pageOptions.map((opt) => {
               const Icon = opt.icon;
               return (
@@ -230,27 +296,25 @@ function DashboardComponent({
                     navigate(opt.id);
                   }}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3.5 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
+                    "w-full flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
                     location.pathname === opt.id
                       ? "bg-slate-50 dark:bg-[#2A2F3A]"
                       : "",
                   )}
                 >
-                  <div
+                  <Icon
+                    size={16}
                     className={cn(
-                      "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
                       location.pathname === opt.id
-                        ? "bg-blue-600 text-white shadow-md shadow-blue-500/20"
-                        : "bg-slate-100 dark:bg-[#2A2F3A] text-slate-600 dark:text-slate-400",
+                        ? "text-blue-600"
+                        : "text-slate-500",
                     )}
-                  >
-                    <Icon size={18} />
-                  </div>
+                  />
                   <span
                     className={cn(
-                      "text-[15px] font-semibold",
+                      "text-[13px] sm:text-[14px] font-semibold",
                       location.pathname === opt.id
-                        ? "text-slate-900 dark:text-white"
+                        ? "text-blue-700 dark:text-blue-400"
                         : "text-slate-600 dark:text-slate-300",
                     )}
                   >
@@ -260,10 +324,10 @@ function DashboardComponent({
               );
             })}
           </div>
-        </>
-      )}
-    </div>
-  );
+        )}
+      </div>
+    );
+  };
 
   const handleCopyPaintCode = (paintCode?: string) => {
     if (paintCode) {
@@ -294,187 +358,8 @@ function DashboardComponent({
     (r) => r.motoristaId === currentUser?.id && r.status === "pendente",
   );
 
-  if (myPendingRequest) {
-    const company = companies.find((c) => c.id === myPendingRequest.empresaId);
-    return (
-      <div className="max-w-[720px] mx-auto py-6 sm:py-10 px-4 sm:px-6">
-        {!isIntegrated && renderPageSelector()}
-        <div className="flex flex-col items-center justify-center h-[60vh] text-center max-w-md mx-auto">
-          <div className="w-24 h-24 bg-orange-50 dark:bg-orange-500/10 rounded-full flex items-center justify-center mb-6 text-orange-500">
-            <UserCog size={40} />
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] mb-2">
-            Aguardando Aprovação
-          </h2>
-          <p className="text-gray-500 dark:text-[#a1a1aa] mb-8">
-            Seu convite para a empresa{" "}
-            <strong className="text-gray-900 dark:text-[#fafafa]">
-              {company?.companyName || "Carregando..."}
-            </strong>{" "}
-            foi enviado. O administrador da frota precisa aprovar seu acesso.
-          </p>
-          <Button
-            variant="outline"
-            onClick={() => cancelRequestJoinCompany(myPendingRequest.id)}
-            className="text-gray-500 dark:text-[#a1a1aa] hover:text-gray-900 dark:hover:text-[#f4f4f5]"
-          >
-            Cancelar Convite
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  // 1. Not linked to any company yet
-  if (!activeCompanyId && !currentUser?.roles?.includes("admin")) {
-    const handleRequest = async (companyId: string) => {
-      setIsRequestingId(companyId);
-      await new Promise((resolve) => setTimeout(resolve, 800)); // slight UI delay for feedback
-      await requestJoinCompany(companyId);
-      setIsRequestingId(null);
-    };
-
-    // Calculate member counts
-    const companiesWithCount = companies
-      .map((c) => ({
-        ...c,
-        memberCount:
-          allCompanyMembers?.filter((m) => m.companyId === c.id).length || 0,
-      }))
-      .sort(
-        (a, b) =>
-          b.memberCount - a.memberCount ||
-          a.companyName.localeCompare(b.companyName),
-      );
-
-    const filteredCompanies = companiesWithCount.filter(
-      (c) =>
-        c.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        c.fleetName.toLowerCase().includes(searchTerm.toLowerCase()),
-    );
-
-    const isSearching = searchTerm.length > 0;
-
-    return (
-      <div className="max-w-[720px] mx-auto py-6 sm:py-10 px-4 sm:px-6">
-        {!isIntegrated && renderPageSelector()}
-        {/* HERO */}
-        {!isSearching && (
-          <div className="text-center mb-10 transition-all duration-300">
-            <div className="w-16 h-16 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/40 rounded-2xl flex items-center justify-center mx-auto mb-5 text-blue-600 shadow-sm dark:shadow-none border border-blue-100 dark:border-blue-500/20/50">
-              <Building2 size={28} strokeWidth={2} />
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-[#fafafa] tracking-tight">
-              Encontre sua Frota
-            </h1>
-            <p className="text-[15px] text-gray-500 dark:text-[#a1a1aa] mt-2 max-w-[280px] sm:max-w-md mx-auto leading-relaxed">
-              Pesquise o nome da empresa ou frota e envie sua solicitação de
-              acesso.
-            </p>
-          </div>
-        )}
-
-        {/* SEARCH INPUT */}
-        <div className="relative mb-8 group">
-          <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none">
-            <Search
-              className="text-gray-400 group-focus-within:text-blue-500 transition-colors"
-              size={20}
-            />
-          </div>
-          <input
-            type="text"
-            placeholder="Buscar empresa ou frota..."
-            autoFocus
-            className="w-full pl-14 pr-4 h-14 bg-white dark:bg-[#1A1F26] rounded-2xl border border-gray-200 dark:border-[#2A2F3A] focus:outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 text-[15px] font-medium text-gray-900 dark:text-[#fafafa] placeholder:text-gray-400 dark:placeholder:text-[#71717a] shadow-[0_2px_10px_-4px_rgba(0,0,0,0.05)] transition-all"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-
-        {/* LIST */}
-        <div className="space-y-3">
-          {filteredCompanies.length === 0 ? (
-            <div className="text-center py-12 px-4 rounded-2xl border border-dashed border-gray-200 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#1A1F26]">
-              <Search size={32} className="mx-auto text-gray-300 mb-3" />
-              <p className="text-[15px] font-medium text-gray-900 dark:text-[#fafafa]">
-                Nenhuma empresa encontrada
-              </p>
-              <p className="text-sm text-gray-500 dark:text-[#a1a1aa] mt-1">
-                Verifique a ortografia ou tente outro termo.
-              </p>
-            </div>
-          ) : (
-            filteredCompanies.map((company) => (
-              <div
-                key={company.id}
-                className="flex items-center p-3 sm:p-4 bg-white dark:bg-[#1A1F26] rounded-2xl border border-gray-100 dark:border-[#2A2F3A] hover:border-blue-200 dark:border-blue-500/30 shadow-[0_2px_8px_-4px_rgba(0,0,0,0.05)] hover:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.05)] transition-all group"
-              >
-                <div className="flex-1 flex items-center gap-3 sm:gap-4 min-w-0 pr-4">
-                  {/* AVATAR */}
-                  <div className="flex flex-col items-center gap-1.5 shrink-0">
-                    {company.logoUrl ? (
-                      <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-gray-100 dark:border-[#2A2F3A] overflow-hidden shrink-0">
-                        <img
-                          src={company.logoUrl}
-                          alt="Logo"
-                          className="w-full h-full object-cover"
-                          referrerPolicy="no-referrer"
-                        />
-                      </div>
-                    ) : (
-                      <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 border border-blue-100 dark:border-blue-500/20/50 flex items-center justify-center font-bold text-blue-700 dark:text-blue-400 text-sm sm:text-base group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                        {company.companyName.substring(0, 2).toUpperCase()}
-                      </div>
-                    )}
-                    <span className="sm:hidden px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded-md text-[9px] font-bold tracking-wide truncate max-w-[60px]">
-                      {company.simulatorName}
-                    </span>
-                  </div>
-                  {/* INFO */}
-                  <div className="min-w-0 flex-1">
-                    <h3 className="font-bold text-gray-900 dark:text-[#fafafa] text-[15px] truncate leading-tight mb-1">
-                      {company.companyName}
-                    </h3>
-                    <div className="flex items-center text-[13px] text-gray-500 dark:text-[#a1a1aa] truncate">
-                      <span className="truncate font-medium text-gray-700 dark:text-[#d4d4d8]">
-                        {company.fleetName}
-                      </span>
-                      <span className="hidden sm:inline mx-1.5 min-w-[4px] opacity-40">
-                        •
-                      </span>
-                      <span className="hidden sm:inline truncate">
-                        {company.simulatorName}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                {/* BOTÃO */}
-                <div className="shrink-0">
-                  <Button
-                    disabled={isRequestingId === company.id}
-                    onClick={() => handleRequest(company.id)}
-                    className={cn(
-                      "h-9 sm:h-10 px-4 sm:px-5 rounded-xl font-bold text-[13px] sm:text-sm transition-all sm:min-w-[100px]",
-                      isRequestingId === company.id
-                        ? "bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-600 hover:bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 cursor-default"
-                        : "bg-blue-600 hover:bg-blue-700 text-white hover:scale-[1.02] active:scale-[0.98]",
-                    )}
-                  >
-                    {isRequestingId === company.id ? (
-                      <Loader2 size={18} className="animate-spin mx-auto" />
-                    ) : (
-                      "Solicitar"
-                    )}
-                  </Button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
+  // myPendingRequest and !activeCompanyId logical blocks removed from here.
+  // They are now isolated into JoinCompany.tsx and handled by DriverLayout.tsx router.
 
   if (!myJob || !contract) {
     const lastJob = completedJobs[0];
@@ -496,10 +381,216 @@ function DashboardComponent({
         d.companyId === activeCompanyId,
     );
 
+    const solicitarTrabalhoCard = (
+      <Card className="border border-blue-100 dark:border-blue-500/20 shadow-sm bg-white dark:bg-[#1A1F26]">
+        <CardContent className="p-4 sm:p-5 flex flex-col justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 mb-1">
+              <CheckCircle size={16} />
+              <h3 className="font-bold text-xs uppercase tracking-wider">
+                Solicitar Novo Trabalho
+              </h3>
+            </div>
+            <p className="text-gray-500 dark:text-[#a1a1aa] text-xs leading-relaxed">
+              Sinalize disponibilidade à operação.
+            </p>
+          </div>
+
+          <div>
+            {myDemand ? (
+              <div className="bg-yellow-50 dark:bg-amber-500/10 border border-yellow-100 dark:border-yellow-500/20 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-yellow-100 dark:bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 flex items-center justify-center shrink-0">
+                    <Clock size={16} />
+                  </div>
+                  <div>
+                    <p className="font-bold text-yellow-900 dark:text-yellow-300 text-xs text-left">
+                      Na fila aguardando
+                    </p>
+                    <p className="text-[10px] text-yellow-700 dark:text-yellow-400 font-medium">
+                      Às {format(new Date(myDemand.createdAt), "HH:mm")}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelJobDemand}
+                  className="h-8 text-xs bg-white dark:bg-[#1A1F26] border-yellow-200 text-yellow-700 w-full sm:w-auto hover:bg-yellow-50 dark:hover:bg-yellow-900/20"
+                >
+                  Cancelar Pedido
+                </Button>
+              </div>
+            ) : demandSuccess ? (
+              <div className="bg-green-50 dark:bg-green-500/10 border border-green-100 dark:border-green-500/20 rounded-xl p-3 flex items-center gap-3 text-green-700 dark:text-green-400">
+                <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-500/20 flex items-center justify-center shrink-0">
+                  <CheckCircle size={16} />
+                </div>
+                <div>
+                  <p className="font-bold text-xs">Solicitação enviada</p>
+                  <p className="text-[10px] font-medium">
+                    Administração notificada com sucesso.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <Button
+                  onClick={handleRequestDemand}
+                  disabled={!currentUser?.isOnline || isSubmittingDemand}
+                  className={cn(
+                    "w-full h-10 text-sm font-bold shadow-sm dark:shadow-none transition-all",
+                    currentUser?.isOnline
+                      ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] dark:bg-blue-600 dark:hover:bg-blue-700 text-white"
+                      : "bg-gray-100 dark:bg-[#18181b] text-gray-400 cursor-not-allowed",
+                  )}
+                >
+                  {isSubmittingDemand ? (
+                    <>
+                      <Loader2 className="animate-spin mr-2" size={16} />{" "}
+                      Enviando...
+                    </>
+                  ) : (
+                    "Solicitar Novo Trabalho"
+                  )}
+                </Button>
+                {!currentUser?.isOnline && (
+                  <p className="text-center text-[10px] text-gray-400 font-medium">
+                    Fique online para enviar solicitação
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+
+    const tempoOciosoCard = (
+      <Card className="bg-gray-50 dark:bg-[#11141A] border border-gray-100 dark:border-[#2A2F3A] shadow-none p-3 sm:px-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-white dark:bg-[#1A1F26] border border-gray-200 dark:border-gray-800 flex items-center justify-center text-gray-500 dark:text-gray-400 shrink-0 shadow-sm">
+              <Clock size={14} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest leading-none mb-1">
+                Tempo Ocioso
+              </p>
+              <p className="text-[10px] text-gray-400 font-medium leading-none">
+                Desde a última rota
+              </p>
+            </div>
+          </div>
+          <div className="flex items-baseline gap-1 shrink-0">
+            <p className="text-2xl font-black text-gray-900 dark:text-[#fafafa] leading-none">
+              {daysSinceLastJob}
+            </p>
+            <p className="text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa]">
+              dias
+            </p>
+          </div>
+        </div>
+      </Card>
+    );
+
+    const filaOperacionalSection = (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-gray-900 dark:text-[#fafafa] px-1">
+          <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
+          <h2 className="text-sm font-bold uppercase tracking-wider">
+            Fila Operacional
+          </h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {pendingDriverJobs.length > 0 ? (
+            pendingDriverJobs.map((job, idx) => {
+              const c = contracts.find((ct) => ct.id === job.contractId);
+              if (!c) return null;
+              const positionLabels = [
+                "Próximo contrato",
+                "Segundo na fila",
+                "Terceiro na fila",
+              ];
+              const positionLabel =
+                positionLabels[idx] || `${idx + 1}º na fila`;
+
+              return (
+                <Card
+                  key={job.id}
+                  className="border border-gray-200 dark:border-[#3f3f46] shadow-sm bg-white dark:bg-[#1A1F26] overflow-hidden group hover:border-blue-300 dark:hover:border-blue-500/50 transition-colors"
+                >
+                  <CardContent className="p-0">
+                    <div className="px-4 py-3 flex items-center justify-between bg-gray-50 dark:bg-[#11141A] border-b border-gray-100 dark:border-[#2A2F3A]">
+                      <span className="text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest">
+                        {positionLabel}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                        </span>
+                        <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest">
+                          Atribuído
+                        </span>
+                      </div>
+                    </div>
+                    <div className="px-4 py-4 space-y-4">
+                      <div>
+                        <p className="font-bold text-sm text-gray-900 dark:text-[#fafafa] mb-1 leading-tight">
+                          {c.name}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-[#a1a1aa] font-medium leading-relaxed">
+                          {c.totalDeliveries} entregas previstas na rota do
+                          contrato selecionado.
+                        </p>
+                      </div>
+                      <Button
+                        onClick={() => startJob(job.id)}
+                        className="w-full h-9 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-none rounded-lg flex items-center justify-center gap-2"
+                      >
+                        <Play size={14} className="fill-current" />
+                        Iniciar Operação
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })
+          ) : (
+            <div className="md:col-span-2 bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-xl p-8 flex flex-col items-center justify-center text-center shadow-sm">
+              <FileText
+                size={20}
+                className="text-gray-300 dark:text-gray-600 mb-2"
+              />
+              <p className="text-xs text-gray-500 dark:text-[#a1a1aa] font-medium max-w-sm">
+                Não há contratos atribuídos para você neste momento. Solicite um
+                novo trabalho ou aguarde a administração enviar.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+
     return (
-      <div className="max-w-[720px] mx-auto px-4 sm:px-6 space-y-4 sm:space-y-5 pb-20 pt-4 sm:pt-6">
-        {!isIntegrated && renderPageSelector()}
-        
+      <div className="w-full max-w-7xl mx-auto space-y-3 sm:space-y-4 pb-4 pt-0">
+        <OperationResultModal 
+          isOpen={showOperationResultModal}
+          onClose={() => setShowOperationResultModal(false)}
+          onRequestNewJob={() => {
+              setShowOperationResultModal(false);
+              const event = new CustomEvent('app-navigate', { detail: { to: 'dashboard' } });
+              window.dispatchEvent(event);
+              if (requestNewJobDemand && currentUser) {
+                  requestNewJobDemand();
+              }
+          }}
+          resultData={operationResultData}
+        />
+        {renderTopControls(true)}
+
         {/* Central Operacional Header */}
         <header className="flex flex-col sm:flex-row md:items-center justify-between gap-4 bg-white dark:bg-[#1A1F26] p-4 sm:px-5 sm:py-4 rounded-[18px] border border-gray-100 dark:border-[#2A2F3A] shadow-sm">
           <div className="flex items-center gap-3">
@@ -517,14 +608,6 @@ function DashboardComponent({
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            <button
-              onClick={() => navigate('/driver/trip')}
-              className="flex items-center justify-center h-10 w-10 sm:w-auto sm:px-4 shrink-0 bg-blue-50 dark:bg-blue-500/10 hover:bg-blue-100 dark:hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold text-xs rounded-xl transition-colors border border-blue-100 dark:border-blue-500/20"
-              title="Lançamento de Viagem"
-            >
-              <Navigation size={18} className="sm:mr-2" />
-              <span className="hidden sm:inline">Viagens</span>
-            </button>
             <div className="flex-1 sm:w-auto flex items-center justify-between gap-3 bg-gray-50 dark:bg-[#11141A] px-4 py-2 rounded-xl border border-gray-100 dark:border-[#2A2F3A]">
               <div>
                 <div className="flex items-center gap-1.5 mb-0.5">
@@ -532,7 +615,14 @@ function DashboardComponent({
                     {currentUser?.isOnline && (
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                     )}
-                    <span className={cn("relative inline-flex rounded-full h-2 w-2", currentUser?.isOnline ? "bg-[#32D74B]" : "bg-gray-300 dark:bg-[#52525b]")}></span>
+                    <span
+                      className={cn(
+                        "relative inline-flex rounded-full h-2 w-2",
+                        currentUser?.isOnline
+                          ? "bg-[#32D74B]"
+                          : "bg-gray-300 dark:bg-[#52525b]",
+                      )}
+                    ></span>
                   </span>
                   <h3 className="font-bold text-xs text-gray-900 dark:text-[#fafafa] leading-none">
                     Status
@@ -549,203 +639,52 @@ function DashboardComponent({
                   checked={currentUser?.isOnline || false}
                   onChange={(e) => updateUserOnlineStatus(e.target.checked)}
                 />
-                <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#32D74B] shadow-inner dark:shadow-none"></div>
+                <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-500 shadow-inner dark:shadow-none"></div>
               </label>
             </div>
           </div>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Solicitação Card */}
-          <div className="md:col-span-2">
-            <Card className="h-full border border-blue-100 dark:border-blue-500/20 shadow-sm bg-white dark:bg-[#1A1F26]">
-              <CardContent className="p-4 sm:p-5 flex flex-col h-full justify-between">
-                <div>
-                  <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 mb-2">
-                    <CheckCircle size={16} />
-                    <h3 className="font-bold text-xs uppercase tracking-wider">
-                      Fila de Disponibilidade
-                    </h3>
-                  </div>
-                  <p className="text-gray-500 dark:text-[#a1a1aa] text-xs mb-4 leading-relaxed">
-                    Sinalize estar pronto para receber demandas. O seu pedido será posicionado na fila de prioridade da operação.
-                  </p>
-                </div>
-
-                <div>
-                  {myDemand ? (
-                    <div className="bg-yellow-50 dark:bg-amber-500/10 border border-yellow-100 dark:border-yellow-500/20 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-yellow-100 dark:bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 flex items-center justify-center shrink-0">
-                          <Clock size={16} />
-                        </div>
-                        <div>
-                          <p className="font-bold text-yellow-900 dark:text-yellow-300 text-xs text-left">Na fila aguardando</p>
-                          <p className="text-[10px] text-yellow-700 dark:text-yellow-400 font-medium">Às {format(new Date(myDemand.createdAt), "HH:mm")}</p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={cancelJobDemand}
-                        className="h-8 text-xs bg-white dark:bg-[#1A1F26] border-yellow-200 text-yellow-700 w-full sm:w-auto"
-                      >
-                        Cancelar Pedido
-                      </Button>
-                    </div>
-                  ) : demandSuccess ? (
-                    <div className="bg-green-50 dark:bg-green-500/10 border border-green-100 dark:border-green-500/20 rounded-xl p-3 flex items-center gap-3 text-green-700 dark:text-green-400">
-                      <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-500/20 flex items-center justify-center shrink-0">
-                        <CheckCircle size={16} />
-                      </div>
-                      <div>
-                        <p className="font-bold text-xs">Solicitação enviada</p>
-                        <p className="text-[10px] font-medium">Administração notificada com sucesso.</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <Button
-                        onClick={handleRequestDemand}
-                        disabled={!currentUser?.isOnline || isSubmittingDemand}
-                        className={cn(
-                          "w-full h-10 text-sm font-bold shadow-sm dark:shadow-none transition-all",
-                          currentUser?.isOnline
-                            ? "bg-blue-600 hover:bg-blue-700 text-white"
-                            : "bg-gray-100 dark:bg-[#18181b] text-gray-400 cursor-not-allowed"
-                        )}
-                      >
-                        {isSubmittingDemand ? (
-                          <><Loader2 className="animate-spin mr-2" size={16} /> Enviando...</>
-                        ) : (
-                          "Solicitar Novo Trabalho"
-                        )}
-                      </Button>
-                      {!currentUser?.isOnline && (
-                        <p className="text-center text-[10px] text-gray-400 font-medium">
-                          Fique online para enviar solicitação
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+        {pendingDriverJobs.length === 0 ? (
+          <div className="flex flex-col gap-4">
+            {solicitarTrabalhoCard}
+            {filaOperacionalSection}
+            {tempoOciosoCard}
           </div>
-
-          {/* Status Operacional Card */}
-          <div className="md:col-span-1">
-            <Card className="h-full bg-gray-50 dark:bg-[#11141A] border border-gray-100 dark:border-[#2A2F3A] shadow-none flex flex-col justify-center items-center text-center p-4">
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                <Clock size={12} /> Tempo Ocioso
-              </p>
-              <div className="flex items-baseline gap-1">
-                <p className="text-4xl font-black text-gray-900 dark:text-[#fafafa] leading-none">
-                  {daysSinceLastJob}
-                </p>
-                <p className="text-xs font-bold text-gray-500 dark:text-[#a1a1aa]">
-                  dias
-                </p>
-              </div>
-              <p className="text-[10px] text-gray-400 font-medium mt-1">
-                Desde a última rota
-              </p>
-            </Card>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {filaOperacionalSection}
+            {solicitarTrabalhoCard}
+            {tempoOciosoCard}
           </div>
-        </div>
-
-        {/* Fila Operacional (Radar) */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 text-gray-900 dark:text-[#fafafa] px-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
-            <h2 className="text-sm font-bold uppercase tracking-wider">Fila Operacional</h2>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {pendingDriverJobs.length > 0 ? (
-              pendingDriverJobs.map((job, idx) => {
-                const c = contracts.find(ct => ct.id === job.contractId);
-                if (!c) return null;
-                const positionLabels = ["Próximo contrato", "Segundo na fila", "Terceiro na fila"];
-                const positionLabel = positionLabels[idx] || `${idx + 1}º na fila`;
-                
-                return (
-                  <Card key={job.id} className="border border-gray-200 dark:border-[#3f3f46] shadow-sm bg-white dark:bg-[#1A1F26] overflow-hidden group hover:border-blue-300 dark:hover:border-blue-500/50 transition-colors">
-                    <CardContent className="p-0">
-                      <div className="px-4 py-3 flex items-center justify-between bg-gray-50 dark:bg-[#11141A] border-b border-gray-100 dark:border-[#2A2F3A]">
-                        <span className="text-[10px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest">
-                          {positionLabel}
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <span className="relative flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                          </span>
-                          <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest">
-                            Atribuído
-                          </span>
-                        </div>
-                      </div>
-                      <div className="px-4 py-4 space-y-4">
-                        <div>
-                          <p className="font-bold text-sm text-gray-900 dark:text-[#fafafa] mb-1 leading-tight">
-                            {c.name}
-                          </p>
-                          <p className="text-xs text-gray-500 dark:text-[#a1a1aa] font-medium leading-relaxed">
-                            {c.totalDeliveries} entregas previstas na rota do contrato selecionado.
-                          </p>
-                        </div>
-                        <Button 
-                          onClick={() => startJob(job.id)}
-                          className="w-full h-9 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-none rounded-lg flex items-center justify-center gap-2"
-                        >
-                          <Play size={14} className="fill-current" />
-                          Iniciar Operação
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })
-            ) : (
-              <div className="md:col-span-2 bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-xl p-8 flex flex-col items-center justify-center text-center shadow-sm">
-                <FileText size={20} className="text-gray-300 dark:text-gray-600 mb-2" />
-                <p className="text-xs text-gray-500 dark:text-[#a1a1aa] font-medium max-w-sm">
-                  Não há contratos atribuídos para você neste momento. Solicite um novo trabalho ou aguarde a administração enviar.
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
+        )}
 
         {/* Central de Avisos e Histórico - Agora em linha única no desktop se possível */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card className="border-0 shadow-sm bg-blue-600 dark:bg-blue-900/50 text-white overflow-hidden relative">
-            <div className="absolute right-0 top-0 w-32 h-32 bg-white/10 rounded-full blur-2xl transform translate-x-10 -translate-y-10"></div>
-            <CardContent className="p-4 flex items-center gap-3 h-full">
-              <div className="w-8 h-8 rounded-full bg-white/20 flex flex-col items-center justify-center shrink-0">
-                <Circle size={14} className="fill-current text-white" />
-              </div>
-              <p className="text-xs font-medium text-white/90 leading-relaxed">
-                Mantenha-se <strong className="text-white">Disponível</strong> para receber prioridade na atribuição.
-              </p>
-            </CardContent>
-          </Card>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="flex items-center gap-3 bg-[#1f242d] dark:bg-[#1A1F26] border border-transparent dark:border-[#2A2F3A] rounded-xl p-3 shadow-sm">
+            <div className="w-7 h-7 rounded-full bg-white/10 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
+              <Circle size={12} className="fill-current text-white dark:text-blue-400" />
+            </div>
+            <p className="text-[11px] font-medium text-gray-300 dark:text-gray-400 leading-snug">
+              Mantenha-se <strong className="text-white dark:text-[#fafafa]">Disponível</strong> para receber prioridade na atribuição.
+            </p>
+          </div>
 
           {lastJob && (
-            <Card className="border border-gray-100 dark:border-[#2A2F3A] shadow-sm bg-white dark:bg-[#1A1F26]">
-              <CardContent className="p-4 flex items-center gap-3 h-full">
-                <div className="w-8 h-8 rounded-full bg-green-50 dark:bg-green-500/10 flex items-center justify-center shrink-0 text-green-600 dark:text-green-400">
-                  <CheckCircle size={16} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Última Operação</p>
-                  <p className="font-bold text-xs text-gray-900 dark:text-[#fafafa] truncate">
-                    {contracts.find((c) => c.id === lastJob.contractId)?.name || "Concluída"}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="flex items-center gap-3 bg-white dark:bg-[#1A1F26] border border-gray-200/60 dark:border-[#2A2F3A] rounded-xl p-3 shadow-sm">
+              <div className="w-7 h-7 rounded-full bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center shrink-0">
+                <CheckCircle size={12} className="text-emerald-600 dark:text-emerald-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[9px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-0.5">
+                  Última Operação
+                </p>
+                <p className="font-bold text-[11px] text-gray-900 dark:text-[#fafafa] truncate leading-none">
+                  {contracts.find((c) => c.id === lastJob.contractId)?.name ||
+                    "Concluída"}
+                </p>
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -753,18 +692,31 @@ function DashboardComponent({
   }
 
   const isPending = myJob.status === "pending";
-  const isActive = myJob.status === "active";
+  const isAwaitingCompletion = myJob.status === "awaiting_completion";
+  const isActive = myJob.status === "active" || isAwaitingCompletion;
   const progressPercent = Math.round(
-    (myJob.progress / contract.totalDeliveries) * 100,
-  );
+    (myJob.progress / Math.max(1, contract.totalDeliveries || 1)) * 100,
+  ) || 0;
 
-  const deadlineDate = new Date(myJob.deadlineDate);
-  const daysLeft = differenceInDays(deadlineDate, new Date());
+  const targetDateString = myJob.dueAt || myJob.deadlineDate;
+  const deadlineDate = new Date(targetDateString);
+  const diffMs = deadlineDate.getTime() - now.getTime();
+  const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24)); // Replaced differenceInDays
 
-  const createdAtDate = (myJob as any).createdAt
-    ? new Date((myJob as any).createdAt)
-    : new Date();
-  const calculatedTotalDays = differenceInDays(deadlineDate, createdAtDate);
+  let timeRemainingText = "Atrasado";
+  const hasValidDeadline = Boolean(targetDateString);
+
+  if (!hasValidDeadline) {
+    timeRemainingText = "Prazo não definido";
+  } else if (diffMs > 0) {
+    const d = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const h = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
+    const m = Math.floor((diffMs / 1000 / 60) % 60);
+    timeRemainingText = `${d} dias • ${h}h • ${m}min`;
+  }
+
+  const assignedAtDate = myJob.assignedAt ? new Date(myJob.assignedAt) : (myJob.createdAt ? new Date(myJob.createdAt) : new Date());
+  const calculatedTotalDays = Math.ceil((deadlineDate.getTime() - assignedAtDate.getTime()) / (1000 * 60 * 60 * 24));
   const totalDays =
     calculatedTotalDays > 0
       ? calculatedTotalDays
@@ -791,516 +743,357 @@ function DashboardComponent({
   else if (currentRating >= 2.0) ratingText = "Regular";
   else ratingText = "Ruim";
 
-  // Generate simple array for deliveries if simple mode
-  const deliveriesList =
-    contract.mode === "detailed" && contract.deliveries
-      ? contract.deliveries
-      : Array.from({ length: contract.totalDeliveries }).map((_, i) => {
-          const completedRoute = myJob.completedRoutes?.[i];
-          return {
-            id: `dd-${i}`,
-            origin: completedRoute ? completedRoute.origin : "Ponto de Coleta",
-            destination: completedRoute
-              ? completedRoute.destination
-              : `Destino ${i + 1}`,
-            _isCustom: !!completedRoute,
-          };
-        });
+  const handleFinishJob = async () => {
+    if (!myJob) return;
+    setIsFinishing(true);
+    try {
+      // Calculate data for modal
+      const executionDiffMs = now.getTime() - assignedAtDate.getTime();
+      const execD = Math.floor(executionDiffMs / (1000 * 60 * 60 * 24));
+      const execH = Math.floor((executionDiffMs / (1000 * 60 * 60)) % 24);
+      const execM = Math.floor((executionDiffMs / 1000 / 60) % 60);
 
-  const handleOpenMarcarEntrega = () => {
-    if (contract.mode === "simple") {
-      setRouteModalTarget(-1);
-      setRouteOrigin("");
-      setRouteDestination("");
-      setIsRouteModalOpen(true);
-    } else {
-      markDeliveryComplete(myJob.id);
-    }
-  };
+      const isAtrasado = diffMs < 0;
+      let tempoRestanteOuAtraso = "0h 0min";
 
-  const handleEditRoute = (index: number) => {
-    const existing = myJob.completedRoutes?.[index];
-    setRouteModalTarget(index);
-    setRouteOrigin(existing?.origin || "");
-    setRouteDestination(existing?.destination || "");
-    setIsRouteModalOpen(true);
-  };
+      if (hasValidDeadline) {
+        const absDiffMs = Math.abs(diffMs);
+        const trD = Math.floor(absDiffMs / (1000 * 60 * 60 * 24));
+        const trH = Math.floor((absDiffMs / (1000 * 60 * 60)) % 24);
+        const trM = Math.floor((absDiffMs / 1000 / 60) % 60);
+        tempoRestanteOuAtraso = trD > 0 ? `${trD}d ${trH}h ${trM}min` : `${trH}h ${trM}min`;
+      } else {
+        tempoRestanteOuAtraso = "-";
+      }
 
-  const handleSaveRoute = () => {
-    if (routeModalTarget === -1) {
-      markDeliveryComplete(myJob.id, {
-        origin: routeOrigin,
-        destination: routeDestination,
+      const jobTrips = historicoTrips.filter(t => {
+        if (t.jobId && t.jobId === myJob.id) return true;
+        if (t.contratoId !== myJob.contractId) return false;
+        if (t.motoristaId !== currentUser?.id) return false;
+        
+        const rawTripDate = t.createdAt?.toDate ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : null);
+        const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+        
+        const assignedTime = myJob.assignedAt ? new Date(myJob.assignedAt).getTime() : 0;
+        const completedTime = myJob.completedAt ? new Date(myJob.completedAt).getTime() : Date.now() + 86400000;
+        
+        return tripTime >= assignedTime && tripTime <= completedTime;
       });
-    } else {
-      updateDeliveryRoute(myJob.id, routeModalTarget, {
-        origin: routeOrigin,
-        destination: routeDestination,
-      });
+      const totalGanhos = jobTrips.reduce((acc, curr) => {
+        let v = Number(curr.valor);
+        if (isNaN(v) && typeof curr.valor === "string") {
+          v = parseFloat(curr.valor.replace(/\D/g, "")) / 100;
+        }
+        return acc + (isNaN(v) ? 0 : v);
+      }, 0);
+
+      const resultData = {
+        contractName: contract.name,
+        tempoExecucao: execD > 0 ? `${execD}d ${execH}h ${execM}min` : `${execH}h ${execM}min`,
+        tempoRestante: tempoRestanteOuAtraso,
+        isAtrasado,
+        prazoTotal: `${totalDays} dias`,
+        totalViagens: myJob.progress,
+        vehicleName: vehicle?.name,
+        trailerName: trailer?.name,
+        totalGanhos,
+      };
+
+      await finishJob(myJob.id);
+      
+      setOperationResultData(resultData);
+      setShowOperationResultModal(true);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsFinishing(false);
     }
-    setIsRouteModalOpen(false);
   };
 
   return (
-    <div className="space-y-6 sm:space-y-8 max-w-5xl mx-auto px-4 sm:px-6 pb-20">
-      {!isIntegrated && renderPageSelector()}
-      <header className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4">
-        <Card className="w-full sm:w-auto shrink-0 border border-gray-100 dark:border-[#2A2F3A] shadow-sm rounded-2xl bg-white dark:bg-[#1A1F26] flex-1 sm:max-w-xs">
-          <CardContent className="p-3">
-            <div className="flex items-center justify-between">
-              <div className="pr-3 flex-1">
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <span className="relative flex h-2 w-2">
-                    {currentUser?.isOnline && (
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                    )}
-                    <span
-                      className={cn(
-                        "relative inline-flex rounded-full h-2 w-2",
-                        currentUser?.isOnline
-                          ? "bg-[#32D74B]"
-                          : "bg-gray-300 dark:bg-[#52525b]",
+    <div className="space-y-3 sm:space-y-4 w-full max-w-7xl mx-auto pb-4 pt-0">
+      <OperationResultModal 
+        isOpen={showOperationResultModal}
+        onClose={() => setShowOperationResultModal(false)}
+        onRequestNewJob={() => {
+            setShowOperationResultModal(false);
+            const event = new CustomEvent('app-navigate', { detail: { to: 'dashboard' } });
+            window.dispatchEvent(event);
+            if (requestNewJobDemand && currentUser) {
+                requestNewJobDemand();
+            }
+        }}
+        resultData={operationResultData}
+      />
+      <div className="flex flex-col w-full gap-3 sm:gap-0">
+        <div className="order-1 sm:order-2 w-full">
+          {renderTopControls(true)}
+        </div>
+        <header className="order-2 sm:order-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 w-full mb-0 sm:mb-3">
+          <Card className="w-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] shadow-sm rounded-2xl bg-white dark:bg-[#1A1F26] flex-1">
+            <CardContent className="p-3">
+              <div className="flex items-center justify-between">
+                <div className="pr-3 flex-1">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className="relative flex h-2 w-2">
+                      {currentUser?.isOnline && (
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                       )}
-                    ></span>
-                  </span>
-                  <h3 className="font-bold text-[13px] text-gray-900 dark:text-white leading-none">
-                    Status
-                  </h3>
+                      <span
+                        className={cn(
+                          "relative inline-flex rounded-full h-2 w-2",
+                          currentUser?.isOnline
+                            ? "bg-[#32D74B]"
+                            : "bg-gray-300 dark:bg-[#52525b]",
+                        )}
+                      ></span>
+                    </span>
+                    <h3 className="font-bold text-[13px] text-gray-900 dark:text-white leading-none">
+                      Status
+                    </h3>
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-[#a1a1aa] leading-tight mt-0.5">
+                    {currentUser?.isOnline
+                      ? "Disponível para fretes"
+                      : "Indisponível no momento"}
+                  </p>
                 </div>
-                <p className="text-[11px] text-gray-500 dark:text-[#a1a1aa] leading-tight mt-0.5">
-                  {currentUser?.isOnline
-                    ? "Disponível para fretes"
-                    : "Indisponível no momento"}
-                </p>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={currentUser?.isOnline || false}
+                    onChange={(e) => updateUserOnlineStatus(e.target.checked)}
+                  />
+                  <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-500 shadow-inner dark:shadow-none"></div>
+                </label>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
-                <input
-                  type="checkbox"
-                  className="sr-only peer"
-                  checked={currentUser?.isOnline || false}
-                  onChange={(e) => updateUserOnlineStatus(e.target.checked)}
-                />
-                <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#32D74B] dark:peer-checked:bg-[#32D74B] shadow-inner dark:shadow-none"></div>
-              </label>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </header>
 
-        <button
-          onClick={() => navigate('/driver/trip')}
-          className="flex items-center justify-center gap-2 px-4 py-3 sm:py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-[13px] sm:text-sm rounded-2xl sm:rounded-xl transition-all shadow-sm group w-full sm:w-auto"
-        >
-          <Navigation
-            size={16}
-            className="group-hover:scale-110 transition-transform"
-          />
-          Lançar Viagem
-        </button>
-      </header>
+        {/* Main Job Card */}
+        <div className="order-3 flex flex-col bg-white dark:bg-[#1A1F26] rounded-2xl sm:rounded-[24px] shadow-sm dark:shadow-none border border-gray-200 dark:border-[#2A2F3A] overflow-hidden mb-3 sm:mb-4">
+          
+          {/* Header */}
+          <div className="relative overflow-hidden bg-[#1f242d] dark:bg-[#151921] p-3 sm:p-4 w-full">
+            {/* Subtle glow effect */}
+            <div className="absolute top-[-50%] right-[-10%] w-[150px] h-[150px] bg-white/5 rounded-full blur-[40px] pointer-events-none"></div>
 
-      {/* Top Metrics Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <Card className="min-h-[110px] w-full">
-          <CardContent className="p-4 flex flex-col justify-between h-full items-start text-left">
-            <div className="flex w-full items-start justify-between mb-2">
-              <p className="text-[12px] sm:text-[13px] font-semibold text-gray-500 dark:text-[#a1a1aa] leading-tight">
-                Entregas
-                <br />
-                Concluídas
-              </p>
-              <div className="w-8 h-8 rounded-lg bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-600 dark:text-green-400 flex items-center justify-center shrink-0">
-                <FileText size={16} />
+            {progressPercent === 100 ? (
+              <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
+                <div className="flex flex-col items-start min-w-0">
+                  <h3 className="text-[15px] sm:text-[18px] font-bold text-green-400 tracking-tight leading-none mb-1">Operação concluída!</h3>
+                  <p className="text-[10px] sm:text-[11px] font-medium text-gray-400 leading-tight">Todas as entregas feitas. Finalize para ver o resultado.</p>
+                </div>
+                <button
+                  onClick={handleFinishJob}
+                  disabled={isFinishing}
+                  className="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-full text-xs font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0 w-full sm:w-auto text-center"
+                >
+                  {isFinishing ? "Processando..." : "Finalizar Operação"}
+                </button>
               </div>
-            </div>
-            <div className="flex items-baseline gap-1 mt-auto">
-              <span className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-[#fafafa] tracking-tight">
-                {myJob.progress}
-              </span>
-              <span className="text-[13px] sm:text-sm text-gray-500 dark:text-[#a1a1aa] font-medium">
-                / {contract.totalDeliveries}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
+            ) : (
+              <div className="flex justify-between items-start z-10 relative gap-3">
+                <div className="flex flex-col pr-2 min-w-0">
+                  <span className="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1 mt-0.5">
+                    Operação atual
+                  </span>
+                  <h3 className="font-bold text-white text-[22px] sm:text-[26px] tracking-tight leading-none mb-1.5">
+                    {contract.name}
+                  </h3>
+                  <p className="text-[10px] sm:text-[11px] text-gray-400 font-medium leading-none truncate whitespace-nowrap">
+                    Siga as especificações do transporte.
+                  </p>
+                </div>
 
-        <Card className="min-h-[110px] w-full">
-          <CardContent className="p-4 flex flex-col justify-between h-full items-start text-left">
-            <div className="flex w-full items-start justify-between mb-2">
-              <p className="text-[12px] sm:text-[13px] font-semibold text-gray-500 dark:text-[#a1a1aa] leading-tight">
-                Prazo
-                <br />
-                Restante
-              </p>
-              <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
-                <Calendar size={16} />
+                <div className="shrink-0 flex pt-0.5">
+                  {isPending ? (
+                    <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-yellow-500/20 bg-yellow-500/10 text-yellow-400 rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                      <span className="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+                      PENDENTE
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-green-500/20 bg-green-500/10 text-green-400 rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+                      TRABALHO ATIVO
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="flex flex-col mt-auto">
-              <div className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-[#fafafa] tracking-tight">
-                {daysLeft}
-                <span className="text-[13px] sm:text-sm font-medium text-gray-500 dark:text-[#a1a1aa] tracking-normal ml-1">
-                  dias
-                </span>
-              </div>
-              <p className="text-[11px] text-purple-600 dark:text-purple-400 font-medium">
-                Até {format(deadlineDate, "dd/MM")}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+            )}
+          </div>
 
-        <Card className="col-span-2 sm:col-span-1 w-full min-h-[110px]">
-          <CardContent className="p-4 flex flex-col justify-between h-full items-start text-left">
-            <div className="flex w-full items-start justify-between mb-2">
-              <p className="text-[12px] sm:text-[13px] font-semibold text-gray-500 dark:text-[#a1a1aa]">
-                Progresso Atual
-              </p>
-              <div className="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                <CheckCircle size={16} />
+          {/* Content Area */}
+          <div className="p-3 pb-2 sm:p-4 sm:pb-3 flex flex-col gap-2.5">
+            
+            {/* Buttons Row (Vehicles and Trailer) */}
+            <div className="flex flex-col gap-1.5">
+              <button
+                onClick={() => handleCopyPaintCode(vehicle?.paintCode)}
+                className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] hover:bg-gray-50 dark:hover:bg-[#2e3440] transition-colors rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none"
+              >
+                <div className="flex flex-col w-full justify-center">
+                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">Veículo</span>
+                  <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                    {vehicle?.name || "Nenhum"}
+                  </span>
+                </div>
+                <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2" />
+              </button>
+
+              <button
+                onClick={() => handleCopyPaintCode(trailer?.paintCode)}
+                className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] hover:bg-gray-50 dark:hover:bg-[#2e3440] transition-colors rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none"
+              >
+                <div className="flex flex-col w-full justify-center">
+                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">Reboque</span>
+                  <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                    {trailer?.name || "Nenhum"}
+                  </span>
+                </div>
+                <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2" />
+              </button>
+            </div>
+
+            {/* Metrics */}
+            <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
+              <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{myJob.progress}/{contract.totalDeliveries}</span>
+                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Entregas</span>
+              </div>
+              
+              <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+              <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{Math.max(0, contract.totalDeliveries - myJob.progress)}</span>
+                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Faltam</span>
+              </div>
+
+              <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+              <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{progressPercent.toFixed(0)}%</span>
+                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Concluído</span>
               </div>
             </div>
-            <div className="w-full mt-auto">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-[#fafafa] tracking-tight">
-                  {progressPercent}%
-                </span>
-              </div>
-              <div className="w-full bg-gray-100 dark:bg-[#27272a] rounded-full h-1.5 sm:h-2">
+
+            {/* Compact Progress bar */}
+            <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
+              <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
                 <div
-                  className="bg-[#00D1FF] shadow-[0_0_10px_rgba(0,209,255,0.4)] h-1.5 sm:h-2 rounded-full"
-                  style={{ width: `${progressPercent}%` }}
+                  className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
+                  style={{ width: `${Math.max(3, progressPercent)}%` }}
                 ></div>
               </div>
+              <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">Progresso da operação</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+          
+          {/* Footer - Limit/Time */}
+          <div className="flex items-center justify-between border-t border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] px-3 py-2 sm:px-4 sm:py-2.5 shrink-0 w-full overflow-hidden">
+            <div className="flex flex-1 items-center gap-2 min-w-0 pr-1">
+               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center border border-gray-100 dark:border-transparent">
+                 <CalendarDays size={12} className="text-gray-600 dark:text-gray-400" />
+               </div>
+               <div className="flex flex-col min-w-0 overflow-hidden text-left">
+                 <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Prazo limite</span>
+                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                    {hasValidDeadline ? format(deadlineDate, "dd/MM/yyyy") : "Não definido"}
+                 </span>
+               </div>
+            </div>
 
-        <Card className="col-span-2 sm:col-span-1 w-full min-h-[110px]">
-          <CardContent className="p-4 flex flex-col justify-between h-full items-start text-left">
-            <div className="flex w-full items-start justify-between mb-2">
-              <p className="text-[12px] sm:text-[13px] font-semibold text-gray-500 dark:text-[#a1a1aa]">
-                Avaliação do Trabalho
-              </p>
-              <div className="w-8 h-8 rounded-lg bg-orange-50 dark:bg-orange-500/10 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
-                <Star size={16} />
-              </div>
+            <div className="w-px h-5 bg-gray-100 dark:bg-[#2A2F3A] shrink-0 mx-1"></div>
+
+            <div className="flex flex-1 items-center justify-end gap-2 min-w-0 pl-1 text-right">
+               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center order-1 border border-gray-100 dark:border-transparent">
+                 <Clock size={12} className="text-gray-600 dark:text-gray-400" />
+               </div>
+               <div className="flex flex-col min-w-0 items-end overflow-hidden">
+                 <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Tempo restante</span>
+                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                    {timeRemainingText}
+                 </span>
+               </div>
             </div>
-            <div className="mt-auto flex flex-col">
-              <div className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-[#fafafa] tracking-tight">
-                {currentRating.toFixed(1)}
-              </div>
-              <p className="text-[11px] text-orange-600 dark:text-orange-400 font-medium truncate">
-                {ratingText}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+
+        </div>
       </div>
 
-      {/* Main Job Card */}
-      <Card className="border-2 border-green-50 shadow-sm dark:shadow-none relative overflow-hidden">
-        <CardContent className="p-4 sm:p-6 relative z-10">
-          <div className="flex flex-col md:flex-row justify-between gap-6">
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-3 mb-4">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="p-2 sm:p-3 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 text-blue-600 dark:text-blue-400 rounded-xl shrink-0">
-                    <FileText size={20} className="sm:w-6 sm:h-6" />
-                  </div>
-                  <div className="min-w-0">
-                    <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-[#fafafa] tracking-tight truncate">
-                      {contract.name}
-                    </h2>
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 w-8 p-0 sm:w-auto sm:px-3 text-xs shrink-0"
-                  onClick={() => setIsContractModalOpen(true)}
-                >
-                  <Eye size={16} className="sm:mr-1" />
-                  <span className="hidden sm:inline">Ver Contrato</span>
-                </Button>
-              </div>
-
-              <p className="text-sm text-gray-600 dark:text-[#d4d4d8] max-w-md mb-6 leading-relaxed hidden sm:block">
-                Execute as entregas conforme planejado. Marque cada uma no
-                sistema ao finalizar.
-              </p>
-
-              <div className="flex flex-col gap-3 mb-6">
-                <div className="flex items-center justify-between sm:justify-start gap-4">
-                  <p className="text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider w-16 sm:w-32 shrink-0">
-                    Veículo
-                  </p>
-                  <button
-                    onClick={() => handleCopyPaintCode(vehicle?.paintCode)}
-                    title={
-                      vehicle?.paintCode
-                        ? `Código da pintura: ${vehicle.paintCode} (Clique para copiar)`
-                        : "Nenhum código de pintura"
-                    }
-                    className="text-sm sm:text-base font-semibold text-gray-900 dark:text-[#fafafa] bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] hover:bg-gray-50 dark:hover:bg-[#27272a] shadow-sm dark:shadow-none transition-colors px-3 py-1.5 rounded-lg text-center flex-1 sm:flex-none sm:min-w-[120px] truncate cursor-pointer"
+      {/* Contract Routes (Detailed Mode) */}
+      {contract.mode === "detailed" && contract.deliveries && contract.deliveries.length > 0 && (
+        <Card className="border border-gray-100 dark:border-[#2A2F3A] shadow-sm bg-white dark:bg-[#1A1F26]">
+          <CardContent className="p-3 sm:p-4">
+            <h3 className="text-[13px] sm:text-[14px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 uppercase tracking-wide flex items-center gap-2">
+              <MapPin size={16} className="text-blue-500" />
+              Rotas do Contrato
+            </h3>
+            <div className="flex flex-col gap-2 relative">
+              {/* Connecting line for desktop/tablet */}
+              <div className="hidden sm:block absolute top-4 bottom-4 left-[23px] w-px bg-gray-200 dark:bg-[#2A2F3A] z-0"></div>
+              
+              {contract.deliveries.map((del, idx) => {
+                const isCompleted = idx < myJob.progress;
+                return (
+                  <div
+                    key={del.id || idx}
+                    className={cn(
+                      "flex items-center gap-3 p-3 rounded-xl border transition-colors text-[13px] sm:text-[14px] relative z-10",
+                      isCompleted
+                        ? "bg-green-50/80 dark:bg-green-500/10 border-green-100 dark:border-green-500/20"
+                        : "bg-gray-50/80 dark:bg-[#18181b] border-gray-100 dark:border-[#2A2F3A]"
+                    )}
                   >
-                    {vehicle?.name}
-                  </button>
-                </div>
-                {trailer && (
-                  <div className="flex items-center justify-between sm:justify-start gap-4">
-                    <p className="text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider w-16 sm:w-32 shrink-0">
-                      Reboque
-                    </p>
-                    <button
-                      onClick={() => handleCopyPaintCode(trailer.paintCode)}
-                      title={
-                        trailer.paintCode
-                          ? `Código da pintura: ${trailer.paintCode} (Clique para copiar)`
-                          : "Nenhum código de pintura"
-                      }
-                      className="text-sm sm:text-base font-semibold text-gray-900 dark:text-[#fafafa] bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] hover:bg-gray-50 dark:hover:bg-[#27272a] shadow-sm dark:shadow-none transition-colors px-3 py-1.5 rounded-lg text-center flex-1 sm:flex-none sm:min-w-[120px] truncate cursor-pointer"
-                    >
-                      {trailer.name}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Controls */}
-              <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-100 dark:border-[#2A2F3A]">
-                {isPending ? (
-                  <Button
-                    size="lg"
-                    className="gap-2 w-full sm:w-auto h-12 text-sm sm:text-base bg-blue-600 hover:bg-blue-700 text-white"
-                    onClick={() => startJob(myJob.id)}
-                  >
-                    <Play size={18} className="fill-current" />
-                    Iniciar Trabalho
-                  </Button>
-                ) : (
-                  <div className="flex items-center justify-center gap-2 px-3 py-2 text-gray-500 dark:text-[#a1a1aa] rounded-lg font-medium w-full sm:w-auto text-xs sm:text-sm bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none">
-                    Trabalho Ativo
-                  </div>
-                )}
-                {progressPercent === 100 && (
-                  <Button
-                    variant="danger"
-                    size="lg"
-                    className="gap-2 w-full sm:w-auto h-12 text-sm sm:text-base"
-                    onClick={() => finishJob(myJob.id)}
-                  >
-                    <Square size={18} className="fill-current" />
-                    Finalizar Trabalho
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            {/* Vertical Divider */}
-            <div className="hidden md:block w-px bg-gray-100 dark:bg-[#18181b]"></div>
-
-            {/* Progress Area */}
-            <div className="md:w-64 flex flex-col items-center justify-center bg-gray-50 dark:bg-[#1A1F26] p-6 rounded-2xl border border-gray-100 dark:border-[#2A2F3A]">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-6">
-                Progresso
-              </p>
-
-              {/* Simplified Circular Progress Lookalike */}
-              <div className="relative w-40 h-40 flex items-center justify-center mb-8">
-                <svg className="w-full h-full transform -rotate-90">
-                  <circle
-                    cx="80"
-                    cy="80"
-                    r="70"
-                    stroke="currentColor"
-                    strokeWidth="12"
-                    fill="transparent"
-                    className="text-gray-100"
-                  />
-                  <circle
-                    cx="80"
-                    cy="80"
-                    r="70"
-                    stroke="currentColor"
-                    strokeWidth="12"
-                    fill="transparent"
-                    className="text-[#00D1FF] transition-all duration-500 ease-out drop-shadow-[0_0_8px_rgba(0,209,255,0.4)]"
-                    strokeDasharray={2 * Math.PI * 70}
-                    strokeDashoffset={
-                      2 * Math.PI * 70 * (1 - progressPercent / 100)
-                    }
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-4xl font-bold text-gray-900 dark:text-[#fafafa]">
-                      {myJob.progress}
-                    </span>
-                    <span className="text-lg font-medium text-gray-500 dark:text-[#a1a1aa]">
-                      /{contract.totalDeliveries}
-                    </span>
-                  </div>
-                  <span className="text-sm font-medium text-gray-500 dark:text-[#a1a1aa]">
-                    Entregas
-                  </span>
-                </div>
-              </div>
-
-              <Button
-                disabled={progressPercent === 100}
-                className="w-full bg-green-600 dark:bg-green-600 hover:bg-green-700 text-white shadow-sm dark:shadow-none border-none gap-2 font-bold h-12"
-                onClick={handleOpenMarcarEntrega}
-              >
-                Marcar Entrega
-              </Button>
-
-              {myJob.progress > 0 && (
-                <button
-                  onClick={() => unmarkDelivery(myJob.id)}
-                  className="mt-3 text-xs font-medium text-gray-500 hover:text-gray-700 dark:text-[#a1a1aa] dark:hover:text-[#fafafa] underline"
-                >
-                  Desfazer última dev
-                </button>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* List of Deliveries */}
-      <Card className="border border-gray-100 dark:border-[#2A2F3A] shadow-sm">
-        <CardContent className="p-4 sm:p-6">
-          <h3 className="text-[16px] sm:text-lg font-bold text-gray-900 dark:text-[#fafafa] tracking-tight mb-4">
-            Próximas Entregas
-          </h3>
-          <div className="space-y-3">
-            {deliveriesList.map((del, idx) => {
-              const isCompleted = idx < myJob.progress;
-              const isCurrent = idx === myJob.progress;
-
-              return (
-                <div
-                  key={del.id || idx}
-                  className={cn(
-                    "p-4 rounded-xl border transition-all duration-200 flex flex-col gap-3",
-                    isCompleted
-                      ? "border-green-100 bg-green-50 dark:bg-green-500/10 dark:border-green-500/20"
-                      : isCurrent
-                        ? "border-blue-200 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 shadow-sm dark:shadow-none ring-1 ring-blue-100/50"
-                        : "border-gray-200 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26]",
-                  )}
-                >
-                  {/* Header: Title + Status + Action */}
-                  <div className="flex items-start justify-between w-full gap-2">
-                    <h4
-                      className={cn(
-                        "font-bold text-sm sm:text-base pr-2",
-                        isCompleted
-                          ? "text-gray-500 dark:text-[#a1a1aa] line-through decoration-green-400/30"
-                          : "text-gray-900 dark:text-[#fafafa]",
-                      )}
-                    >
-                      {(del as any)._isCustom
-                        ? `Entrega ${idx + 1}`
-                        : `${del.destination}`}
-                    </h4>
-
-                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                      {contract.mode === "simple" && isCompleted && (
-                        <button
-                          onClick={() => handleEditRoute(idx)}
-                          className="p-1 sm:p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 rounded-lg transition-colors"
-                          title="Editar Rota"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                      )}
+                    <div className="shrink-0 flex items-center justify-center w-6 h-6 bg-white dark:bg-[#1A1F26] rounded-full sm:shadow-sm">
                       {isCompleted ? (
-                        <span className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 bg-green-100 text-green-800 dark:text-green-400 rounded-full text-[10px] sm:text-xs font-bold ring-1 ring-inset ring-green-600/10">
-                          <CheckCircle
-                            size={12}
-                            className="fill-current text-green-600 dark:text-green-400 hidden sm:block"
-                          />
-                          Concluída
-                        </span>
-                      ) : isCurrent ? (
-                        <span className="inline-flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 bg-blue-100 dark:bg-blue-500/20 text-blue-800 dark:text-blue-400 rounded-full text-[10px] sm:text-xs font-bold ring-1 ring-inset ring-blue-600/10">
-                          <Circle
-                            size={12}
-                            className="fill-current hidden sm:block"
-                          />
-                          Ativa
-                        </span>
+                        <CheckCircle size={18} className="text-green-600 dark:text-green-400" />
                       ) : (
-                        <span className="text-[10px] sm:text-xs font-bold text-gray-500 dark:text-[#a1a1aa] px-2.5 py-1 bg-gray-100 dark:bg-[#27272a] rounded-full border border-gray-200 dark:border-[#2A2F3A]/60">
-                          Pendente
-                        </span>
+                        <div className="w-[14px] h-[14px] rounded-full border-2 border-gray-300 dark:border-gray-600"></div>
                       )}
                     </div>
-                  </div>
-
-                  {/* Vertical Route Block */}
-                  <div className="relative pl-1.5 mt-1">
-                    {/* Vertical Path Line */}
-                    <div className="absolute left-[11px] top-3 bottom-4 w-[2px] bg-gray-200 dark:bg-white/10 rounded-full"></div>
-
-                    {/* Origin */}
-                    <div className="relative flex items-start gap-4 mb-3 sm:mb-4">
-                      <div className="relative z-10 w-[10px] h-[10px] mt-1 rounded-full ring-4 ring-white bg-gray-300 dark:bg-[#52525b]"></div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-0.5 leading-none">
-                          Origem
-                        </p>
-                        <p
-                          className={cn(
-                            "text-xs sm:text-sm font-medium truncate",
-                            isCompleted
-                              ? "text-gray-400"
-                              : "text-gray-600 dark:text-[#d4d4d8]",
-                          )}
-                        >
-                          {del.origin}
-                        </p>
-                      </div>
+                    <div className="flex-1 flex flex-row items-center min-w-0 gap-2 sm:gap-3">
+                      <span className={cn(
+                        "font-semibold truncate",
+                        isCompleted ? "text-green-800 dark:text-green-400" : "text-gray-900 dark:text-[#fafafa]"
+                      )}>
+                        {del.origin}
+                      </span>
+                      <span className="text-gray-300 dark:text-[#3f3f46] shrink-0">→</span>
+                      <span className={cn(
+                        "font-semibold truncate",
+                        isCompleted ? "text-green-800 dark:text-green-400" : "text-gray-900 dark:text-[#fafafa]"
+                      )}>
+                        {del.destination}
+                      </span>
                     </div>
-
-                    {/* Destination */}
-                    <div className="relative flex items-start gap-4">
-                      <div
-                        className={cn(
-                          "relative z-10 w-[10px] h-[10px] mt-1 rounded-full ring-4 ring-white",
-                          isCompleted
-                            ? "bg-green-500"
-                            : isCurrent
-                              ? "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]"
-                              : "bg-gray-300 dark:bg-[#52525b]",
-                        )}
-                      ></div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-0.5 leading-none">
-                          Destino
-                        </p>
-                        <p
-                          className={cn(
-                            "text-xs sm:text-sm font-semibold truncate",
-                            isCompleted
-                              ? "text-gray-400"
-                              : "text-gray-900 dark:text-[#fafafa]",
-                          )}
-                        >
-                          {del.destination}
-                        </p>
-                      </div>
+                    <div className="shrink-0">
+                      <span className="text-[10px] font-bold text-gray-400 dark:text-[#52525b] uppercase tracking-wider">
+                        #{idx + 1}
+                      </span>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Contract Trips Section */}
+      <div className="w-full flex flex-col pt-2">
+        <div className="flex items-center gap-2 mb-3 px-1">
+          <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
+          <h3 className="text-[15px] sm:text-[16px] font-bold text-gray-900 dark:text-[#fafafa] tracking-wide uppercase">
+            Viagens do Contrato
+          </h3>
+        </div>
+        <div className="w-full">
+          <TripHistory embeddedJob={myJob} hideHeader={true} />
+        </div>
+      </div>
 
       {isContractModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 min-h-[100dvh]">
@@ -1361,11 +1154,11 @@ function DashboardComponent({
                     className={cn(
                       "text-sm font-semibold",
                       isActive
-                        ? "text-green-600 dark:text-green-400"
+                        ? (diffMs < 0 ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400")
                         : "text-yellow-600 dark:text-yellow-400",
                     )}
                   >
-                    {isActive ? "Em andamento" : "Pendente"}
+                    {isAwaitingCompletion ? "Aguardando Finalização" : (isActive ? (diffMs < 0 ? "Atrasado" : "Em andamento") : "Pendente")}
                   </p>
                 </div>
               </div>
@@ -1385,71 +1178,6 @@ function DashboardComponent({
             <div className="bg-gray-50 dark:bg-[#1A1F26] px-6 py-4 flex justify-end border-t border-gray-100 dark:border-[#2A2F3A]">
               <Button onClick={() => setIsContractModalOpen(false)}>
                 Fechar
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isRouteModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 min-h-[100dvh]">
-          <div className="bg-white dark:bg-[#1A1F26] rounded-2xl w-full max-w-md shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="px-6 py-4 flex items-center justify-between border-b border-gray-100 dark:border-[#2A2F3A]">
-              <h3 className="text-xl font-bold text-gray-900 dark:text-[#fafafa]">
-                {routeModalTarget === -1
-                  ? "Marcar Nova Entrega"
-                  : "Editar Rota da Entrega"}
-              </h3>
-              <button
-                onClick={() => setIsRouteModalOpen(false)}
-                className="p-2 text-gray-400 hover:text-gray-600 dark:text-[#d4d4d8] dark:hover:text-[#a1a1aa] hover:bg-gray-100 dark:bg-[#27272a] dark:hover:bg-[#3f3f46]/50 rounded-full transition-colors"
-                title="Fechar"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-[11px] font-extrabold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest mb-1.5">
-                  Origem
-                </label>
-                <input
-                  type="text"
-                  className="w-full bg-gray-100 dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] rounded-xl px-4 py-3 text-[15px] text-gray-900 dark:text-[#fafafa] font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-400 dark:placeholder:text-[#71717a]"
-                  value={routeOrigin}
-                  onChange={(e) => setRouteOrigin(e.target.value)}
-                  placeholder="Ex: São Paulo"
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-extrabold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-widest mb-1.5">
-                  Destino
-                </label>
-                <input
-                  type="text"
-                  className="w-full bg-gray-100 dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] rounded-xl px-4 py-3 text-[15px] text-gray-900 dark:text-[#fafafa] font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none transition-all placeholder:text-gray-400 dark:placeholder:text-[#71717a]"
-                  value={routeDestination}
-                  onChange={(e) => setRouteDestination(e.target.value)}
-                  placeholder="Ex: Rio de Janeiro"
-                />
-              </div>
-            </div>
-
-            <div className="bg-gray-50 dark:bg-[#1A1F26] px-6 py-4 flex justify-end gap-3 border-t border-gray-100 dark:border-[#2A2F3A]">
-              <Button
-                variant="outline"
-                onClick={() => setIsRouteModalOpen(false)}
-                className="bg-white dark:bg-[#1A1F26]"
-              >
-                Cancelar
-              </Button>
-              <Button
-                onClick={handleSaveRoute}
-                disabled={!routeOrigin.trim() || !routeDestination.trim()}
-              >
-                Salvar Rota
               </Button>
             </div>
           </div>

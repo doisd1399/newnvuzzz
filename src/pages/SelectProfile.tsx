@@ -20,6 +20,7 @@ export default function SelectProfile() {
     currentUser,
     switchRole,
     authInitialized,
+    membershipsLoaded,
     companies,
     setActiveCompanyId,
     activeCompanyId,
@@ -34,17 +35,18 @@ export default function SelectProfile() {
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
 
+  if (!currentUser) return null;
+
   useEffect(() => {
     if (authInitialized && !currentUser) {
-      navigate("/login", { replace: true });
-    } else if (
-      authInitialized &&
-      currentUser &&
-      currentUser.status !== "active"
-    ) {
-      navigate("/status", { replace: true });
+      navigate("/", { replace: true });
+    } else if (authInitialized && currentUser && membershipsLoaded) {
+      const hasActiveMembership = memberships.some((m) => m.status === "active");
+      if (!hasActiveMembership) {
+        navigate("/status", { replace: true });
+      }
     }
-  }, [authInitialized, currentUser, navigate]);
+  }, [authInitialized, currentUser, membershipsLoaded, memberships, navigate]);
 
   const availableCompanies = useMemo(() => {
     const list: { companyId: string; companyName: string; roles: string[] }[] =
@@ -54,9 +56,7 @@ export default function SelectProfile() {
         if (membership.status === "active") {
           const comp = companies.find((c) => c.id === membership.companyId);
           if (companies.length > 0 && !comp) return; // Ghost company
-          const cName = comp
-            ? comp.fleetName || comp.companyName
-            : "Carregando...";
+          const cName = comp ? comp.companyName : "Carregando...";
           list.push({
             companyId: membership.companyId,
             companyName: cName,
@@ -64,38 +64,9 @@ export default function SelectProfile() {
           });
         }
       });
-    } else if (currentUser?.memberships) {
-      Object.entries(currentUser.memberships).forEach(
-        ([compId, membership]) => {
-          if (membership.status === "active") {
-            const comp = companies.find((c) => c.id === compId);
-            if (companies.length > 0 && !comp) return;
-            const cName = comp
-              ? comp.fleetName || comp.companyName
-              : "Carregando...";
-            list.push({
-              companyId: compId,
-              companyName: cName,
-              roles: membership.roles || ["driver"],
-            });
-          }
-        },
-      );
-    } else if (currentUser) {
-      const compId = currentUser.companyId || "";
-      const comp = companies.find((c) => c.id === compId);
-      if (companies.length > 0 && !comp && compId) return;
-      const cName = comp ? comp.fleetName || comp.companyName : "Carregando...";
-      if (currentUser.status === "active" && compId) {
-        list.push({
-          companyId: compId,
-          companyName: cName,
-          roles: currentUser.roles || [currentUser.role || "driver"],
-        });
-      }
     }
     return list;
-  }, [memberships, currentUser, companies]);
+  }, [memberships, companies]);
 
   // Handle default company selection
   useEffect(() => {
@@ -131,7 +102,7 @@ export default function SelectProfile() {
   const handleLogout = async () => {
     try {
       await logOutApp();
-      navigate("/login", { replace: true });
+      navigate("/", { replace: true });
     } catch (error) {
       console.error("Error signing out:", error);
     }
@@ -158,7 +129,7 @@ export default function SelectProfile() {
     navigate,
   ]);
 
-  if (!authInitialized || !currentUser || totalProfilesCount === 1) {
+  if (!authInitialized || !currentUser || !membershipsLoaded || totalProfilesCount === 1) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white dark:bg-[#09090b]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-300 dark:border-[#2A2F3A]"></div>

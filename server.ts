@@ -24,7 +24,9 @@ async function startServer() {
   const getGoogleOAuthClient = () => {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${process.env.APP_URL || "http://localhost:3000"}/api/drive/callback`;
+    const redirectUri =
+      process.env.GOOGLE_REDIRECT_URI ||
+      `${process.env.APP_URL || "http://localhost:3000"}/api/drive/callback`;
     return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   };
 
@@ -32,7 +34,7 @@ async function startServer() {
     res.json({
       version: "NVU-GDRIVE-V2",
       uploadRouteExists: true,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
 
@@ -50,10 +52,10 @@ async function startServer() {
     try {
       const code = req.query.code as string;
       if (!code) throw new Error("No code provided");
-      
+
       const oauth2Client = getGoogleOAuthClient();
       const { tokens } = await oauth2Client.getToken(code);
-      
+
       // We will send the tokens back to the window opener (the SeniorPanel)
       // so it can save the refreshToken in Firestore.
       res.send(`
@@ -84,12 +86,16 @@ async function startServer() {
       // Fetch refresh token from Firestore using admin SDK
       const sysDocSnap = await db.collection("settings").doc("system").get();
       const refreshToken = sysDocSnap.data()?.driveRefreshToken;
-      
-      console.log("[Google Drive Upload] - Token encontrado no Firestore:", !!refreshToken);
+
+      console.log(
+        "[Google Drive Upload] - Token encontrado no Firestore:",
+        !!refreshToken,
+      );
 
       if (!refreshToken) {
-        return res.status(401).json({ 
-          error: "O Google Drive não está conectado pelo proprietário do sistema." 
+        return res.status(401).json({
+          error:
+            "O Google Drive não está conectado pelo proprietário do sistema.",
         });
       }
 
@@ -119,7 +125,12 @@ async function startServer() {
 
         if (resList.data.files && resList.data.files.length > 0) {
           targetFolderId = resList.data.files[0].id!;
-          console.log("[Google Drive Upload] - Pasta encontrada para empresa:", companyId, "ID:", targetFolderId);
+          console.log(
+            "[Google Drive Upload] - Pasta encontrada para empresa:",
+            companyId,
+            "ID:",
+            targetFolderId,
+          );
         } else {
           // 2. Create the subfolder if it does not exist
           const folderMetadata = {
@@ -133,10 +144,18 @@ async function startServer() {
             supportsAllDrives: true,
           });
           targetFolderId = folderRes.data.id!;
-          console.log("[Google Drive Upload] - Nova pasta criada para empresa:", companyId, "ID:", targetFolderId);
+          console.log(
+            "[Google Drive Upload] - Nova pasta criada para empresa:",
+            companyId,
+            "ID:",
+            targetFolderId,
+          );
         }
       } catch (folderErr) {
-        console.warn("[Google Drive Upload] - Could not find or create company subfolder, falling back to ROOT folder. Error:", folderErr);
+        console.warn(
+          "[Google Drive Upload] - Could not find or create company subfolder, falling back to ROOT folder. Error:",
+          folderErr,
+        );
         targetFolderId = PARENT_FOLDER_ID;
       }
 
@@ -159,29 +178,34 @@ async function startServer() {
 
       // Provide read access to "anyone with the link" so frontend can show it
       try {
-          await drive.permissions.create({
-            fileId: driveRes.data.id!,
-            requestBody: {
-              role: "reader",
-              type: "anyone",
-            },
-            supportsAllDrives: true,
-          });
+        await drive.permissions.create({
+          fileId: driveRes.data.id!,
+          requestBody: {
+            role: "reader",
+            type: "anyone",
+          },
+          supportsAllDrives: true,
+        });
       } catch (permErr) {
-          console.warn("Could not set public permission. Display might fail if service account cannot share files.", permErr);
+        console.warn(
+          "Could not set public permission. Display might fail if service account cannot share files.",
+          permErr,
+        );
       }
 
       // Cleanup local temp file
       fs.unlink(file.path, () => {});
 
-      console.log("[Google Drive Upload] - Upload concluído com sucesso:", driveRes.data.webViewLink);
+      console.log(
+        "[Google Drive Upload] - Upload concluído com sucesso:",
+        driveRes.data.webViewLink,
+      );
 
       return res.json({
         id: driveRes.data.id,
         webViewLink: driveRes.data.webViewLink,
         webContentLink: driveRes.data.webContentLink,
       });
-
     } catch (err: any) {
       console.error("Error uploading to drive:", err);
       // Cleanup local temp file if it exists

@@ -1,5 +1,5 @@
-import fs from 'fs';
-let c = fs.readFileSync('src/pages/driver/Profile.tsx', 'utf-8');
+import fs from "fs";
+let c = fs.readFileSync("src/pages/driver/Profile.tsx", "utf-8");
 
 const target = `                 {pastJobs.slice().reverse().map(job => {
                     const contract = contracts.find(c => c.id === job.contractId);
@@ -112,7 +112,7 @@ const replacement = `                 {pastJobs.slice().reverse().map(job => {
 
 if (c.includes(target)) {
   c = c.replace(target, replacement);
-  fs.writeFileSync('src/pages/driver/Profile.tsx', c, 'utf-8');
+  fs.writeFileSync("src/pages/driver/Profile.tsx", c, "utf-8");
   console.log("Success");
 } else {
   // Let's try simpler replacement inside the map
@@ -138,7 +138,7 @@ if (c.includes(target)) {
                          </div>
                       </div>
                     );`;
-                    
+
   const altReplacement = `                    const completedAt = job.completedAt ? new Date(job.completedAt) : new Date();
                     const deadline = new Date(job.deadlineDate);
                     const onTime = completedAt <= deadline;
@@ -210,10 +210,10 @@ if (c.includes(target)) {
                          )}
                       </div>
                     );`;
-                    
+
   if (c.includes(alternateReplaceBaseTarget)) {
     c = c.replace(alternateReplaceBaseTarget, altReplacement);
-    fs.writeFileSync('src/pages/driver/Profile.tsx', c, 'utf-8');
+    fs.writeFileSync("src/pages/driver/Profile.tsx", c, "utf-8");
     console.log("Success with alt target");
   } else {
     console.log("Both target styles not found.");

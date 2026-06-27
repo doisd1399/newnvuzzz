@@ -1,11 +1,11 @@
-import fs from 'fs';
+import fs from "fs";
 
-let c = fs.readFileSync('src/pages/admin/Dashboard.tsx', 'utf-8');
+let c = fs.readFileSync("src/pages/admin/Dashboard.tsx", "utf-8");
 
 // 1. Add state
 c = c.replace(
-  'const [activeMobileSection, setActiveMobileSection] = useState<string | null>(null);',
-  'const [activeMobileSection, setActiveMobileSection] = useState<string | null>(null);\n  const [activeJobsFilter, setActiveJobsFilter] = useState<"all" | "attention" | "late">("all");'
+  "const [activeMobileSection, setActiveMobileSection] = useState<string | null>(null);",
+  'const [activeMobileSection, setActiveMobileSection] = useState<string | null>(null);\n  const [activeJobsFilter, setActiveJobsFilter] = useState<"all" | "attention" | "late">("all");',
 );
 
 // 2. Add filtered list
@@ -18,8 +18,9 @@ const filteredListCode = `
 `;
 
 c = c.replace(
-  'const pendingJobs = activeJobsList.filter(j => j.status === \'pending\').length;',
-  filteredListCode + '\n  const pendingJobs = activeJobsList.filter(j => j.status === \'pending\').length;'
+  "const pendingJobs = activeJobsList.filter(j => j.status === 'pending').length;",
+  filteredListCode +
+    "\n  const pendingJobs = activeJobsList.filter(j => j.status === 'pending').length;",
 );
 
 // 3. Add to mobile section
@@ -75,9 +76,18 @@ const desktopHeaderReplacement = `           <div className="flex items-center j
 c = c.replace(desktopHeaderTarget, desktopHeaderReplacement);
 
 // 5. Replace references
-c = c.replace(/{activeJobsList\.slice\(0, 5\)\.map\(job => {/g, '{filteredActiveJobsList.slice(0, 5).map(job => {');
-c = c.replace(/{activeJobsList\.length === 0 \? \(/g, '{filteredActiveJobsList.length === 0 ? (');
-c = c.replace(/activeJobsList\.map\(job => {/g, 'filteredActiveJobsList.map(job => {');
+c = c.replace(
+  /{activeJobsList\.slice\(0, 5\)\.map\(job => {/g,
+  "{filteredActiveJobsList.slice(0, 5).map(job => {",
+);
+c = c.replace(
+  /{activeJobsList\.length === 0 \? \(/g,
+  "{filteredActiveJobsList.length === 0 ? (",
+);
+c = c.replace(
+  /activeJobsList\.map\(job => {/g,
+  "filteredActiveJobsList.map(job => {",
+);
 
-fs.writeFileSync('src/pages/admin/Dashboard.tsx', c, 'utf-8');
+fs.writeFileSync("src/pages/admin/Dashboard.tsx", c, "utf-8");
 console.log("Done");

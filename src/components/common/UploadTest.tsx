@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
-import { uploadService, UploadError } from '../../services/uploadService';
-import { UploadCloud, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import React, { useState, useRef } from "react";
+import { uploadService, UploadError } from "../../services/uploadService";
+import { UploadCloud, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 
 export const UploadTest: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -8,13 +8,13 @@ export const UploadTest: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [uploadedUrl, setUploadedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Example user data that would normally come from your auth context
   const mockUser = {
     companyId: "TEST_COMPANY_123",
-    userId: "USER_456"
+    userId: "USER_456",
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -42,12 +42,12 @@ export const UploadTest: React.FC = () => {
         companyId: mockUser.companyId,
         userId: mockUser.userId,
         folder: "receipts", // specific folder inside the company
-        onProgress: (percent) => setProgress(Math.round(percent))
+        onProgress: (percent) => setProgress(Math.round(percent)),
       });
 
       setUploadedUrl(url);
       setFile(null); // Clear selected file after success
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: any) {
       if (err instanceof UploadError) {
         setError(err.message);
@@ -66,8 +66,12 @@ export const UploadTest: React.FC = () => {
           <UploadCloud size={20} />
         </div>
         <div>
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Teste de Upload Firebase</h2>
-          <p className="text-xs text-gray-500 dark:text-gray-400">Suporta JPG, PNG, WEBP (Max 5MB)</p>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+            Teste de Upload Firebase
+          </h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Suporta JPG, PNG, WEBP (Max 5MB)
+          </p>
         </div>
       </div>
 
@@ -107,8 +111,8 @@ export const UploadTest: React.FC = () => {
                 <span>{progress}%</span>
               </div>
               <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-1.5 overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-1.5 rounded-full transition-all duration-300" 
+                <div
+                  className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
                   style={{ width: `${progress}%` }}
                 />
               </div>
@@ -129,22 +133,24 @@ export const UploadTest: React.FC = () => {
           <div className="mt-4 p-4 bg-green-50 dark:bg-green-500/10 rounded-md border border-green-100 dark:border-green-900/30">
             <div className="flex items-center text-green-700 dark:text-green-400 mb-2">
               <CheckCircle2 className="w-4 h-4 mr-2" />
-              <span className="text-sm font-medium">Upload concluído com sucesso!</span>
+              <span className="text-sm font-medium">
+                Upload concluído com sucesso!
+              </span>
             </div>
-            <a 
-              href={uploadedUrl} 
-              target="_blank" 
+            <a
+              href={uploadedUrl}
+              target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-blue-600 hover:underline break-all block mt-2"
             >
               {uploadedUrl}
             </a>
-            
+
             {/* Simple Preview */}
             <div className="mt-3 aspect-video bg-gray-100 dark:bg-gray-900 rounded overflow-hidden border border-gray-200 dark:border-gray-800">
-              <img 
-                src={uploadedUrl} 
-                alt="Upload preview" 
+              <img
+                src={uploadedUrl}
+                alt="Upload preview"
                 className="w-full h-full object-cover"
               />
             </div>

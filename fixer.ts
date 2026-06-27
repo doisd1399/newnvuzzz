@@ -1,10 +1,11 @@
-import fs from 'fs';
-import path from 'path';
+import fs from "fs";
+import path from "path";
 
-const file = path.resolve('./src/pages/admin/Operations.tsx');
-let content = fs.readFileSync(file, 'utf8');
+const file = path.resolve("./src/pages/admin/Operations.tsx");
+let content = fs.readFileSync(file, "utf8");
 
-const regex = /\s*return \(\n\s*<div \n\s*key=\{job\.id\}[^]*?progresso \/ total.*?\{job\.progress\}\/\{job\.contract!\.totalDeliveries\}[^]*?<\s*\/\s*div>\n\s*\)/g;
+const regex =
+  /\s*return \(\n\s*<div \n\s*key=\{job\.id\}[^]*?progresso \/ total.*?\{job\.progress\}\/\{job\.contract!\.totalDeliveries\}[^]*?<\s*\/\s*div>\n\s*\)/g;
 
 const replacement = `                const deliveriesLeft = job.contract!.totalDeliveries - job.progress;
 
@@ -97,20 +98,29 @@ const replacement = `                const deliveriesLeft = job.contract!.totalD
 let modified = false;
 
 // Simple replace by splitting the file since my regex didn't work previously
-const startStr = "                return (\n                  <div \n                    key={job.id} \n                    onClick={() => setSelectedJobId(isSelected ? null : job.id)}";
+const startStr =
+  "                return (\n                  <div \n                    key={job.id} \n                    onClick={() => setSelectedJobId(isSelected ? null : job.id)}";
 const endStr = "                  </div>\n                )\n              })}";
 
 const startIndex = content.indexOf(startStr);
 if (startIndex !== -1) {
   const endIndex = content.indexOf(endStr);
   if (endIndex !== -1) {
-    content = content.substring(0, startIndex) + replacement + content.substring(endIndex + endStr.length - 20); // Keep "} ) })"
-    fs.writeFileSync(file, content, 'utf8');
+    content =
+      content.substring(0, startIndex) +
+      replacement +
+      content.substring(endIndex + endStr.length - 20); // Keep "} ) })"
+    fs.writeFileSync(file, content, "utf8");
     modified = true;
     console.log("Success by indexOf!");
   }
 }
 
 if (!modified) {
-  console.log("Failed to match. Start index:", startIndex, "End index:", content.indexOf(endStr));
+  console.log(
+    "Failed to match. Start index:",
+    startIndex,
+    "End index:",
+    content.indexOf(endStr),
+  );
 }

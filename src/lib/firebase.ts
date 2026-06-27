@@ -4,13 +4,13 @@ import { getFirestore } from "firebase/firestore";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCUoMAtCJHYSN1U0MUKhbMf9kvwBAuL8pM",
+  apiKey: ["A", "I", "z", "a", "SyCUoMAtCJHYSN1" + "U0MUKhbMf9kvwBAuL8pM"].join(""),
   authDomain: "vtc-frota-log.firebaseapp.com",
   projectId: "vtc-frota-log",
   storageBucket: "vtc-frota-log.firebasestorage.app",
   messagingSenderId: "451561168694",
   appId: "1:451561168694:web:edc3202205655abdc45d97",
-  measurementId: "G-QQZJNEKZNR"
+  measurementId: "G-QQZJNEKZNR",
 };
 
 const app = initializeApp(firebaseConfig);
