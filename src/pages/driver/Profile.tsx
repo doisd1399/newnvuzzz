@@ -94,7 +94,7 @@ export default function Profile() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isPageSelectorOpen, setIsPageSelectorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "profile">(
+  const [activeTab, setActiveTab] = useState<"dashboard" | "profile" | "operations">(
     "dashboard",
   );
 
@@ -317,6 +317,7 @@ export default function Profile() {
     { id: "dashboard", label: "Painel Operacional", icon: LayoutDashboard },
     { id: "profile", label: "Meu Perfil", icon: UserIcon },
     { id: "history", label: "Histórico de Viagens", icon: History },
+    { id: "operations", label: "Histórico de Operações", icon: Package },
     { id: "reports", label: "Relatórios", icon: Activity },
   ];
 
@@ -432,7 +433,7 @@ export default function Profile() {
                   } else if (opt.id === "reports") {
                     navigate("/driver/reports");
                   } else {
-                    setActiveTab(opt.id as "dashboard" | "profile");
+                    setActiveTab(opt.id as "dashboard" | "profile" | "operations");
                   }
                 }}
                 className={cn(
@@ -747,6 +748,11 @@ export default function Profile() {
             </div>
           </div>
         </div>
+        </div>
+        )}
+
+        {activeTab === "operations" && (
+          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
             <div className="flex flex-col gap-3">
               {!activeJob && currentUser.isOnline && (
                 <Button
