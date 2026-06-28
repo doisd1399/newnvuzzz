@@ -52,8 +52,7 @@ import {
   AlertTriangle,
   Hourglass,
   CalendarDays,
-  Banknote,
-  X
+  Banknote
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";

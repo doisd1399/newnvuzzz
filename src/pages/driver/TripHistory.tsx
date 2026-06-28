@@ -599,11 +599,15 @@ export default function TripHistory({
   hideHeader = false,
   isInsideAdminTab = false,
   onTripDetailsOpen,
+  defaultDriverName,
+  hideDriverFilter = false,
 }: {
   embeddedJob?: any;
   hideHeader?: boolean;
   isInsideAdminTab?: boolean;
   onTripDetailsOpen?: (isOpen: boolean) => void;
+  defaultDriverName?: string;
+  hideDriverFilter?: boolean;
 } = {}) {
   const navigate = useNavigate();
   const {
@@ -637,7 +641,7 @@ export default function TripHistory({
   const [filters, setFilters] = useState({
     simulador: currentCompany?.simulatorName || "",
     empresa: currentCompany?.companyName || "",
-    motorista: currentUser?.name || "",
+    motorista: defaultDriverName !== undefined ? defaultDriverName : (currentUser?.name || ""),
     periodoPreset: "mes", // 'todos', 'hoje', '7dias', 'mes', 'data'
     periodoInicio: "",
     periodoFim: "",
@@ -998,36 +1002,38 @@ export default function TripHistory({
                 Histórico
               </h1>
             </div>
-            <div className="flex items-center pl-8 mt-1.5">
-              <div className="flex items-center bg-transparent border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-0.5 hover:bg-gray-50 dark:hover:bg-[#1A1F26] transition-colors max-w-[160px] sm:max-w-[200px]">
-                <select
-                  value={filters.motorista}
-                  onChange={(e) =>
-                    setFilters({ ...filters, motorista: e.target.value })
-                  }
-                  className="bg-transparent text-[11px] sm:text-[12px] font-semibold text-gray-700 dark:text-gray-300 outline-none cursor-pointer pr-4 appearance-none truncate w-full"
-                  style={{
-                    backgroundImage: `url("data:image/svg+xml,%3Csvg stroke='currentColor' fill='none' stroke-width='2' viewBox='0 0 24 24' stroke-linecap='round' stroke-linejoin='round' height='1em' width='1em' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
-                    backgroundRepeat: "no-repeat",
-                    backgroundPosition: "right center",
-                    backgroundSize: "12px",
-                  }}
-                >
-                  <option value="" className="bg-white dark:bg-[#121213]">
-                    Todos os Motoristas
-                  </option>
-                  {uniqueMotoristas.map((m) => (
-                    <option
-                      key={m}
-                      value={m}
-                      className="bg-white dark:bg-[#121213]"
-                    >
-                      {m}
+            {!hideDriverFilter && (
+              <div className="flex items-center pl-8 mt-1.5">
+                <div className="flex items-center bg-transparent border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-0.5 hover:bg-gray-50 dark:hover:bg-[#1A1F26] transition-colors max-w-[160px] sm:max-w-[200px]">
+                  <select
+                    value={filters.motorista}
+                    onChange={(e) =>
+                      setFilters({ ...filters, motorista: e.target.value })
+                    }
+                    className="bg-transparent text-[11px] sm:text-[12px] font-semibold text-gray-700 dark:text-gray-300 outline-none cursor-pointer pr-4 appearance-none truncate w-full"
+                    style={{
+                      backgroundImage: `url("data:image/svg+xml,%3Csvg stroke='currentColor' fill='none' stroke-width='2' viewBox='0 0 24 24' stroke-linecap='round' stroke-linejoin='round' height='1em' width='1em' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+                      backgroundRepeat: "no-repeat",
+                      backgroundPosition: "right center",
+                      backgroundSize: "12px",
+                    }}
+                  >
+                    <option value="" className="bg-white dark:bg-[#121213]">
+                      Todos os Motoristas
                     </option>
-                  ))}
-                </select>
+                    {uniqueMotoristas.map((m) => (
+                      <option
+                        key={m}
+                        value={m}
+                        className="bg-white dark:bg-[#121213]"
+                      >
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
+            )}
           </div>
           <div className="flex items-center gap-4 mt-1 mr-2">
             <button

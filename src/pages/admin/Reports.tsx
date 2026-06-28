@@ -17,12 +17,20 @@ import { useAppStore } from "../../context/AppContext";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-export default function Reports() {
+export default function Reports({
+  defaultDriverId,
+  hideHeader = false,
+  isInsideAdminTab = false,
+}: {
+  defaultDriverId?: string;
+  hideHeader?: boolean;
+  isInsideAdminTab?: boolean;
+} = {}) {
   const navigate = useNavigate();
   const { historicoTrips = [], activeCompanyId, users = [], activeRole, currentUser } = useAppStore();
   const [period, setPeriod] = useState<"semanal" | "mensal">("semanal");
-  const [mode, setMode] = useState<"empresa" | "funcionarios">("empresa");
-  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"empresa" | "funcionarios">("funcionarios"); // Default to funcionarios if we pass driverId
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(defaultDriverId || null);
 
   
   const [visibleItems, setVisibleItems] = useState(5);
@@ -324,6 +332,7 @@ export default function Reports() {
       <div className="max-w-[900px] mx-auto flex flex-col gap-4 pt-4 sm:pt-6 w-full px-4 sm:px-4 md:px-0 box-border">
         
         {/* Header Container */}
+        {!hideHeader && (
         <div className="px-1 mb-2 flex items-center gap-2.5">
           <button 
             onClick={() => navigate(activeRole === "admin" ? "/admin" : "/driver")}
@@ -340,6 +349,7 @@ export default function Reports() {
             </p>
           </div>
         </div>
+        )}
 
         <div className="space-y-3">
           {/* Period Selector */}
@@ -370,6 +380,7 @@ export default function Reports() {
             </button>
           </div>
 
+          {!defaultDriverId && (
           <div className="grid grid-cols-2 gap-2.5">
             <button
               onClick={() => handleModeChange("empresa")}
@@ -396,6 +407,7 @@ export default function Reports() {
               Dos Funcionários
             </button>
           </div>
+          )}
         </div>
 
         {mode === "empresa" && (
@@ -450,12 +462,14 @@ export default function Reports() {
         {mode === "funcionarios" && selectedDriverId && (
           <div className="mt-5">
             <div className="flex items-center gap-3 mb-4 px-1">
-              <button 
-                onClick={() => setSelectedDriverId(null)}
-                className="w-8 h-8 rounded-full bg-slate-200 dark:bg-[#1A1F26] flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-[#2A2F3A] transition-colors shrink-0"
-              >
-                <ArrowLeft size={18} />
-              </button>
+              {!defaultDriverId && (
+                <button 
+                  onClick={() => setSelectedDriverId(null)}
+                  className="w-8 h-8 rounded-full bg-slate-200 dark:bg-[#1A1F26] flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-[#2A2F3A] transition-colors shrink-0"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+              )}
               <div className="flex flex-col">
                 <h2 className="text-[16px] font-bold text-slate-900 dark:text-white tracking-tight">
                   {activeDrivers.find(d => d.id === selectedDriverId)?.name || "Motorista"}
