@@ -50,7 +50,10 @@ import ErrorBoundary from "../../components/ErrorBoundary";
 import TripHistory from "./TripHistory";
 
 import { getJobRealTimestamp } from "../../lib/utils";
-import { OperationResultModal, OperationResultData } from "../../components/OperationResultModal";
+import {
+  OperationResultModal,
+  OperationResultData,
+} from "../../components/OperationResultModal";
 
 function DashboardComponent({
   isIntegrated = false,
@@ -94,8 +97,10 @@ function DashboardComponent({
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
   const [isFinishing, setIsFinishing] = useState(false);
-  const [showOperationResultModal, setShowOperationResultModal] = useState(false);
-  const [operationResultData, setOperationResultData] = useState<OperationResultData | null>(null);
+  const [showOperationResultModal, setShowOperationResultModal] =
+    useState(false);
+  const [operationResultData, setOperationResultData] =
+    useState<OperationResultData | null>(null);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -170,16 +175,22 @@ function DashboardComponent({
         .sort((a, b) => {
           const dateA = getJobRealTimestamp(a, historicoTrips);
           const dateB = getJobRealTimestamp(b, historicoTrips);
-          
-          const contractA = contracts.find((c) => c.id === a.contractId)?.name || "";
-          const contractB = contracts.find((c) => c.id === b.contractId)?.name || "";
+
+          const contractA =
+            contracts.find((c) => c.id === a.contractId)?.name || "";
+          const contractB =
+            contracts.find((c) => c.id === b.contractId)?.name || "";
 
           if (dateB !== dateA) {
-            console.log(`[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | ${new Date(dateA).toLocaleString()} vs ${new Date(dateB).toLocaleString()} | sort: ${dateB - dateA}`);
+            console.log(
+              `[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | ${new Date(dateA).toLocaleString()} vs ${new Date(dateB).toLocaleString()} | sort: ${dateB - dateA}`,
+            );
             return dateB - dateA;
           }
-          
-          console.log(`[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | Fallback string comparison`);
+
+          console.log(
+            `[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | Fallback string comparison`,
+          );
           return contractA.localeCompare(contractB);
         }),
     [jobs, contracts, currentUser?.id, historicoTrips],
@@ -218,14 +229,14 @@ function DashboardComponent({
         <div
           className={cn(
             "w-full flex flex-row flex-nowrap items-stretch gap-2 sm:gap-4",
-            !showLaunchTrip && "max-w-sm"
+            !showLaunchTrip && "max-w-sm",
           )}
         >
           {!isIntegrated && (
             <div
               className={cn(
                 "min-w-0 sm:flex-1",
-                 showLaunchTrip ? "flex-[4.5]" : "flex-1"
+                showLaunchTrip ? "flex-[4.5]" : "flex-1",
               )}
             >
               <button
@@ -253,27 +264,37 @@ function DashboardComponent({
           {showLaunchTrip && (
             <div
               className={cn(
-                 "min-w-0 sm:flex-1",
-                 isIntegrated ? "flex-1" : "flex-[5.5]"
+                "min-w-0 sm:flex-1",
+                isIntegrated ? "flex-1" : "flex-[5.5]",
               )}
             >
               <button
                 onClick={() => {
                   if (!myJob) {
-                    alert("Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.");
+                    alert(
+                      "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
+                    );
                     return;
                   }
                   navigate("/driver/trip");
                 }}
                 className={cn(
                   "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
-                  myJob ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800" : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80"
+                  myJob
+                    ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800"
+                    : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80",
                 )}
               >
                 {myJob ? (
-                  <Navigation size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                  <Navigation
+                    size={14}
+                    className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
+                  />
                 ) : (
-                  <Lock size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                  <Lock
+                    size={14}
+                    className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
+                  />
                 )}
                 <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
                   Lançar Viagem
@@ -306,7 +327,7 @@ function DashboardComponent({
                     size={16}
                     className={cn(
                       location.pathname === opt.id
-                        ? "text-blue-600"
+                        ? "text-blue-600 dark:text-[#0cb49f]"
                         : "text-slate-500",
                     )}
                   />
@@ -314,7 +335,7 @@ function DashboardComponent({
                     className={cn(
                       "text-[13px] sm:text-[14px] font-semibold",
                       location.pathname === opt.id
-                        ? "text-blue-700 dark:text-blue-400"
+                        ? "text-blue-700 dark:text-[#0cb49f]"
                         : "text-slate-600 dark:text-slate-300",
                     )}
                   >
@@ -576,16 +597,18 @@ function DashboardComponent({
 
     return (
       <div className="w-full max-w-7xl mx-auto space-y-3 sm:space-y-4 pb-4 pt-0">
-        <OperationResultModal 
+        <OperationResultModal
           isOpen={showOperationResultModal}
           onClose={() => setShowOperationResultModal(false)}
           onRequestNewJob={() => {
-              setShowOperationResultModal(false);
-              const event = new CustomEvent('app-navigate', { detail: { to: 'dashboard' } });
-              window.dispatchEvent(event);
-              if (requestNewJobDemand && currentUser) {
-                  requestNewJobDemand();
-              }
+            setShowOperationResultModal(false);
+            const event = new CustomEvent("app-navigate", {
+              detail: { to: "dashboard" },
+            });
+            window.dispatchEvent(event);
+            if (requestNewJobDemand && currentUser) {
+              requestNewJobDemand();
+            }
           }}
           resultData={operationResultData}
         />
@@ -613,13 +636,13 @@ function DashboardComponent({
                 <div className="flex items-center gap-1.5 mb-0.5">
                   <span className="relative flex h-2 w-2">
                     {currentUser?.isOnline && (
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#0cb49f] opacity-75"></span>
                     )}
                     <span
                       className={cn(
                         "relative inline-flex rounded-full h-2 w-2",
                         currentUser?.isOnline
-                          ? "bg-[#32D74B]"
+                          ? "bg-[#0cb49f]"
                           : "bg-gray-300 dark:bg-[#52525b]",
                       )}
                     ></span>
@@ -639,7 +662,7 @@ function DashboardComponent({
                   checked={currentUser?.isOnline || false}
                   onChange={(e) => updateUserOnlineStatus(e.target.checked)}
                 />
-                <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-500 shadow-inner dark:shadow-none"></div>
+                <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#0cb49f] dark:peer-checked:bg-[#0cb49f] shadow-inner dark:shadow-none"></div>
               </label>
             </div>
           </div>
@@ -663,17 +686,27 @@ function DashboardComponent({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="flex items-center gap-3 bg-[#1f242d] dark:bg-[#1A1F26] border border-transparent dark:border-[#2A2F3A] rounded-xl p-3 shadow-sm">
             <div className="w-7 h-7 rounded-full bg-white/10 dark:bg-blue-500/20 flex items-center justify-center shrink-0">
-              <Circle size={12} className="fill-current text-white dark:text-blue-400" />
+              <Circle
+                size={12}
+                className="fill-current text-white dark:text-blue-400"
+              />
             </div>
             <p className="text-[11px] font-medium text-gray-300 dark:text-gray-400 leading-snug">
-              Mantenha-se <strong className="text-white dark:text-[#fafafa]">Disponível</strong> para receber prioridade na atribuição.
+              Mantenha-se{" "}
+              <strong className="text-white dark:text-[#fafafa]">
+                Disponível
+              </strong>{" "}
+              para receber prioridade na atribuição.
             </p>
           </div>
 
           {lastJob && (
             <div className="flex items-center gap-3 bg-white dark:bg-[#1A1F26] border border-gray-200/60 dark:border-[#2A2F3A] rounded-xl p-3 shadow-sm">
               <div className="w-7 h-7 rounded-full bg-emerald-50 dark:bg-emerald-500/10 flex items-center justify-center shrink-0">
-                <CheckCircle size={12} className="text-emerald-600 dark:text-emerald-400" />
+                <CheckCircle
+                  size={12}
+                  className="text-emerald-600 dark:text-emerald-400"
+                />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-[9px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-0.5">
@@ -694,9 +727,10 @@ function DashboardComponent({
   const isPending = myJob.status === "pending";
   const isAwaitingCompletion = myJob.status === "awaiting_completion";
   const isActive = myJob.status === "active" || isAwaitingCompletion;
-  const progressPercent = Math.round(
-    (myJob.progress / Math.max(1, contract.totalDeliveries || 1)) * 100,
-  ) || 0;
+  const progressPercent =
+    Math.round(
+      (myJob.progress / Math.max(1, contract.totalDeliveries || 1)) * 100,
+    ) || 0;
 
   const targetDateString = myJob.dueAt || myJob.deadlineDate;
   const deadlineDate = new Date(targetDateString);
@@ -715,8 +749,14 @@ function DashboardComponent({
     timeRemainingText = `${d} dias • ${h}h • ${m}min`;
   }
 
-  const assignedAtDate = myJob.assignedAt ? new Date(myJob.assignedAt) : (myJob.createdAt ? new Date(myJob.createdAt) : new Date());
-  const calculatedTotalDays = Math.ceil((deadlineDate.getTime() - assignedAtDate.getTime()) / (1000 * 60 * 60 * 24));
+  const assignedAtDate = myJob.assignedAt
+    ? new Date(myJob.assignedAt)
+    : myJob.createdAt
+      ? new Date(myJob.createdAt)
+      : new Date();
+  const calculatedTotalDays = Math.ceil(
+    (deadlineDate.getTime() - assignedAtDate.getTime()) / (1000 * 60 * 60 * 24),
+  );
   const totalDays =
     calculatedTotalDays > 0
       ? calculatedTotalDays
@@ -761,22 +801,31 @@ function DashboardComponent({
         const trD = Math.floor(absDiffMs / (1000 * 60 * 60 * 24));
         const trH = Math.floor((absDiffMs / (1000 * 60 * 60)) % 24);
         const trM = Math.floor((absDiffMs / 1000 / 60) % 60);
-        tempoRestanteOuAtraso = trD > 0 ? `${trD}d ${trH}h ${trM}min` : `${trH}h ${trM}min`;
+        tempoRestanteOuAtraso =
+          trD > 0 ? `${trD}d ${trH}h ${trM}min` : `${trH}h ${trM}min`;
       } else {
         tempoRestanteOuAtraso = "-";
       }
 
-      const jobTrips = historicoTrips.filter(t => {
+      const jobTrips = historicoTrips.filter((t) => {
         if (t.jobId && t.jobId === myJob.id) return true;
         if (t.contratoId !== myJob.contractId) return false;
         if (t.motoristaId !== currentUser?.id) return false;
-        
-        const rawTripDate = t.createdAt?.toDate ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : null);
+
+        const rawTripDate = t.createdAt?.toDate
+          ? t.createdAt.toDate()
+          : t.createdAt
+            ? new Date(t.createdAt)
+            : null;
         const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
-        
-        const assignedTime = myJob.assignedAt ? new Date(myJob.assignedAt).getTime() : 0;
-        const completedTime = myJob.completedAt ? new Date(myJob.completedAt).getTime() : Date.now() + 86400000;
-        
+
+        const assignedTime = myJob.assignedAt
+          ? new Date(myJob.assignedAt).getTime()
+          : 0;
+        const completedTime = myJob.completedAt
+          ? new Date(myJob.completedAt).getTime()
+          : Date.now() + 86400000;
+
         return tripTime >= assignedTime && tripTime <= completedTime;
       });
       const totalGanhos = jobTrips.reduce((acc, curr) => {
@@ -789,7 +838,10 @@ function DashboardComponent({
 
       const resultData = {
         contractName: contract.name,
-        tempoExecucao: execD > 0 ? `${execD}d ${execH}h ${execM}min` : `${execH}h ${execM}min`,
+        tempoExecucao:
+          execD > 0
+            ? `${execD}d ${execH}h ${execM}min`
+            : `${execH}h ${execM}min`,
         tempoRestante: tempoRestanteOuAtraso,
         isAtrasado,
         prazoTotal: `${totalDays} dias`,
@@ -800,7 +852,7 @@ function DashboardComponent({
       };
 
       await finishJob(myJob.id);
-      
+
       setOperationResultData(resultData);
       setShowOperationResultModal(true);
     } catch (error) {
@@ -812,16 +864,18 @@ function DashboardComponent({
 
   return (
     <div className="space-y-3 sm:space-y-4 w-full max-w-7xl mx-auto pb-4 pt-0">
-      <OperationResultModal 
+      <OperationResultModal
         isOpen={showOperationResultModal}
         onClose={() => setShowOperationResultModal(false)}
         onRequestNewJob={() => {
-            setShowOperationResultModal(false);
-            const event = new CustomEvent('app-navigate', { detail: { to: 'dashboard' } });
-            window.dispatchEvent(event);
-            if (requestNewJobDemand && currentUser) {
-                requestNewJobDemand();
-            }
+          setShowOperationResultModal(false);
+          const event = new CustomEvent("app-navigate", {
+            detail: { to: "dashboard" },
+          });
+          window.dispatchEvent(event);
+          if (requestNewJobDemand && currentUser) {
+            requestNewJobDemand();
+          }
         }}
         resultData={operationResultData}
       />
@@ -837,13 +891,13 @@ function DashboardComponent({
                   <div className="flex items-center gap-1.5 mb-0.5">
                     <span className="relative flex h-2 w-2">
                       {currentUser?.isOnline && (
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#0cb49f] opacity-75"></span>
                       )}
                       <span
                         className={cn(
                           "relative inline-flex rounded-full h-2 w-2",
                           currentUser?.isOnline
-                            ? "bg-[#32D74B]"
+                            ? "bg-[#0cb49f]"
                             : "bg-gray-300 dark:bg-[#52525b]",
                         )}
                       ></span>
@@ -865,7 +919,7 @@ function DashboardComponent({
                     checked={currentUser?.isOnline || false}
                     onChange={(e) => updateUserOnlineStatus(e.target.checked)}
                   />
-                  <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-green-500 dark:peer-checked:bg-green-500 shadow-inner dark:shadow-none"></div>
+                  <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#0cb49f] dark:peer-checked:bg-[#0cb49f] shadow-inner dark:shadow-none"></div>
                 </label>
               </div>
             </CardContent>
@@ -874,7 +928,6 @@ function DashboardComponent({
 
         {/* Main Job Card */}
         <div className="order-3 flex flex-col bg-white dark:bg-[#1A1F26] rounded-2xl sm:rounded-[24px] shadow-sm dark:shadow-none border border-gray-200 dark:border-[#2A2F3A] overflow-hidden mb-3 sm:mb-4">
-          
           {/* Header */}
           <div className="relative overflow-hidden bg-[#1f242d] dark:bg-[#151921] p-3 sm:p-4 w-full">
             {/* Subtle glow effect */}
@@ -883,8 +936,12 @@ function DashboardComponent({
             {progressPercent === 100 ? (
               <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
                 <div className="flex flex-col items-start min-w-0">
-                  <h3 className="text-[15px] sm:text-[18px] font-bold text-green-400 tracking-tight leading-none mb-1">Operação concluída!</h3>
-                  <p className="text-[10px] sm:text-[11px] font-medium text-gray-400 leading-tight">Todas as entregas feitas. Finalize para ver o resultado.</p>
+                  <h3 className="text-[15px] sm:text-[18px] font-bold text-green-400 tracking-tight leading-none mb-1">
+                    Operação concluída!
+                  </h3>
+                  <p className="text-[10px] sm:text-[11px] font-medium text-gray-400 leading-tight">
+                    Todas as entregas feitas. Finalize para ver o resultado.
+                  </p>
                 </div>
                 <button
                   onClick={handleFinishJob}
@@ -915,8 +972,8 @@ function DashboardComponent({
                       PENDENTE
                     </span>
                   ) : (
-                    <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-green-500/20 bg-green-500/10 text-green-400 rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+                    <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-[#0cb49f]/20 bg-[#0cb49f]/10 text-[#0cb49f] rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#0cb49f]"></span>
                       TRABALHO ATIVO
                     </span>
                   )}
@@ -927,7 +984,6 @@ function DashboardComponent({
 
           {/* Content Area */}
           <div className="p-3 pb-2 sm:p-4 sm:pb-3 flex flex-col gap-2.5">
-            
             {/* Buttons Row (Vehicles and Trailer) */}
             <div className="flex flex-col gap-1.5">
               <button
@@ -935,12 +991,17 @@ function DashboardComponent({
                 className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] hover:bg-gray-50 dark:hover:bg-[#2e3440] transition-colors rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none"
               >
                 <div className="flex flex-col w-full justify-center">
-                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">Veículo</span>
+                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                    Veículo
+                  </span>
                   <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
                     {vehicle?.name || "Nenhum"}
                   </span>
                 </div>
-                <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2" />
+                <ChevronRight
+                  size={14}
+                  className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2"
+                />
               </button>
 
               <button
@@ -948,34 +1009,51 @@ function DashboardComponent({
                 className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] hover:bg-gray-50 dark:hover:bg-[#2e3440] transition-colors rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none"
               >
                 <div className="flex flex-col w-full justify-center">
-                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">Reboque</span>
+                  <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                    Reboque
+                  </span>
                   <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
                     {trailer?.name || "Nenhum"}
                   </span>
                 </div>
-                <ChevronRight size={14} className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2" />
+                <ChevronRight
+                  size={14}
+                  className="text-gray-300 dark:text-gray-600 group-hover:text-gray-500 shrink-0 ml-2"
+                />
               </button>
             </div>
 
             {/* Metrics */}
             <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
               <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
-                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{myJob.progress}/{contract.totalDeliveries}</span>
-                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Entregas</span>
-              </div>
-              
-              <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
-
-              <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
-                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{Math.max(0, contract.totalDeliveries - myJob.progress)}</span>
-                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Faltam</span>
+                <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                  {myJob.progress}/{contract.totalDeliveries}
+                </span>
+                <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                  Entregas
+                </span>
               </div>
 
               <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
 
               <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
-                 <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">{progressPercent.toFixed(0)}%</span>
-                 <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">Concluído</span>
+                <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                  {Math.max(0, contract.totalDeliveries - myJob.progress)}
+                </span>
+                <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                  Faltam
+                </span>
+              </div>
+
+              <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+              <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                  {progressPercent.toFixed(0)}%
+                </span>
+                <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                  Concluído
+                </span>
               </div>
             </div>
 
@@ -987,100 +1065,125 @@ function DashboardComponent({
                   style={{ width: `${Math.max(3, progressPercent)}%` }}
                 ></div>
               </div>
-              <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">Progresso da operação</p>
+              <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
+                Progresso da operação
+              </p>
             </div>
           </div>
-          
+
           {/* Footer - Limit/Time */}
           <div className="flex items-center justify-between border-t border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] px-3 py-2 sm:px-4 sm:py-2.5 shrink-0 w-full overflow-hidden">
             <div className="flex flex-1 items-center gap-2 min-w-0 pr-1">
-               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center border border-gray-100 dark:border-transparent">
-                 <CalendarDays size={12} className="text-gray-600 dark:text-gray-400" />
-               </div>
-               <div className="flex flex-col min-w-0 overflow-hidden text-left">
-                 <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Prazo limite</span>
-                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
-                    {hasValidDeadline ? format(deadlineDate, "dd/MM/yyyy") : "Não definido"}
-                 </span>
-               </div>
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center border border-gray-100 dark:border-transparent">
+                <CalendarDays
+                  size={12}
+                  className="text-gray-600 dark:text-gray-400"
+                />
+              </div>
+              <div className="flex flex-col min-w-0 overflow-hidden text-left">
+                <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                  Prazo limite
+                </span>
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                  {hasValidDeadline
+                    ? format(deadlineDate, "dd/MM/yyyy")
+                    : "Não definido"}
+                </span>
+              </div>
             </div>
 
             <div className="w-px h-5 bg-gray-100 dark:bg-[#2A2F3A] shrink-0 mx-1"></div>
 
             <div className="flex flex-1 items-center justify-end gap-2 min-w-0 pl-1 text-right">
-               <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center order-1 border border-gray-100 dark:border-transparent">
-                 <Clock size={12} className="text-gray-600 dark:text-gray-400" />
-               </div>
-               <div className="flex flex-col min-w-0 items-end overflow-hidden">
-                 <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">Tempo restante</span>
-                 <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
-                    {timeRemainingText}
-                 </span>
-               </div>
+              <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center order-1 border border-gray-100 dark:border-transparent">
+                <Clock size={12} className="text-gray-600 dark:text-gray-400" />
+              </div>
+              <div className="flex flex-col min-w-0 items-end overflow-hidden">
+                <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                  Tempo restante
+                </span>
+                <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                  {timeRemainingText}
+                </span>
+              </div>
             </div>
           </div>
-
         </div>
       </div>
 
       {/* Contract Routes (Detailed Mode) */}
-      {contract.mode === "detailed" && contract.deliveries && contract.deliveries.length > 0 && (
-        <Card className="border border-gray-100 dark:border-[#2A2F3A] shadow-sm bg-white dark:bg-[#1A1F26]">
-          <CardContent className="p-3 sm:p-4">
-            <h3 className="text-[13px] sm:text-[14px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 uppercase tracking-wide flex items-center gap-2">
-              <MapPin size={16} className="text-blue-500" />
-              Rotas do Contrato
-            </h3>
-            <div className="flex flex-col gap-2 relative">
-              {/* Connecting line for desktop/tablet */}
-              <div className="hidden sm:block absolute top-4 bottom-4 left-[23px] w-px bg-gray-200 dark:bg-[#2A2F3A] z-0"></div>
-              
-              {contract.deliveries.map((del, idx) => {
-                const isCompleted = idx < myJob.progress;
-                return (
-                  <div
-                    key={del.id || idx}
-                    className={cn(
-                      "flex items-center gap-3 p-3 rounded-xl border transition-colors text-[13px] sm:text-[14px] relative z-10",
-                      isCompleted
-                        ? "bg-green-50/80 dark:bg-green-500/10 border-green-100 dark:border-green-500/20"
-                        : "bg-gray-50/80 dark:bg-[#18181b] border-gray-100 dark:border-[#2A2F3A]"
-                    )}
-                  >
-                    <div className="shrink-0 flex items-center justify-center w-6 h-6 bg-white dark:bg-[#1A1F26] rounded-full sm:shadow-sm">
-                      {isCompleted ? (
-                        <CheckCircle size={18} className="text-green-600 dark:text-green-400" />
-                      ) : (
-                        <div className="w-[14px] h-[14px] rounded-full border-2 border-gray-300 dark:border-gray-600"></div>
+      {contract.mode === "detailed" &&
+        contract.deliveries &&
+        contract.deliveries.length > 0 && (
+          <Card className="border border-gray-100 dark:border-[#2A2F3A] shadow-sm bg-white dark:bg-[#1A1F26]">
+            <CardContent className="p-3 sm:p-4">
+              <h3 className="text-[13px] sm:text-[14px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 uppercase tracking-wide flex items-center gap-2">
+                <MapPin size={16} className="text-blue-500" />
+                Rotas do Contrato
+              </h3>
+              <div className="flex flex-col gap-2 relative">
+                {/* Connecting line for desktop/tablet */}
+                <div className="hidden sm:block absolute top-4 bottom-4 left-[23px] w-px bg-gray-200 dark:bg-[#2A2F3A] z-0"></div>
+
+                {contract.deliveries.map((del, idx) => {
+                  const isCompleted = idx < myJob.progress;
+                  return (
+                    <div
+                      key={del.id || idx}
+                      className={cn(
+                        "flex items-center gap-3 p-3 rounded-xl border transition-colors text-[13px] sm:text-[14px] relative z-10",
+                        isCompleted
+                          ? "bg-green-50/80 dark:bg-green-500/10 border-green-100 dark:border-green-500/20"
+                          : "bg-gray-50/80 dark:bg-[#18181b] border-gray-100 dark:border-[#2A2F3A]",
                       )}
+                    >
+                      <div className="shrink-0 flex items-center justify-center w-6 h-6 bg-white dark:bg-[#1A1F26] rounded-full sm:shadow-sm">
+                        {isCompleted ? (
+                          <CheckCircle
+                            size={18}
+                            className="text-green-600 dark:text-green-400"
+                          />
+                        ) : (
+                          <div className="w-[14px] h-[14px] rounded-full border-2 border-gray-300 dark:border-gray-600"></div>
+                        )}
+                      </div>
+                      <div className="flex-1 flex flex-row items-center min-w-0 gap-2 sm:gap-3">
+                        <span
+                          className={cn(
+                            "font-semibold truncate",
+                            isCompleted
+                              ? "text-green-800 dark:text-green-400"
+                              : "text-gray-900 dark:text-[#fafafa]",
+                          )}
+                        >
+                          {del.origin}
+                        </span>
+                        <span className="text-gray-300 dark:text-[#3f3f46] shrink-0">
+                          →
+                        </span>
+                        <span
+                          className={cn(
+                            "font-semibold truncate",
+                            isCompleted
+                              ? "text-green-800 dark:text-green-400"
+                              : "text-gray-900 dark:text-[#fafafa]",
+                          )}
+                        >
+                          {del.destination}
+                        </span>
+                      </div>
+                      <div className="shrink-0">
+                        <span className="text-[10px] font-bold text-gray-400 dark:text-[#52525b] uppercase tracking-wider">
+                          #{idx + 1}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex-1 flex flex-row items-center min-w-0 gap-2 sm:gap-3">
-                      <span className={cn(
-                        "font-semibold truncate",
-                        isCompleted ? "text-green-800 dark:text-green-400" : "text-gray-900 dark:text-[#fafafa]"
-                      )}>
-                        {del.origin}
-                      </span>
-                      <span className="text-gray-300 dark:text-[#3f3f46] shrink-0">→</span>
-                      <span className={cn(
-                        "font-semibold truncate",
-                        isCompleted ? "text-green-800 dark:text-green-400" : "text-gray-900 dark:text-[#fafafa]"
-                      )}>
-                        {del.destination}
-                      </span>
-                    </div>
-                    <div className="shrink-0">
-                      <span className="text-[10px] font-bold text-gray-400 dark:text-[#52525b] uppercase tracking-wider">
-                        #{idx + 1}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
       {/* Contract Trips Section */}
       <div className="w-full flex flex-col pt-2">
@@ -1154,11 +1257,19 @@ function DashboardComponent({
                     className={cn(
                       "text-sm font-semibold",
                       isActive
-                        ? (diffMs < 0 ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400")
+                        ? diffMs < 0
+                          ? "text-red-600 dark:text-red-400"
+                          : "text-blue-600 dark:text-blue-400"
                         : "text-yellow-600 dark:text-yellow-400",
                     )}
                   >
-                    {isAwaitingCompletion ? "Aguardando Finalização" : (isActive ? (diffMs < 0 ? "Atrasado" : "Em andamento") : "Pendente")}
+                    {isAwaitingCompletion
+                      ? "Aguardando Finalização"
+                      : isActive
+                        ? diffMs < 0
+                          ? "Atrasado"
+                          : "Em andamento"
+                        : "Pendente"}
                   </p>
                 </div>
               </div>

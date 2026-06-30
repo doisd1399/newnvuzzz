@@ -118,41 +118,38 @@ export default function DriverProfileIsolated() {
   const ActiveIcon = activePageDetails.icon;
 
   const renderPageSelector = () => (
-    <div className="w-full flex flex-col gap-2 sm:gap-3 mt-1 sm:mt-2 mb-2 sm:mb-3 z-20">
+    <div className="w-full flex flex-col gap-2 sm:gap-3 z-20">
       <div className="w-full flex flex-row items-stretch justify-between gap-2 sm:gap-4">
-        <div className="flex gap-2 min-w-0 flex-1">
+        <div className="flex bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg sm:rounded-[12px] shadow-sm min-w-0 flex-1 h-9 sm:h-[56px] overflow-hidden">
           <button
             onClick={handleBack}
-            className="w-11 h-9 sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center shrink-0"
+            className="w-11 sm:w-14 h-full hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors flex items-center justify-center shrink-0 border-r border-slate-200 dark:border-[#2A2F3A]"
           >
             <ArrowLeft
               size={16}
               className="text-slate-600 dark:text-slate-400"
             />
           </button>
-          <div className="min-w-0 flex-1">
-            <button
-              onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
-              className="w-full h-9 sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-between px-3 sm:px-4"
-            >
-              <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                <ActiveIcon
-                  size={16}
-                  className="text-slate-600 dark:text-slate-400 shrink-0 sm:!w-[20px] sm:!h-[20px]"
-                />
-                <span className="text-[12px] sm:text-[15px] font-bold text-slate-900 dark:text-white truncate">
-                  {activePageDetails.label}
-                </span>
-              </div>
-              <ChevronDown
-                size={14}
-                className={cn(
-                  "text-slate-400 shrink-0 transition-transform duration-200 sm:!w-[18px] sm:!h-[18px]",
-                  isPageSelectorOpen && "rotate-180",
-                )}
-              />
-            </button>
-          </div>
+
+          <button
+            onClick={() => setIsPageSelectorOpen(!isPageSelectorOpen)}
+            className="flex-1 h-full hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors flex items-center justify-center gap-1.5 sm:gap-[12px] px-2 sm:px-4 active:scale-[0.99]"
+          >
+            <ActiveIcon
+              size={14}
+              className="text-slate-600 dark:text-slate-400 shrink-0 sm:!w-[20px] sm:!h-[20px]"
+            />
+            <span className="text-[11px] sm:text-[16px] font-semibold text-slate-800 dark:text-slate-200 truncate leading-none sm:leading-none">
+              {activePageDetails.label}
+            </span>
+            <ChevronDown
+              size={14}
+              className={cn(
+                "text-slate-400 shrink-0 transition-transform duration-200 sm:!w-[18px] sm:!h-[18px]",
+                isPageSelectorOpen && "rotate-180",
+              )}
+            />
+          </button>
         </div>
       </div>
 
@@ -177,21 +174,21 @@ export default function DriverProfileIsolated() {
                 <Icon
                   size={16}
                   className={cn(
-                    activeTab === opt.id ? "text-blue-600" : "text-slate-500",
+                    activeTab === opt.id ? "text-blue-600 dark:text-[#0cb49f]" : "text-slate-500",
                   )}
                 />
                 <span
                   className={cn(
                     "text-[13px] sm:text-[14px] font-semibold",
                     activeTab === opt.id
-                      ? "text-blue-700 dark:text-blue-400"
+                      ? "text-blue-700 dark:text-[#0cb49f]"
                       : "text-slate-600 dark:text-slate-300",
                   )}
                 >
                   {opt.label}
                 </span>
                 {activeTab === opt.id && (
-                  <Check size={14} className="ml-auto text-blue-600" />
+                  <Check size={14} className="ml-auto text-blue-600 dark:text-[#0cb49f]" />
                 )}
               </button>
             );
@@ -374,7 +371,7 @@ export default function DriverProfileIsolated() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto flex flex-col gap-6 w-full animate-in fade-in duration-300 pb-8">
+    <div className="max-w-2xl mx-auto flex flex-col gap-3 sm:gap-4 w-full animate-in fade-in duration-300 pb-8">
       <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[14px] sm:rounded-[16px] flex flex-col shadow-sm relative z-30 w-full box-border">
         <div className="p-3 sm:p-4 flex items-start sm:items-center justify-between gap-3 w-full">
           <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -429,9 +426,9 @@ export default function DriverProfileIsolated() {
 
       {renderPageSelector()}
 
-      <div className="space-y-6 sm:space-y-8">
+      <div className="space-y-3 sm:space-y-4">
         {activeTab === "profile" && (
-          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="space-y-3 sm:space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
             <DriverPerformanceCard
               historicoTrips={historicoTrips}
               driverId={driverId as string}
@@ -440,123 +437,12 @@ export default function DriverProfileIsolated() {
               posicaoRanking={globalRank?.position || "--"}
               totalRanking={globalRank?.total || "--"}
               currentUser={driver}
+              totalGanhos={totalGanhos}
+              displayLevel={displayLevel}
+              currentLevelXp={currentLevelXp}
+              xpProgress={xpProgress}
+              diffToNext={globalRank?.diffToNext}
             />
-
-            {/* Dashboard Stats List */}
-            <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-              <div className="bg-white dark:bg-[#1A1F26] rounded-2xl border border-slate-200 dark:border-slate-800/60 shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.2)] overflow-hidden flex flex-col">
-                <div className="bg-slate-100 dark:bg-slate-800/80 px-4 py-2 border-b border-slate-200 dark:border-slate-800/60 flex items-center justify-center">
-                  <h3 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-                    Estatísticas Operacionais
-                  </h3>
-                </div>
-                <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800/60">
-                  {/* List Item 1: Ranking */}
-                  <div className="flex items-center p-3">
-                    <div className="flex items-center gap-2.5 w-full">
-                      <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                        <Trophy
-                          size={13}
-                          className="text-teal-600 dark:text-teal-400"
-                        />
-                      </div>
-                      <div className="flex flex-col flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
-                            Ranking Global:
-                          </span>
-                          <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                            #{globalRank?.position || "--"}{" "}
-                            <span className="text-slate-400 dark:text-slate-500 font-normal">
-                              /{" "}
-                              {globalRank
-                                ? new Intl.NumberFormat("pt-BR").format(
-                                    globalRank.total,
-                                  )
-                                : "--"}
-                            </span>
-                          </span>
-                        </div>
-                        {globalRank?.diffToNext != null && globalRank.diffToNext > 0 && (
-                          <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500 mt-0.5">
-                            Faltam <strong className="text-teal-600 dark:text-teal-400 font-semibold">{formatCurrency(globalRank.diffToNext)}</strong> para o próximo
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* List Item 2: Ganhos */}
-                  <div className="flex items-center p-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                        <Wallet
-                          size={13}
-                          className="text-teal-600 dark:text-teal-400"
-                        />
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
-                          Ganhos Acumulados:
-                        </span>
-                        <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                          {formatCurrency(totalGanhos)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* List Item 3: Viagens */}
-                  <div className="flex items-center p-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                        <Navigation
-                          size={13}
-                          className="text-teal-600 dark:text-teal-400"
-                        />
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">
-                          Viagens Realizadas:
-                        </span>
-                        <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                          {totalViagens}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* List Item 4: Nível */}
-                  <div className="flex items-center p-3">
-                    <div className="flex items-center gap-2.5 flex-1">
-                      <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                        <Award
-                          size={13}
-                          className="text-teal-600 dark:text-teal-400"
-                        />
-                      </div>
-                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                        <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
-                          Nível {displayLevel}:
-                        </span>
-                        <div className="flex items-center gap-2 flex-1 max-w-[140px]">
-                          <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-800/80 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-teal-500 rounded-full"
-                              style={{ width: `${Math.max(2, xpProgress)}%` }}
-                            ></div>
-                          </div>
-                          <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
-                            {Math.floor(currentLevelXp)}/1k (
-                            {Math.round(xpProgress)}%)
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         )}
 

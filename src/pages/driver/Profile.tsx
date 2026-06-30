@@ -5,8 +5,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { useAppStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
-  import { getJobRealTimestamp } from "../../lib/utils";
-  import { getDriverLevelData } from "../../lib/levelUtils";
+import { getJobRealTimestamp } from "../../lib/utils";
+import { getDriverLevelData } from "../../lib/levelUtils";
 import {
   TrendingUp,
   Target,
@@ -52,16 +52,12 @@ import {
   AlertTriangle,
   Hourglass,
   CalendarDays,
-  Banknote
+  Banknote,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
 import { ProfileModal } from "../../components/ProfileModal";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
-
-
-
-
 
 export default function Profile() {
   const {
@@ -93,9 +89,9 @@ export default function Profile() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isPageSelectorOpen, setIsPageSelectorOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "profile" | "operations">(
-    "dashboard",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "dashboard" | "profile" | "operations"
+  >("dashboard");
 
   if (!currentUser) return null;
 
@@ -134,70 +130,85 @@ export default function Profile() {
   );
   const pastJobs = allDriverJobs.filter((j) => j.status === "completed");
 
-  const filteredHistoryJobs = pastJobs.filter((job) => {
-    if (periodFilter === "all") return true;
+  const filteredHistoryJobs = pastJobs
+    .filter((job) => {
+      if (periodFilter === "all") return true;
 
-    const dateStr =
-      job.completedAt || job.createdAt || new Date().toISOString();
-    const jobDate = new Date(dateStr);
+      const dateStr =
+        job.completedAt || job.createdAt || new Date().toISOString();
+      const jobDate = new Date(dateStr);
 
-    if (periodFilter === "7d") {
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-      return jobDate >= sevenDaysAgo;
-    }
-
-    if (periodFilter === "15d") {
-      const fifteenDaysAgo = new Date();
-      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
-      return jobDate >= fifteenDaysAgo;
-    }
-
-    if (periodFilter === "custom") {
-      if (customStartDate) {
-        const start = new Date(customStartDate);
-        const localStart = new Date(
-          start.getTime() + start.getTimezoneOffset() * 60000,
-        );
-        if (jobDate < localStart) return false;
+      if (periodFilter === "7d") {
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        return jobDate >= sevenDaysAgo;
       }
-      if (customEndDate) {
-        const end = new Date(customEndDate);
-        const localEnd = new Date(
-          end.getTime() + end.getTimezoneOffset() * 60000,
-        );
-        localEnd.setHours(23, 59, 59, 999);
-        if (jobDate > localEnd) return false;
+
+      if (periodFilter === "15d") {
+        const fifteenDaysAgo = new Date();
+        fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+        return jobDate >= fifteenDaysAgo;
+      }
+
+      if (periodFilter === "custom") {
+        if (customStartDate) {
+          const start = new Date(customStartDate);
+          const localStart = new Date(
+            start.getTime() + start.getTimezoneOffset() * 60000,
+          );
+          if (jobDate < localStart) return false;
+        }
+        if (customEndDate) {
+          const end = new Date(customEndDate);
+          const localEnd = new Date(
+            end.getTime() + end.getTimezoneOffset() * 60000,
+          );
+          localEnd.setHours(23, 59, 59, 999);
+          if (jobDate > localEnd) return false;
+        }
+        return true;
       }
       return true;
-    }
-    return true;
-  }).sort((a, b) => {
-    // 1. Logs de depuração temporários para validar a ordem no console
-    const tsA = getJobRealTimestamp(a, historicoTrips);
-    const tsB = getJobRealTimestamp(b, historicoTrips);
-    const dateA = new Date(tsA);
-    const dateB = new Date(tsB);
-    
-    const contractA = contracts.find((c) => c.id === a.contractId)?.name || "";
-    const contractB = contracts.find((c) => c.id === b.contractId)?.name || "";
-    
-    // Fallback if they exactly match
-    if (tsB !== tsA) {
-      console.log(`[SORT DEBUG] ${contractA} vs ${contractB} | ${dateA.toLocaleString()} vs ${dateB.toLocaleString()} | sort: ${tsB - tsA}`);
-      return tsB - tsA;
-    }
-    
-    console.log(`[SORT DEBUG] ${contractA} vs ${contractB} | Fallback string comparison`);
-    return contractA.localeCompare(contractB);
-  });
+    })
+    .sort((a, b) => {
+      // 1. Logs de depuração temporários para validar a ordem no console
+      const tsA = getJobRealTimestamp(a, historicoTrips);
+      const tsB = getJobRealTimestamp(b, historicoTrips);
+      const dateA = new Date(tsA);
+      const dateB = new Date(tsB);
+
+      const contractA =
+        contracts.find((c) => c.id === a.contractId)?.name || "";
+      const contractB =
+        contracts.find((c) => c.id === b.contractId)?.name || "";
+
+      // Fallback if they exactly match
+      if (tsB !== tsA) {
+        console.log(
+          `[SORT DEBUG] ${contractA} vs ${contractB} | ${dateA.toLocaleString()} vs ${dateB.toLocaleString()} | sort: ${tsB - tsA}`,
+        );
+        return tsB - tsA;
+      }
+
+      console.log(
+        `[SORT DEBUG] ${contractA} vs ${contractB} | Fallback string comparison`,
+      );
+      return contractA.localeCompare(contractB);
+    });
 
   const displayDeliveries =
     filteredHistoryJobs.reduce((acc, job) => acc + job.progress, 0) +
     (periodFilter === "all" && activeJob ? activeJob.progress : 0);
-  const displayCompleted = filteredHistoryJobs.filter(j => j.status === 'completed').length;
+  const displayCompleted = filteredHistoryJobs.filter(
+    (j) => j.status === "completed",
+  ).length;
 
-  const levelData = getDriverLevelData(currentUser.id, jobs, contracts, historicoTrips);
+  const levelData = getDriverLevelData(
+    currentUser.id,
+    jobs,
+    contracts,
+    historicoTrips,
+  );
   const displayLevel = levelData.displayLevel;
   const currentLevelXp = levelData.currentLevelXp;
   const xpProgress = levelData.xpProgress;
@@ -205,14 +216,20 @@ export default function Profile() {
   const totalGanhos = historicoTrips
     .filter((t) => t.motoristaId === currentUser.id)
     .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
-  
-  const totalViagens = historicoTrips.filter((t) => t.motoristaId === currentUser.id).length;
+
+  const totalViagens = historicoTrips.filter(
+    (t) => t.motoristaId === currentUser.id,
+  ).length;
 
   const currentActiveCompany = activeCompanyId
     ? companies.find((c) => c.id === activeCompanyId)
     : null;
 
-  const [globalRank, setGlobalRank] = useState<{ position: number; total: number; diffToNext: number | null } | null>(null);
+  const [globalRank, setGlobalRank] = useState<{
+    position: number;
+    total: number;
+    diffToNext: number | null;
+  } | null>(null);
 
   const formatCurrency = (val?: number) => {
     if (val === undefined) return "R$ 0,00";
@@ -226,10 +243,16 @@ export default function Profile() {
     if (!currentActiveCompany?.simulatorName || !currentUser?.id) return;
 
     // Consulta Otimizada: Apenas membros e viagens da empresa atual para calcular a posição no leaderboard local
-    const q = query(collection(db, "historico_viagens"), where("empresaId", "==", currentActiveCompany.id));
-    
+    const q = query(
+      collection(db, "historico_viagens"),
+      where("empresaId", "==", currentActiveCompany.id),
+    );
+
     // Obter apenas os membros da empresa atual
-    const membersQ = query(collection(db, "companyMembers"), where("companyId", "==", currentActiveCompany.id));
+    const membersQ = query(
+      collection(db, "companyMembers"),
+      where("companyId", "==", currentActiveCompany.id),
+    );
 
     let unsubTrips: () => void;
     let unsubMembers: () => void;
@@ -237,7 +260,7 @@ export default function Profile() {
     // Calculado dinamicamente e atualizado automaticamente para o contexto da empresa
     unsubTrips = onSnapshot(q, (snap) => {
       const earningsByDriver: Record<string, number> = {};
-      
+
       snap.docs.forEach((doc) => {
         const data = doc.data();
         const mId = data.motoristaId;
@@ -253,7 +276,9 @@ export default function Profile() {
         });
 
         // Garantir que motoristas com trips entrem
-        Object.keys(earningsByDriver).forEach((dId) => driversInCompany.add(dId));
+        Object.keys(earningsByDriver).forEach((dId) =>
+          driversInCompany.add(dId),
+        );
         // Garantir o user atual
         driversInCompany.add(currentUser.id);
 
@@ -265,8 +290,9 @@ export default function Profile() {
         // Ordem decrescente
         leaderboard.sort((a, b) => b.ganhos - a.ganhos);
 
-        const position = leaderboard.findIndex((item) => item.id === currentUser.id) + 1;
-        
+        const position =
+          leaderboard.findIndex((item) => item.id === currentUser.id) + 1;
+
         let diffToNext = null;
         if (position > 1) {
           const nextPerson = leaderboard[position - 2];
@@ -277,7 +303,7 @@ export default function Profile() {
         setGlobalRank({
           position: position > 0 ? position : leaderboard.length,
           total: leaderboard.length,
-          diffToNext: diffToNext
+          diffToNext: diffToNext,
         });
       });
     });
@@ -330,7 +356,7 @@ export default function Profile() {
         <div
           className={cn(
             "min-w-0 sm:flex-1",
-            activeTab === "dashboard" ? "flex-[4.5]" : "flex-1"
+            activeTab === "dashboard" ? "flex-[4.5]" : "flex-1",
           )}
         >
           <button
@@ -359,20 +385,30 @@ export default function Profile() {
             <button
               onClick={() => {
                 if (!activeJob || activeJob.status !== "active") {
-                  alert("Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.");
+                  alert(
+                    "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
+                  );
                   return;
                 }
                 navigate("/driver/trip");
               }}
               className={cn(
                 "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
-                activeJob?.status === "active" ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800" : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80"
+                activeJob?.status === "active"
+                  ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800"
+                  : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80",
               )}
             >
               {activeJob?.status === "active" ? (
-                <Navigation size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                <Navigation
+                  size={14}
+                  className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
+                />
               ) : (
-                <Lock size={14} className="shrink-0 sm:!w-[20px] sm:!h-[20px]" />
+                <Lock
+                  size={14}
+                  className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
+                />
               )}
               <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
                 Lançar Viagem
@@ -387,7 +423,10 @@ export default function Profile() {
               onClick={() => setIsConfigMenuOpen(!isConfigMenuOpen)}
               className="w-9 h-9 sm:w-[56px] sm:h-[56px] bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg sm:rounded-[12px] flex items-center justify-center shadow-sm active:scale-[0.99] transition-transform hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
             >
-              <Settings size={16} className="text-slate-600 dark:text-slate-400 sm:!w-[22px] sm:!h-[22px]" />
+              <Settings
+                size={16}
+                className="text-slate-600 dark:text-slate-400 sm:!w-[22px] sm:!h-[22px]"
+              />
             </button>
 
             {isConfigMenuOpen && (
@@ -432,29 +471,27 @@ export default function Profile() {
                   } else if (opt.id === "reports") {
                     navigate("/driver/reports");
                   } else {
-                    setActiveTab(opt.id as "dashboard" | "profile" | "operations");
+                    setActiveTab(
+                      opt.id as "dashboard" | "profile" | "operations",
+                    );
                   }
                 }}
                 className={cn(
                   "w-full flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
-                  activeTab === opt.id
-                    ? "bg-slate-50 dark:bg-[#2A2F3A]"
-                    : "",
+                  activeTab === opt.id ? "bg-slate-50 dark:bg-[#2A2F3A]" : "",
                 )}
               >
                 <Icon
                   size={16}
                   className={cn(
-                    activeTab === opt.id
-                      ? "text-blue-600"
-                      : "text-slate-500",
+                    activeTab === opt.id ? "text-blue-600 dark:text-[#0cb49f]" : "text-slate-500",
                   )}
                 />
                 <span
                   className={cn(
                     "text-[13px] sm:text-[14px] font-semibold",
                     activeTab === opt.id
-                      ? "text-blue-700 dark:text-blue-400"
+                      ? "text-blue-700 dark:text-[#0cb49f]"
                       : "text-slate-600 dark:text-slate-300",
                   )}
                 >
@@ -540,7 +577,9 @@ export default function Profile() {
 
           {isSimulatorMenuOpen && (
             <div className="border-t border-slate-100 dark:border-[#2A2F3A] p-2 sm:p-3 bg-slate-50/50 dark:bg-[#1A1F26]/50 rounded-b-[14px] sm:rounded-b-[16px] animate-in fade-in slide-in-from-top-2">
-              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-2">Selecione o Simulador:</div>
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-2">
+                Selecione o Simulador:
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                 {companies
                   .filter((c) => memberships?.some((m) => m.companyId === c.id))
@@ -580,7 +619,7 @@ export default function Profile() {
                     );
                   })}
                 {companies.filter((c) =>
-                    memberships?.some((m) => m.companyId === c.id)
+                  memberships?.some((m) => m.companyId === c.id),
                 ).length === 0 && (
                   <div className="px-4 py-3 text-[13px] text-slate-500 text-center col-span-full">
                     Nenhuma empresa disponível
@@ -656,98 +695,17 @@ export default function Profile() {
               </div>
             )}
 
-            <DriverPerformanceCard 
+            <DriverPerformanceCard
               historicoTrips={historicoTrips}
               driverId={currentUser?.id}
               activeCompanyId={activeCompanyId}
               allCompanyMembers={allCompanyMembers}
-              posicaoRanking={globalRank?.position || "--"}
-              totalRanking={globalRank?.total || "--"}
               currentUser={currentUser}
+              displayLevel={displayLevel}
+              currentLevelXp={currentLevelXp}
+              xpProgress={xpProgress}
             />
-
-        {/* Dashboard Stats List */}
-        <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="bg-white dark:bg-[#1A1F26] rounded-2xl border border-slate-200 dark:border-slate-800/60 shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.2)] overflow-hidden flex flex-col">
-            <div className="bg-slate-100 dark:bg-slate-800/80 px-4 py-2 border-b border-slate-200 dark:border-slate-800/60 flex items-center justify-center">
-              <h3 className="text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Estatísticas Operacionais</h3>
-            </div>
-            <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800/60">
-              {/* List Item 1: Ranking */}
-              <div className="flex items-center p-3">
-                <div className="flex items-center gap-2.5 w-full">
-                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                    <Trophy size={13} className="text-teal-600 dark:text-teal-400" />
-                  </div>
-                  <div className="flex flex-col flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Ranking Global:</span>
-                      <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                        #{globalRank?.position || "--"} <span className="text-slate-400 dark:text-slate-500 font-normal">/ {globalRank ? new Intl.NumberFormat("pt-BR").format(globalRank.total) : "--"}</span>
-                      </span>
-                    </div>
-                    {globalRank?.diffToNext != null && globalRank.diffToNext > 0 && (
-                      <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500 mt-0.5">
-                        Faltam <strong className="text-teal-600 dark:text-teal-400 font-semibold">{formatCurrency(globalRank.diffToNext)}</strong> para o próximo
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* List Item 2: Ganhos */}
-              <div className="flex items-center p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                    <Wallet size={13} className="text-teal-600 dark:text-teal-400" />
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Ganhos Acumulados:</span>
-                    <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                      {new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(totalGanhos)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* List Item 3: Viagens */}
-              <div className="flex items-center p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                    <Navigation size={13} className="text-teal-600 dark:text-teal-400" />
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400">Viagens Realizadas:</span>
-                    <span className="text-[12px] font-bold text-slate-900 dark:text-white">
-                      {totalViagens}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* List Item 4: Nível */}
-              <div className="flex items-center p-3">
-                <div className="flex items-center gap-2.5 flex-1">
-                  <div className="w-7 h-7 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center shrink-0">
-                    <Award size={13} className="text-teal-600 dark:text-teal-400" />
-                  </div>
-                  <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                    <span className="text-[12px] font-medium text-slate-500 dark:text-slate-400 shrink-0">Nível {displayLevel}:</span>
-                    <div className="flex items-center gap-2 flex-1 max-w-[140px]">
-                      <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-800/80 rounded-full overflow-hidden">
-                        <div className="h-full bg-teal-500 rounded-full" style={{ width: `${Math.max(2, xpProgress)}%` }}></div>
-                      </div>
-                      <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
-                        {Math.floor(currentLevelXp)}/1k ({Math.round(xpProgress)}%)
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
-        </div>
-        </div>
         )}
 
         {activeTab === "operations" && (
@@ -773,7 +731,7 @@ export default function Profile() {
                 <select
                   value={periodFilter}
                   onChange={(e) => setPeriodFilter(e.target.value as any)}
-                  className="w-full appearance-none bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[14px] pl-10 pr-10 py-3 text-[13px] font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors shadow-sm"
+                  className="w-full appearance-none bg-slate-50 dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 rounded-[14px] pl-10 pr-10 py-3 text-[13px] font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/20 cursor-pointer hover:bg-slate-100 dark:hover:bg-white/5 transition-colors shadow-sm"
                 >
                   <option value="all">Ver resumo de todo o período</option>
                   <option value="7d">Ver resumo dos últimos 7 dias</option>
@@ -819,32 +777,35 @@ export default function Profile() {
               )}
             </div>
 
-
-
             {/* Active Job Section */}
             <div>
-              <h3 className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 px-1">
+              <h3 className="text-[11px] font-bold text-slate-500 dark:text-slate-400/80 uppercase tracking-[0.15em] mb-4 px-1">
                 Operação Ativa
               </h3>
               {activeJob && activeContract ? (
-                <div className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-4 sm:p-5 shadow-sm dark:shadow-none">
-                  <div className="flex justify-between items-start mb-4 gap-3">
+                <div className="bg-slate-50 dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 rounded-[24px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
+                  <div className="flex justify-between items-start mb-5 gap-3">
                     <div className="min-w-0 flex-1">
-                      <h4 className="font-bold text-[15px] text-gray-900 dark:text-[#fafafa] tracking-tight truncate">
+                      <h4 className="font-bold text-[16px] text-slate-900 dark:text-white tracking-tight truncate">
                         {activeContract.name}
                       </h4>
-                      <div className="flex items-center flex-wrap gap-2 mt-1.5">
+                      <div className="flex items-center flex-wrap gap-2.5 mt-2">
                         {activeVehicle && (
-                          <span className="text-[12px] font-medium text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                            <Car size={13} className="text-gray-400" />{" "}
+                          <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400 flex items-center gap-1.5 bg-slate-200/50 dark:bg-slate-800/40 px-2 py-0.5 rounded-md">
+                            <Car
+                              size={13}
+                              className="text-teal-600 dark:text-teal-400"
+                            />{" "}
                             {activeVehicle.name}
                           </span>
                         )}
                         {activeTrailer && (
                           <>
-                            <span className="text-gray-300">•</span>
-                            <span className="text-[12px] font-medium text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                              <Truck size={13} className="text-gray-400" />{" "}
+                            <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400 flex items-center gap-1.5 bg-slate-200/50 dark:bg-slate-800/40 px-2 py-0.5 rounded-md">
+                              <Truck
+                                size={13}
+                                className="text-teal-600 dark:text-teal-400"
+                              />{" "}
                               {activeTrailer.name}
                             </span>
                           </>
@@ -854,14 +815,14 @@ export default function Profile() {
                   </div>
 
                   <div className="pt-1">
-                    <div className="flex justify-between items-baseline mb-1.5">
-                      <span className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa]">
+                    <div className="flex justify-between items-baseline mb-2">
+                      <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-tight">
                         {activeJob.progress}{" "}
-                        <span className="text-gray-400 font-medium">
+                        <span className="text-slate-500 font-medium">
                           / {activeContract.totalDeliveries} entregas
                         </span>
                       </span>
-                      <span className="text-[12px] font-semibold text-gray-900 dark:text-[#fafafa]">
+                      <span className="text-[12px] font-bold text-teal-600 dark:text-teal-400">
                         {activeContract.totalDeliveries > 0
                           ? Math.round(
                               (activeJob.progress /
@@ -872,9 +833,9 @@ export default function Profile() {
                         %
                       </span>
                     </div>
-                    <div className="w-full h-1.5 bg-gray-100 dark:bg-[#27272a] rounded-full overflow-hidden">
+                    <div className="w-full h-2 bg-slate-200/80 dark:bg-slate-800/60 rounded-full overflow-hidden shadow-inner">
                       <div
-                        className="h-full bg-[#00D1FF] shadow-[0_0_10px_rgba(0,209,255,0.4)] rounded-full"
+                        className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full"
                         style={{
                           width: `${activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0}%`,
                         }}
@@ -883,8 +844,8 @@ export default function Profile() {
                   </div>
                 </div>
               ) : (
-                <div className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] border-dashed rounded-2xl p-6 text-center shadow-sm dark:shadow-none">
-                  <p className="text-[14px] text-gray-500 dark:text-[#a1a1aa] font-medium">
+                <div className="bg-white dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 border-dashed rounded-[24px] p-8 text-center shadow-sm">
+                  <p className="text-[14px] text-slate-500 dark:text-slate-400 font-medium">
                     Nenhuma operação em andamento
                   </p>
                 </div>
@@ -899,240 +860,377 @@ export default function Profile() {
               {filteredHistoryJobs.length > 0 ? (
                 <div className="space-y-3">
                   {filteredHistoryJobs.map((job) => {
-                      const contract = contracts.find(
-                        (c) => c.id === job.contractId,
+                    const contract = contracts.find(
+                      (c) => c.id === job.contractId,
+                    );
+                    const jobTrailerId = job.trailerId || contract?.trailerId;
+                    const vehicle = vehicles.find(
+                      (v) => v.id === job.vehicleId,
+                    );
+                    const trailer = jobTrailerId
+                      ? trailers.find((t) => t.id === jobTrailerId)
+                      : null;
+
+                    const parseDateSafe = (d: any): Date | null => {
+                      if (!d) return null;
+                      if (d.toDate && typeof d.toDate === "function")
+                        return d.toDate();
+                      if (d.seconds) return new Date(d.seconds * 1000);
+                      const date = new Date(d);
+                      if (isNaN(date.getTime())) return null;
+                      return date;
+                    };
+
+                    const rawCompletedAt = parseDateSafe(job.completedAt);
+                    const rawDeadline = parseDateSafe(
+                      job.dueAt || job.deadlineDate,
+                    );
+                    const rawAssignedAt = parseDateSafe(
+                      job.assignedAt || job.createdAt,
+                    );
+                    const isExpanded = expandedJobId === job.id;
+
+                    const jobTrips = historicoTrips.filter((t) => {
+                      if (t.jobId && t.jobId === job.id) return true;
+                      if (t.contratoId !== job.contractId) return false;
+                      if (t.motoristaId !== currentUser.id) return false;
+
+                      const rawTripDate = parseDateSafe(
+                        t.createdAt || t.dataLancamento,
                       );
-                      const jobTrailerId = job.trailerId || contract?.trailerId;
-                      const vehicle = vehicles.find(
-                        (v) => v.id === job.vehicleId,
-                      );
-                      const trailer = jobTrailerId
-                        ? trailers.find((t) => t.id === jobTrailerId)
-                        : null;
-
-                      const parseDateSafe = (d: any): Date | null => {
-                        if (!d) return null;
-                        if (d.toDate && typeof d.toDate === "function") return d.toDate();
-                        if (d.seconds) return new Date(d.seconds * 1000);
-                        const date = new Date(d);
-                        if (isNaN(date.getTime())) return null;
-                        return date;
-                      };
-
-                      const rawCompletedAt = parseDateSafe(job.completedAt);
-                      const rawDeadline = parseDateSafe(job.dueAt || job.deadlineDate);
-                      const rawAssignedAt = parseDateSafe(job.assignedAt || job.createdAt);
-                      const isExpanded = expandedJobId === job.id;
-
-                      const jobTrips = historicoTrips.filter(t => {
-                        if (t.jobId && t.jobId === job.id) return true;
-                        if (t.contratoId !== job.contractId) return false;
-                        if (t.motoristaId !== currentUser.id) return false;
-                        
-                        const rawTripDate = parseDateSafe(t.createdAt || t.dataLancamento);
-                        const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
-                        const assignedTime = rawAssignedAt ? rawAssignedAt.getTime() : 0;
-                        const completedTime = rawCompletedAt ? rawCompletedAt.getTime() : Date.now() + 86400000;
-                        
-                        return tripTime >= assignedTime && tripTime <= completedTime;
-                      });
-                      
-                      const totalGanhos = jobTrips.reduce((acc, curr) => {
-                        let v = Number(curr.valor);
-                        if (isNaN(v) && typeof curr.valor === "string") {
-                          v = parseFloat(curr.valor.replace(/\D/g, "")) / 100;
-                        }
-                        return acc + (isNaN(v) ? 0 : v);
-                      }, 0);
-                      
-                      let tempoExecucao = "-";
-                      let tempoRestanteOuAtraso = "-";
-                      let isAtrasado = false;
-                      let prazoTotal = "-";
-                      
-                      if (rawAssignedAt && rawDeadline) {
-                        const diffTotalMs = rawDeadline.getTime() - rawAssignedAt.getTime();
-                        const totalDays = Math.floor(diffTotalMs / (1000 * 60 * 60 * 24));
-                        prazoTotal = `${totalDays} dia${totalDays > 1 ? "s" : ""}`;
-                      }
-                      
-                      if (rawAssignedAt && rawCompletedAt) {
-                        const diffExecMs = rawCompletedAt.getTime() - rawAssignedAt.getTime();
-                        const execD = Math.floor(diffExecMs / (1000 * 60 * 60 * 24));
-                        const execH = Math.floor((diffExecMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                        const execM = Math.floor((diffExecMs % (1000 * 60 * 60)) / (1000 * 60));
-                        tempoExecucao = execD > 0 ? `${execD}d ${execH}h ${execM}min` : `${execH}h ${execM}min`;
-                      }
-                      
-                      if (rawCompletedAt && rawDeadline) {
-                        const diffRestMs = rawDeadline.getTime() - rawCompletedAt.getTime();
-                        isAtrasado = diffRestMs < 0;
-                        const absRest = Math.abs(diffRestMs);
-                        const restD = Math.floor(absRest / (1000 * 60 * 60 * 24));
-                        const restH = Math.floor((absRest % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                        const restM = Math.floor((absRest % (1000 * 60 * 60)) / (1000 * 60));
-                        tempoRestanteOuAtraso = restD > 0 ? `${restD}d ${restH}h ${restM}min` : `${restH}h ${restM}min`;
-                      }
+                      const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+                      const assignedTime = rawAssignedAt
+                        ? rawAssignedAt.getTime()
+                        : 0;
+                      const completedTime = rawCompletedAt
+                        ? rawCompletedAt.getTime()
+                        : Date.now() + 86400000;
 
                       return (
-                        <div
-                          key={job.id}
-                          className={cn(
-                            "bg-white dark:bg-[#1A1F26] border rounded-2xl transition-all shadow-sm dark:shadow-none overflow-hidden",
-                            isExpanded
-                              ? "border-gray-300 dark:border-gray-600 ring-1 ring-gray-200 dark:ring-gray-700 block"
-                              : "border-gray-100 dark:border-[#2A2F3A] hover:border-gray-200 dark:hover:border-gray-700",
-                          )}
+                        tripTime >= assignedTime && tripTime <= completedTime
+                      );
+                    });
+
+                    const totalGanhos = jobTrips.reduce((acc, curr) => {
+                      let v = Number(curr.valor);
+                      if (isNaN(v) && typeof curr.valor === "string") {
+                        v = parseFloat(curr.valor.replace(/\D/g, "")) / 100;
+                      }
+                      return acc + (isNaN(v) ? 0 : v);
+                    }, 0);
+
+                    let tempoExecucao = "-";
+                    let tempoRestanteOuAtraso = "-";
+                    let isAtrasado = false;
+                    let prazoTotal = "-";
+
+                    if (rawAssignedAt && rawDeadline) {
+                      const diffTotalMs =
+                        rawDeadline.getTime() - rawAssignedAt.getTime();
+                      const totalDays = Math.floor(
+                        diffTotalMs / (1000 * 60 * 60 * 24),
+                      );
+                      prazoTotal = `${totalDays} dia${totalDays > 1 ? "s" : ""}`;
+                    }
+
+                    if (rawAssignedAt && rawCompletedAt) {
+                      const diffExecMs =
+                        rawCompletedAt.getTime() - rawAssignedAt.getTime();
+                      const execD = Math.floor(
+                        diffExecMs / (1000 * 60 * 60 * 24),
+                      );
+                      const execH = Math.floor(
+                        (diffExecMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
+                      );
+                      const execM = Math.floor(
+                        (diffExecMs % (1000 * 60 * 60)) / (1000 * 60),
+                      );
+                      tempoExecucao =
+                        execD > 0
+                          ? `${execD}d ${execH}h ${execM}min`
+                          : `${execH}h ${execM}min`;
+                    }
+
+                    if (rawCompletedAt && rawDeadline) {
+                      const diffRestMs =
+                        rawDeadline.getTime() - rawCompletedAt.getTime();
+                      isAtrasado = diffRestMs < 0;
+                      const absRest = Math.abs(diffRestMs);
+                      const restD = Math.floor(absRest / (1000 * 60 * 60 * 24));
+                      const restH = Math.floor(
+                        (absRest % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
+                      );
+                      const restM = Math.floor(
+                        (absRest % (1000 * 60 * 60)) / (1000 * 60),
+                      );
+                      tempoRestanteOuAtraso =
+                        restD > 0
+                          ? `${restD}d ${restH}h ${restM}min`
+                          : `${restH}h ${restM}min`;
+                    }
+
+                    return (
+                      <div
+                        key={job.id}
+                        className={cn(
+                          "bg-slate-50 dark:bg-[#1A1F26] border rounded-2xl transition-all shadow-sm overflow-hidden",
+                          isExpanded
+                            ? "border-slate-300 dark:border-white/20 ring-1 ring-slate-200 dark:ring-white/10"
+                            : "border-slate-200/80 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/10",
+                        )}
+                      >
+                        <button
+                          className="w-full flex flex-col p-4 focus:outline-none"
+                          onClick={() =>
+                            setExpandedJobId(isExpanded ? null : job.id)
+                          }
                         >
-                          <button
-                            className="w-full flex flex-col p-3 focus:outline-none"
-                            onClick={() =>
-                              setExpandedJobId(isExpanded ? null : job.id)
-                            }
-                          >
-                            <div className="flex items-center justify-between w-full">
-                              <div className="flex items-center gap-3 min-w-0">
-                                {/* Check / Cross */}
-                                <div className={cn(
-                                  "w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0",
+                          <div className="flex items-center justify-between w-full">
+                            <div className="flex items-center gap-3 min-w-0">
+                              {/* Check / Cross */}
+                              <div
+                                className={cn(
+                                  "w-[34px] h-[34px] rounded-full flex items-center justify-center shrink-0 border shadow-inner",
                                   isAtrasado
-                                    ? "bg-amber-100 dark:bg-amber-500/20"
-                                    : "bg-emerald-100 dark:bg-emerald-500/20"
-                                )}>
-                                  {isAtrasado 
-                                    ? <X size={16} className="text-amber-600 dark:text-amber-400" strokeWidth={3} />
-                                    : <Check size={16} className="text-emerald-600 dark:text-emerald-400" strokeWidth={3} />}
-                                </div>
-                                
-                                {/* Name and Badge */}
-                                <div className="flex items-center gap-2.5 min-w-0">
-                                  <h4 className="text-[15px] sm:text-[16px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
-                                    {contract?.name || "Contrato"}
-                                  </h4>
-                                  <span className={cn(
-                                    "h-[16px] px-1.5 text-[9px] font-bold tracking-wide rounded uppercase flex items-center justify-center shrink-0 leading-none",
-                                    isAtrasado 
-                                      ? "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400" 
-                                      : "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400"
-                                  )}>
-                                    {isAtrasado ? "O prazo expirou" : "Dentro do prazo"}
+                                    ? "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/50"
+                                    : "bg-teal-50 dark:bg-teal-950/20 border-teal-200 dark:border-teal-900/50",
+                                )}
+                              >
+                                {isAtrasado ? (
+                                  <X
+                                    size={16}
+                                    className="text-amber-600 dark:text-amber-400"
+                                    strokeWidth={2.5}
+                                  />
+                                ) : (
+                                  <Check
+                                    size={16}
+                                    className="text-teal-600 dark:text-teal-400"
+                                    strokeWidth={2.5}
+                                  />
+                                )}
+                              </div>
+
+                              {/* Name and Badge */}
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <h4 className="text-[15px] sm:text-[16px] font-bold text-slate-900 dark:text-white truncate tracking-tight">
+                                  {contract?.name || "Contrato"}
+                                </h4>
+                                <span
+                                  className={cn(
+                                    "h-[18px] px-2 text-[9px] font-bold tracking-wide rounded-md uppercase flex items-center justify-center shrink-0 leading-none border",
+                                    isAtrasado
+                                      ? "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-200/50 dark:border-amber-500/20"
+                                      : "bg-teal-50 dark:bg-teal-500/10 text-teal-700 dark:text-teal-400 border-teal-200/50 dark:border-teal-500/20",
+                                  )}
+                                >
+                                  {isAtrasado
+                                    ? "O prazo expirou"
+                                    : "Dentro do prazo"}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-slate-400 dark:text-slate-500 shrink-0 ml-2">
+                              <ChevronRight
+                                size={18}
+                                className={cn(
+                                  "transition-transform duration-300",
+                                  isExpanded ? "rotate-90" : "",
+                                )}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Divider */}
+                          <div className="h-px w-full bg-slate-200/80 dark:bg-white/5 my-3"></div>
+
+                          {/* Info row */}
+                          <div className="flex items-center justify-start w-full gap-x-2 sm:gap-x-4 gap-y-1.5 overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Package
+                                size={13}
+                                className="text-gray-500 dark:text-gray-400 shrink-0"
+                              />
+                              <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                {job.progress}{" "}
+                                {job.progress === 1 ? "viagem" : "viagens"}
+                              </span>
+                            </div>
+
+                            <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <Truck
+                                size={13}
+                                className="text-gray-500 dark:text-gray-400 shrink-0"
+                              />
+                              <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                {trailer?.name || "Nenhum"}
+                              </span>
+                            </div>
+
+                            <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
+
+                            <div className="flex items-center gap-1.5 shrink-0 pr-1">
+                              <Truck
+                                size={13}
+                                className="text-gray-500 dark:text-gray-400 shrink-0"
+                              />
+                              <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                                {vehicle?.name || "Nenhum"}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
+
+                        {isExpanded && (
+                          <div className="px-4 pb-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                            <div className="bg-gray-50 dark:bg-[#202024] rounded-xl border border-gray-100 dark:border-gray-800/60 p-2.5 mb-3 space-y-2">
+                              {/* Total de Ganhos */}
+                              <div className="flex items-center gap-2">
+                                <Banknote
+                                  size={11}
+                                  className="text-green-500 dark:text-green-400 shrink-0"
+                                  strokeWidth={2.5}
+                                />
+                                <div className="flex items-center gap-2 min-w-0 w-full">
+                                  <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">
+                                    Total de ganhos:
+                                  </span>
+                                  <span className="text-[11.5px] font-semibold text-green-600 dark:text-green-400 truncate">
+                                    {formatCurrency(totalGanhos)}
                                   </span>
                                 </div>
                               </div>
-                              <div className="text-gray-400 dark:text-gray-500 shrink-0 ml-2">
-                                {isExpanded ? (
-                                  <ChevronUp size={18} />
+
+                              {/* Prazo total */}
+                              <div className="flex items-center gap-2">
+                                <CalendarDays
+                                  size={11}
+                                  className="text-gray-400 dark:text-gray-500 shrink-0"
+                                  strokeWidth={2.5}
+                                />
+                                <div className="flex items-center gap-2 min-w-0 w-full">
+                                  <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">
+                                    Prazo total:
+                                  </span>
+                                  <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
+                                    {prazoTotal}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Execução */}
+                              <div className="flex items-center gap-2">
+                                <Clock
+                                  size={11}
+                                  className="text-gray-400 dark:text-gray-500 shrink-0"
+                                  strokeWidth={2.5}
+                                />
+                                <div className="flex items-center gap-2 min-w-0 w-full">
+                                  <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">
+                                    Execução:
+                                  </span>
+                                  <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
+                                    {tempoExecucao}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Tempo restante / Atraso */}
+                              <div className="flex items-center gap-2">
+                                <Hourglass
+                                  size={11}
+                                  className={cn(
+                                    "shrink-0",
+                                    isAtrasado
+                                      ? "text-red-500 dark:text-red-400"
+                                      : "text-gray-400 dark:text-gray-500",
+                                  )}
+                                  strokeWidth={2.5}
+                                />
+                                <div className="flex items-center gap-2 min-w-0 w-full">
+                                  <span
+                                    className={cn(
+                                      "text-[10px] font-medium shrink-0",
+                                      isAtrasado
+                                        ? "text-red-600/80 dark:text-red-400/80"
+                                        : "text-gray-500 dark:text-gray-400",
+                                    )}
+                                  >
+                                    {isAtrasado ? "Atraso:" : "Tempo restante:"}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "text-[11.5px] font-semibold truncate",
+                                      isAtrasado
+                                        ? "text-red-600 dark:text-red-400"
+                                        : "text-gray-900 dark:text-[#fafafa]",
+                                    )}
+                                  >
+                                    {tempoRestanteOuAtraso}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Result Message */}
+                            <div
+                              className={cn(
+                                "flex items-center gap-2 rounded-xl px-3 py-2 border",
+                                isAtrasado
+                                  ? "bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20"
+                                  : "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20",
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  "shrink-0 w-[17px] h-[17px] rounded-full flex items-center justify-center",
+                                  isAtrasado
+                                    ? "bg-amber-200/50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400"
+                                    : "bg-emerald-200/50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400",
+                                )}
+                              >
+                                {isAtrasado ? (
+                                  <X size={10} strokeWidth={3} />
                                 ) : (
-                                  <ChevronDown size={18} />
+                                  <Check size={10} strokeWidth={3} />
                                 )}
                               </div>
-                            </div>
-
-                            {/* Divider */}
-                            <div className="h-px w-full bg-gray-100 dark:bg-gray-800/60 my-2.5"></div>
-
-                            {/* Info row */}
-                            <div className="flex items-center justify-start w-full gap-x-2 sm:gap-x-4 gap-y-1.5 overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <Package size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
-                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                  {job.progress} {job.progress === 1 ? "viagem" : "viagens"}
-                                </span>
-                              </div>
-                              
-                              <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
-                              
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <Truck size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
-                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                  {trailer?.name || "Nenhum"}
-                                </span>
-                              </div>
-                              
-                              <div className="w-px h-3.5 bg-gray-200 dark:bg-gray-700/60 shrink-0"></div>
-                              
-                              <div className="flex items-center gap-1.5 shrink-0 pr-1">
-                                <Truck size={13} className="text-gray-500 dark:text-gray-400 shrink-0" />
-                                <span className="text-[11px] sm:text-[11.5px] font-medium text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                                  {vehicle?.name || "Nenhum"}
-                                </span>
+                              <div className="flex flex-col justify-center">
+                                <h4
+                                  className={cn(
+                                    "text-[12px] font-semibold mb-0.5 tracking-tight leading-none",
+                                    isAtrasado
+                                      ? "text-amber-800 dark:text-amber-500"
+                                      : "text-emerald-800 dark:text-emerald-500",
+                                  )}
+                                >
+                                  Resultado da operação
+                                </h4>
+                                <p
+                                  className={cn(
+                                    "text-[10px] font-normal leading-tight",
+                                    isAtrasado
+                                      ? "text-amber-700/80 dark:text-amber-400/80"
+                                      : "text-emerald-700/80 dark:text-emerald-400/80",
+                                  )}
+                                >
+                                  {isAtrasado
+                                    ? "Não foi concluído no prazo estabelecido."
+                                    : "Dentro do prazo estabelecido."}
+                                </p>
                               </div>
                             </div>
-                          </button>
-
-                          {isExpanded && (
-                            <div className="px-4 pb-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                              <div className="bg-gray-50 dark:bg-[#202024] rounded-xl border border-gray-100 dark:border-gray-800/60 p-2.5 mb-3 space-y-2">
-                                {/* Total de Ganhos */}
-                                <div className="flex items-center gap-2">
-                                  <Banknote size={11} className="text-green-500 dark:text-green-400 shrink-0" strokeWidth={2.5}/>
-                                  <div className="flex items-center gap-2 min-w-0 w-full">
-                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Total de ganhos:</span>
-                                    <span className="text-[11.5px] font-semibold text-green-600 dark:text-green-400 truncate">
-                                      {formatCurrency(totalGanhos)}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {/* Prazo total */}
-                                <div className="flex items-center gap-2">
-                                  <CalendarDays size={11} className="text-gray-400 dark:text-gray-500 shrink-0" strokeWidth={2.5}/>
-                                  <div className="flex items-center gap-2 min-w-0 w-full">
-                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Prazo total:</span>
-                                    <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
-                                      {prazoTotal}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {/* Execução */}
-                                <div className="flex items-center gap-2">
-                                  <Clock size={11} className="text-gray-400 dark:text-gray-500 shrink-0" strokeWidth={2.5}/>
-                                  <div className="flex items-center gap-2 min-w-0 w-full">
-                                    <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400 shrink-0">Execução:</span>
-                                    <span className="text-[11.5px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
-                                      {tempoExecucao}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                {/* Tempo restante / Atraso */}
-                                <div className="flex items-center gap-2">
-                                  <Hourglass size={11} className={cn("shrink-0", isAtrasado ? "text-red-500 dark:text-red-400" : "text-gray-400 dark:text-gray-500")} strokeWidth={2.5}/>
-                                  <div className="flex items-center gap-2 min-w-0 w-full">
-                                    <span className={cn("text-[10px] font-medium shrink-0", isAtrasado ? "text-red-600/80 dark:text-red-400/80" : "text-gray-500 dark:text-gray-400")}>
-                                      {isAtrasado ? 'Atraso:' : 'Tempo restante:'}
-                                    </span>
-                                    <span className={cn("text-[11.5px] font-semibold truncate", isAtrasado ? "text-red-600 dark:text-red-400" : "text-gray-900 dark:text-[#fafafa]")}>
-                                      {tempoRestanteOuAtraso}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Result Message */}
-                              <div className={cn("flex items-center gap-2 rounded-xl px-3 py-2 border", isAtrasado ? "bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20" : "bg-emerald-50 dark:bg-emerald-500/10 border-emerald-100 dark:border-emerald-500/20")}>
-                                <div className={cn("shrink-0 w-[17px] h-[17px] rounded-full flex items-center justify-center", isAtrasado ? "bg-amber-200/50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400" : "bg-emerald-200/50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400")}>
-                                  {isAtrasado ? <X size={10} strokeWidth={3} /> : <Check size={10} strokeWidth={3} />}
-                                </div>
-                                <div className="flex flex-col justify-center">
-                                  <h4 className={cn("text-[12px] font-semibold mb-0.5 tracking-tight leading-none", isAtrasado ? "text-amber-800 dark:text-amber-500" : "text-emerald-800 dark:text-emerald-500")}>Resultado da operação</h4>
-                                  <p className={cn("text-[10px] font-normal leading-tight", isAtrasado ? "text-amber-700/80 dark:text-amber-400/80" : "text-emerald-700/80 dark:text-emerald-400/80")}>
-                                    {isAtrasado 
-                                      ? "Não foi concluído no prazo estabelecido."
-                                      : "Dentro do prazo estabelecido."}
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
-                <div className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-6 text-center shadow-sm dark:shadow-none">
-                  <p className="text-[14px] text-gray-500 dark:text-[#a1a1aa] font-medium">
+                <div className="bg-slate-50 dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 border-dashed rounded-[24px] p-8 text-center shadow-sm">
+                  <p className="text-[14px] text-slate-500 dark:text-slate-400 font-medium">
                     Nenhum histórico disponível
                   </p>
                 </div>

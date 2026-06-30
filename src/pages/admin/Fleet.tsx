@@ -64,8 +64,12 @@ export default function Fleet() {
   const [activeTab, setActiveTab] = useState<Tab>("operations");
   const [activeFleetTab, setActiveFleetTab] = useState<FleetTab>("drivers");
   const [editContractId, setEditContractId] = useState<string | null>(null);
-  const [preselectedDriverId, setPreselectedDriverId] = useState<string | null>(null);
-  const [preselectedContractId, setPreselectedContractId] = useState<string | null>(null);
+  const [preselectedDriverId, setPreselectedDriverId] = useState<string | null>(
+    null,
+  );
+  const [preselectedContractId, setPreselectedContractId] = useState<
+    string | null
+  >(null);
   const [isTabMenuOpen, setIsTabMenuOpen] = useState(false);
   const [isFleetMenuOpen, setIsFleetMenuOpen] = useState(false);
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
@@ -120,7 +124,9 @@ export default function Fleet() {
                     />
                   ) : (
                     <span className="text-base sm:text-lg font-bold text-white tracking-tighter">
-                      {activeCompany.companyName?.substring(0, 2).toUpperCase() || "NV"}
+                      {activeCompany.companyName
+                        ?.substring(0, 2)
+                        .toUpperCase() || "NV"}
                     </span>
                   )}
                 </div>
@@ -173,14 +179,17 @@ export default function Fleet() {
 
             {isSimulatorMenuOpen && (
               <div className="border-t border-slate-100 dark:border-[#2A2F3A] p-2 sm:p-3 bg-slate-50/50 dark:bg-[#1A1F26]/50 rounded-b-[14px] sm:rounded-b-[16px] animate-in fade-in slide-in-from-top-2">
-                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-2">Selecione o Simulador:</div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2 px-2">
+                  Selecione o Simulador:
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                   {companies
                     .filter((c) =>
                       memberships?.some(
                         (m) =>
                           m.companyId === c.id &&
-                          (m.roles?.includes("admin") || m.roles?.includes("owner" as any)),
+                          (m.roles?.includes("admin") ||
+                            m.roles?.includes("owner" as any)),
                       ),
                     )
                     .map((c) => {
@@ -238,9 +247,9 @@ export default function Fleet() {
                     size={14}
                     className="text-slate-600 dark:text-slate-400 shrink-0"
                   />
-                    <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                      {activeTabDetails.label}
-                    </span>
+                  <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                    {activeTabDetails.label}
+                  </span>
                   <ChevronDown
                     size={14}
                     className={cn(
@@ -309,7 +318,7 @@ export default function Fleet() {
                         size={14}
                         className={cn(
                           activeTab === tab.id
-                            ? "text-blue-600"
+                            ? "text-blue-600 dark:text-[#0cb49f]"
                             : "text-slate-500",
                         )}
                       />
@@ -317,7 +326,7 @@ export default function Fleet() {
                         className={cn(
                           "text-[12px] font-semibold whitespace-nowrap",
                           activeTab === tab.id
-                            ? "text-blue-700 dark:text-blue-400"
+                            ? "text-blue-700 dark:text-[#0cb49f]"
                             : "text-slate-600 dark:text-slate-300",
                         )}
                       >
@@ -375,8 +384,15 @@ export default function Fleet() {
         <div className="relative z-10">
           {activeTab === "operations" && <OperationsTab />}
           {activeTab === "company" && <CompanyTab />}
-          {activeTab === "hr" && <RecruitmentTab onFormOpen={setIsRecruitmentFormOpen} />}
-          {activeTab === "history" && <TripHistory isInsideAdminTab={true} onTripDetailsOpen={setIsTripDetailsOpen} />}
+          {activeTab === "hr" && (
+            <RecruitmentTab onFormOpen={setIsRecruitmentFormOpen} />
+          )}
+          {activeTab === "history" && (
+            <TripHistory
+              isInsideAdminTab={true}
+              onTripDetailsOpen={setIsTripDetailsOpen}
+            />
+          )}
 
           {activeTab === "fleet" && (
             <div className="space-y-4">
@@ -393,7 +409,6 @@ export default function Fleet() {
           )}
         </div>
       </div>
-
     </div>
   );
 }

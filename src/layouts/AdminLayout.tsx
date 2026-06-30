@@ -432,7 +432,7 @@ export default function AdminLayout() {
                   <p className="text-sm font-bold text-gray-900 dark:text-[#fafafa] truncate">
                     {currentUser?.name}
                   </p>
-                  <p className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold truncate leading-tight mt-0.5">
+                  <p className="text-[11px] text-[#0cb49f] dark:text-[#0cb49f] font-semibold truncate leading-tight mt-0.5">
                     Administrador
                   </p>
                 </div>
@@ -442,7 +442,7 @@ export default function AdminLayout() {
                 className={cn(
                   "text-gray-400 transition-transform duration-200",
                   isProfileMenuOpen
-                    ? "rotate-180 text-blue-600 dark:text-blue-400"
+                    ? "rotate-180 text-[#0cb49f] dark:text-[#0cb49f]"
                     : "",
                 )}
               />
@@ -468,7 +468,7 @@ export default function AdminLayout() {
                         cn(
                           "flex items-center justify-between px-4 py-2.5 rounded-xl text-sm font-medium transition-colors",
                           isActive
-                            ? "bg-green-50 dark:bg-green-500/10 dark:border-green-500/20 text-green-700 dark:text-green-400"
+                            ? "bg-[#0cb49f]/10 dark:bg-[#0cb49f]/10 text-[#0cb49f] dark:text-[#0cb49f]"
                             : "text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5]",
                         )
                       }
@@ -502,8 +502,8 @@ export default function AdminLayout() {
               <button
                 onClick={toggleTheme}
                 className={cn(
-                  "relative w-10 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#121213]",
-                  theme === "dark" ? "bg-blue-600" : "bg-gray-200",
+                  "relative w-10 h-6 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[#0cb49f] focus:ring-offset-2 dark:focus:ring-offset-[#121213]",
+                  theme === "dark" ? "bg-[#0cb49f]" : "bg-gray-200",
                 )}
               >
                 <div

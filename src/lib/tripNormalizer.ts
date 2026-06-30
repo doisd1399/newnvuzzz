@@ -45,7 +45,8 @@ export function normalizeTrip(trip: RawTrip): NormalizedTrip {
     trip.completedAt ||
     trip.dataFechamento ||
     trip.date ||
-    trip.dataLancamento;
+    trip.dataLancamento ||
+    trip.createdAt;
 
   let metricDate = new Date(0);
   if (dateStr) {

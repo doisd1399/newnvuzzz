@@ -66,7 +66,16 @@ import {
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { cn } from "../../../lib/utils";
-import { normalizeTrip, getFilteredTrips, getStartOfDay, getEndOfDay, calculateWeeklyMetrics, getWeeklyRange, getMonthlyRange, getCustomRange } from "../../../lib/metricsEngine";
+import {
+  normalizeTrip,
+  getFilteredTrips,
+  getStartOfDay,
+  getEndOfDay,
+  calculateWeeklyMetrics,
+  getWeeklyRange,
+  getMonthlyRange,
+  getCustomRange,
+} from "../../../lib/metricsEngine";
 import { DesempenhoOperacionalCard } from "../../../components/DesempenhoOperacionalCard";
 
 export default function OperationsTab() {
@@ -281,12 +290,20 @@ export default function OperationsTab() {
   }, [activeJobsList, contracts, activeCompanyId]);
 
   const normalizedHistoricoTrips = useMemo(() => {
-    return historicoTrips.map((t: any) => normalizeTrip({ ...t, id: t.id || t.idViagem }));
+    return historicoTrips.map((t: any) =>
+      normalizeTrip({ ...t, id: t.id || t.idViagem }),
+    );
   }, [historicoTrips]);
 
   const resumoMetrics = useMemo(() => {
-    const { start, end } = resumoPeriod === "semana" ? getWeeklyRange() : getMonthlyRange();
-    return calculateWeeklyMetrics(normalizedHistoricoTrips, start, end, activeCompanyId);
+    const { start, end } =
+      resumoPeriod === "semana" ? getWeeklyRange() : getMonthlyRange();
+    return calculateWeeklyMetrics(
+      normalizedHistoricoTrips,
+      start,
+      end,
+      activeCompanyId,
+    );
   }, [normalizedHistoricoTrips, resumoPeriod, activeCompanyId]);
 
   const resumoTrips = resumoMetrics.filteredTrips;
@@ -336,11 +353,16 @@ export default function OperationsTab() {
       eDate = end;
     } else {
       if (globalStartDateStr && globalEndDateStr) {
-        const { start, end } = getCustomRange(globalStartDateStr, globalEndDateStr);
+        const { start, end } = getCustomRange(
+          globalStartDateStr,
+          globalEndDateStr,
+        );
         sDate = start;
         eDate = end;
       } else {
-        sDate = globalStartDateStr ? getStartOfDay(globalStartDateStr) : undefined;
+        sDate = globalStartDateStr
+          ? getStartOfDay(globalStartDateStr)
+          : undefined;
         eDate = globalEndDateStr ? getEndOfDay(globalEndDateStr) : undefined;
       }
     }
@@ -349,21 +371,30 @@ export default function OperationsTab() {
       normalizedHistoricoTrips,
       sDate,
       eDate,
-      activeCompanyId
+      activeCompanyId,
     );
 
     const viagensRealizadas = filteredTrips.length;
 
     // Meta por motorista
-    const metaPorMotorista = (desempenhoPeriod === "semana") ? META_SEMANAL_POR_MOTORISTA : META_MENSAL_POR_MOTORISTA;
-    
+    const metaPorMotorista =
+      desempenhoPeriod === "semana"
+        ? META_SEMANAL_POR_MOTORISTA
+        : META_MENSAL_POR_MOTORISTA;
+
     // Calcula proporção de participação
     const periodDays = sDate && eDate ? differenceInDays(eDate, sDate) + 1 : 1;
     let propMetaAcumulada = 0;
 
     // 1. Entradas (motoristas atualmente ativos)
     drivers.forEach((d) => {
-      const member = allCompanyMembers.find(m => m.userId === d.id && m.companyId === activeCompanyId && m.roles?.includes("driver") && m.status === "active");
+      const member = allCompanyMembers.find(
+        (m) =>
+          m.userId === d.id &&
+          m.companyId === activeCompanyId &&
+          m.roles?.includes("driver") &&
+          m.status === "active",
+      );
       if (!sDate || !eDate || !member || !member.joinedAt) {
         propMetaAcumulada += 1;
         return;
@@ -378,8 +409,12 @@ export default function OperationsTab() {
     // 2. Saídas (motoristas inativos com registros no período)
     const inactiveDriversMap = new Map<string, Date>();
     filteredTrips.forEach((t) => {
-      if (t.motoristaId && !drivers.find(d => d.id === t.motoristaId)) {
-        const tDate = t.metricDate ? new Date(t.metricDate) : (t.completedAt ? new Date(t.completedAt) : null);
+      if (t.motoristaId && !drivers.find((d) => d.id === t.motoristaId)) {
+        const tDate = t.metricDate
+          ? new Date(t.metricDate)
+          : t.completedAt
+            ? new Date(t.completedAt)
+            : null;
         if (tDate) {
           const curr = inactiveDriversMap.get(t.motoristaId);
           if (!curr || tDate > curr) {
@@ -402,19 +437,21 @@ export default function OperationsTab() {
 
     // Motoristas ativos totais (considerando os que participaram)
     const motoristasAtivos = drivers.length + inactiveDriversMap.size;
-    
+
     // Meta operacional baseada na fração proporcional calculada
     const metaOperacional = Math.round(propMetaAcumulada * metaPorMotorista);
-    
+
     // Viagens restantes
     const viagensRestantes = Math.max(0, metaOperacional - viagensRealizadas);
 
     // Média operacional
-    const mediaOperacional = motoristasAtivos > 0 ? (viagensRealizadas / motoristasAtivos) : 0;
-    
+    const mediaOperacional =
+      motoristasAtivos > 0 ? viagensRealizadas / motoristasAtivos : 0;
+
     // Capacidade operacional
-    const capacidadeOperacional = metaOperacional > 0 ? (viagensRealizadas / metaOperacional) * 100 : 0;
-    
+    const capacidadeOperacional =
+      metaOperacional > 0 ? (viagensRealizadas / metaOperacional) * 100 : 0;
+
     return {
       motoristasAtivos,
       metaOperacional,
@@ -423,10 +460,21 @@ export default function OperationsTab() {
       metaPorMotorista,
       mediaOperacional,
       capacidadeOperacional: capacidadeOperacional,
-      scoreDisplay: Object.is(NaN, capacidadeOperacional) ? 0 : Math.min(100, capacidadeOperacional),
-      scoreStatus: Object.is(NaN, capacidadeOperacional) ? 0 : capacidadeOperacional,
+      scoreDisplay: Object.is(NaN, capacidadeOperacional)
+        ? 0
+        : Math.min(100, capacidadeOperacional),
+      scoreStatus: Object.is(NaN, capacidadeOperacional)
+        ? 0
+        : capacidadeOperacional,
     };
-  }, [normalizedHistoricoTrips, activeCompanyId, desempenhoPeriod, globalStartDateStr, globalEndDateStr, drivers]);
+  }, [
+    normalizedHistoricoTrips,
+    activeCompanyId,
+    desempenhoPeriod,
+    globalStartDateStr,
+    globalEndDateStr,
+    drivers,
+  ]);
 
   const getDesempenhoClassification = (score: number) => {
     if (score >= 100)
@@ -470,7 +518,9 @@ export default function OperationsTab() {
     };
   };
 
-  const desempenhoClass = getDesempenhoClassification(desempenhoMetrics.capacidadeOperacional);
+  const desempenhoClass = getDesempenhoClassification(
+    desempenhoMetrics.capacidadeOperacional,
+  );
   const visualProgress = Math.min(desempenhoMetrics.capacidadeOperacional, 100);
 
   const getDesempenhoText = (score: number) => {
@@ -608,7 +658,12 @@ export default function OperationsTab() {
                         size="sm"
                         variant="outline"
                         onClick={() =>
-                          navigate(`/admin/driver/${demand.driverId}`, { state: { returnUrl: "/admin/fleet", returnState: { activeTab: "operations" } } })
+                          navigate(`/admin/driver/${demand.driverId}`, {
+                            state: {
+                              returnUrl: "/admin/fleet",
+                              returnState: { activeTab: "operations" },
+                            },
+                          })
                         }
                         className="px-3 h-8 text-xs font-semibold text-gray-600 dark:text-[#d4d4d8] border-gray-200 dark:border-[#2A2F3A]"
                       >
@@ -1000,7 +1055,7 @@ export default function OperationsTab() {
                         <div className="w-full shrink-0 border border-[#E5E7EB] dark:border-[#2A2F3A] bg-[#F9FAFB] dark:bg-[#1A1F26] rounded-[14px] py-3 px-2 flex flex-col gap-2">
                           <div className="grid grid-cols-3 relative">
                             <div className="flex flex-col items-center justify-center">
-                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                 {job.progress}/{job.contract!.totalDeliveries}
                               </div>
                               <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1011,7 +1066,7 @@ export default function OperationsTab() {
                             <div className="absolute left-[33%] top-1 bottom-1 w-px bg-[#E5E7EB] dark:bg-[#2A2F3A]"></div>
 
                             <div className="flex flex-col items-center justify-center">
-                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                 {deliveriesLeft}
                               </div>
                               <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1022,7 +1077,7 @@ export default function OperationsTab() {
                             <div className="absolute left-[66%] top-1 bottom-1 w-px bg-[#E5E7EB] dark:bg-[#2A2F3A]"></div>
 
                             <div className="flex flex-col items-center justify-center">
-                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                              <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                 {progressPct}%
                               </div>
                               <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1034,7 +1089,7 @@ export default function OperationsTab() {
                           <div className="px-4 mt-0.5">
                             <div className="w-full bg-[#E5E7EB] dark:bg-[#27272a] rounded-full h-[4px] overflow-hidden">
                               <div
-                                className="h-full rounded-full transition-all duration-500 bg-[#0EA5E9]"
+                                className="h-full rounded-full transition-all duration-500 bg-[#0cb49f]"
                                 style={{
                                   width: `${Math.max(3, progressPct)}%`,
                                 }}
@@ -1121,7 +1176,12 @@ export default function OperationsTab() {
                           <Button
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/admin/driver/${job.driver!.id}`, { state: { returnUrl: "/admin/fleet", returnState: { activeTab: "operations" } } });
+                              navigate(`/admin/driver/${job.driver!.id}`, {
+                                state: {
+                                  returnUrl: "/admin/fleet",
+                                  returnState: { activeTab: "operations" },
+                                },
+                              });
                             }}
                             className="flex-1 h-9 text-[12px] font-semibold text-gray-700 dark:text-[#d4d4d8] bg-white dark:bg-[#1A1F26] hover:bg-gray-50 dark:hover:bg-[#3f3f46] border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none rounded-xl"
                           >
@@ -1606,7 +1666,7 @@ export default function OperationsTab() {
                           <div className="w-full shrink-0 border border-[#E5E7EB] dark:border-[#2A2F3A] bg-[#F9FAFB] dark:bg-[#1A1F26] rounded-[14px] py-3 px-2 flex flex-col gap-2">
                             <div className="grid grid-cols-3 relative">
                               <div className="flex flex-col items-center justify-center">
-                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                   {job.progress}/{job.contract!.totalDeliveries}
                                 </div>
                                 <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1617,7 +1677,7 @@ export default function OperationsTab() {
                               <div className="absolute left-[33%] top-1 bottom-1 w-px bg-[#E5E7EB] dark:bg-[#2A2F3A]"></div>
 
                               <div className="flex flex-col items-center justify-center">
-                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                   {deliveriesLeft}
                                 </div>
                                 <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1628,7 +1688,7 @@ export default function OperationsTab() {
                               <div className="absolute left-[66%] top-1 bottom-1 w-px bg-[#E5E7EB] dark:bg-[#2A2F3A]"></div>
 
                               <div className="flex flex-col items-center justify-center">
-                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#2563EB] leading-none mb-1">
+                                <div className="text-[18px] sm:text-[20px] font-semibold text-[#0cb49f] leading-none mb-1">
                                   {progressPct}%
                                 </div>
                                 <div className="text-[10px] sm:text-[11px] font-normal text-[#4B5563] dark:text-[#a1a1aa] leading-none text-center">
@@ -1640,7 +1700,7 @@ export default function OperationsTab() {
                             <div className="px-4 mt-0.5">
                               <div className="w-full bg-[#E5E7EB] dark:bg-[#27272a] rounded-full h-[4px] overflow-hidden">
                                 <div
-                                  className="h-full rounded-full transition-all duration-500 bg-[#0EA5E9]"
+                                  className="h-full rounded-full transition-all duration-500 bg-[#0cb49f]"
                                   style={{
                                     width: `${Math.max(3, progressPct)}%`,
                                   }}
@@ -1696,7 +1756,12 @@ export default function OperationsTab() {
                           <Button
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/admin/driver/${job.driver!.id}`, { state: { returnUrl: "/admin/fleet", returnState: { activeTab: "operations" } } });
+                              navigate(`/admin/driver/${job.driver!.id}`, {
+                                state: {
+                                  returnUrl: "/admin/fleet",
+                                  returnState: { activeTab: "operations" },
+                                },
+                              });
                             }}
                             className="flex-1 h-9 text-[12px] font-semibold text-gray-700 dark:text-[#d4d4d8] bg-white dark:bg-[#1A1F26] hover:bg-gray-50 dark:hover:bg-[#3f3f46] border border-gray-200 dark:border-[#2A2F3A] shadow-sm dark:shadow-none rounded-xl"
                           >
