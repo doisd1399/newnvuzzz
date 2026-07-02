@@ -18,6 +18,9 @@ import {
   Check,
   RefreshCw,
   Activity,
+  Settings,
+  Pencil,
+  Eye,
 } from "lucide-react";
 import OperationsTab from "./fleet/OperationsTab";
 import CompanyTab from "./fleet/CompanyTab";
@@ -35,7 +38,7 @@ type FleetTab = "drivers" | "contracts" | "vehicles" | "trailers";
 
 const tabOptions = [
   { id: "operations", label: "Painel Operacional", icon: LayoutDashboard },
-  { id: "company", label: "Visão Geral", icon: LayoutGrid },
+  { id: "company", label: "Perfil da Empresa", icon: LayoutGrid },
   { id: "hr", label: "Recursos Humanos", icon: Building2 },
   { id: "fleet", label: "Frota", icon: Truck },
   { id: "history", label: "Histórico de Viagens", icon: FileText },
@@ -75,6 +78,9 @@ export default function Fleet() {
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
   const [isRecruitmentFormOpen, setIsRecruitmentFormOpen] = useState(false);
   const [isTripDetailsOpen, setIsTripDetailsOpen] = useState(false);
+  const [isCompanyEditMode, setIsCompanyEditMode] = useState(false);
+  const [isCompanyViewMode, setIsCompanyViewMode] = useState(false);
+  const [isCompanySettingsOpen, setIsCompanySettingsOpen] = useState(false);
 
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
   const unreadCount = notifications.filter((n) => !n.lida).length;
@@ -236,57 +242,109 @@ export default function Fleet() {
         {/* Custom Tab Selector */}
         {activeCompany && !isRecruitmentFormOpen && !isTripDetailsOpen && (
           <div className="w-full flex flex-col gap-2 sm:gap-3 mb-4 z-20">
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              {/* Primary Tab Selector */}
-              <div className="min-w-0 flex-1 sm:flex-none">
-                <button
-                  onClick={() => setIsTabMenuOpen(!isTabMenuOpen)}
-                  className="w-full sm:w-auto h-9 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg px-3 flex items-center justify-center sm:justify-start gap-2 shadow-sm focus:outline-none transition-colors hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
-                >
-                  <ActiveIcon
-                    size={14}
-                    className="text-slate-600 dark:text-slate-400 shrink-0"
-                  />
-                  <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                    {activeTabDetails.label}
-                  </span>
-                  <ChevronDown
-                    size={14}
-                    className={cn(
-                      "text-slate-400 shrink-0 transition-transform",
-                      isTabMenuOpen && "rotate-180",
-                    )}
-                  />
-                </button>
-              </div>
-
-              {/* Sub-selector for Fleet */}
-              {activeTab === "fleet" && (
-                <div className="min-w-0 flex-1 sm:flex-none animate-in fade-in slide-in-from-left-2">
+            <div className="flex items-center justify-between sm:justify-start gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2 min-w-0 flex-1 sm:flex-none">
+                {/* Primary Tab Selector */}
+                <div className="min-w-0 flex-1 sm:flex-none">
                   <button
-                    onClick={() => setIsFleetMenuOpen(!isFleetMenuOpen)}
+                    onClick={() => setIsTabMenuOpen(!isTabMenuOpen)}
                     className="w-full sm:w-auto h-9 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg px-3 flex items-center justify-center sm:justify-start gap-2 shadow-sm focus:outline-none transition-colors hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
                   >
-                    {fleetOptions.find((o) => o.id === activeFleetTab)?.icon &&
-                      React.createElement(
-                        fleetOptions.find((o) => o.id === activeFleetTab)!.icon,
-                        {
-                          size: 14,
-                          className:
-                            "text-slate-600 dark:text-slate-400 shrink-0",
-                        },
-                      )}
+                    <ActiveIcon
+                      size={14}
+                      className="text-slate-600 dark:text-slate-400 shrink-0"
+                    />
                     <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                      {fleetOptions.find((o) => o.id === activeFleetTab)?.label}
+                      {activeTabDetails.label}
                     </span>
                     <ChevronDown
                       size={14}
                       className={cn(
                         "text-slate-400 shrink-0 transition-transform",
-                        isFleetMenuOpen && "rotate-180",
+                        isTabMenuOpen && "rotate-180",
                       )}
                     />
                   </button>
+                </div>
+
+                {/* Sub-selector for Fleet */}
+                {activeTab === "fleet" && (
+                  <div className="min-w-0 flex-1 sm:flex-none animate-in fade-in slide-in-from-left-2">
+                    <button
+                      onClick={() => setIsFleetMenuOpen(!isFleetMenuOpen)}
+                      className="w-full sm:w-auto h-9 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg px-3 flex items-center justify-center sm:justify-start gap-2 shadow-sm focus:outline-none transition-colors hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
+                    >
+                      {fleetOptions.find((o) => o.id === activeFleetTab)?.icon &&
+                        React.createElement(
+                          fleetOptions.find((o) => o.id === activeFleetTab)!.icon,
+                          {
+                            size: 14,
+                            className:
+                              "text-slate-600 dark:text-slate-400 shrink-0",
+                          },
+                        )}
+                      <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                        {fleetOptions.find((o) => o.id === activeFleetTab)?.label}
+                      </span>
+                      <ChevronDown
+                        size={14}
+                        className={cn(
+                          "text-slate-400 shrink-0 transition-transform",
+                          isFleetMenuOpen && "rotate-180",
+                        )}
+                      />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Settings Button */}
+              {activeTab === "company" && (
+                <div className="shrink-0 relative">
+                  <button
+                    onClick={() => setIsCompanySettingsOpen(!isCompanySettingsOpen)}
+                    className="w-9 h-9 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg flex items-center justify-center shadow-sm active:scale-[0.99] transition-transform hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
+                  >
+                    <Settings
+                      size={16}
+                      className="text-slate-600 dark:text-slate-400"
+                    />
+                  </button>
+
+                  {isCompanySettingsOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setIsCompanySettingsOpen(false)}
+                      />
+                      <div className="absolute right-0 top-full mt-2 w-48 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-xl shadow-lg z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                        <button
+                          onClick={() => {
+                            setIsCompanySettingsOpen(false);
+                            setIsCompanyEditMode(true);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors border-b border-slate-100 dark:border-[#2A2F3A]"
+                        >
+                          <Pencil size={16} className="text-blue-600 dark:text-blue-400" />
+                          <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                            Editar Perfil
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setIsCompanySettingsOpen(false);
+                            setIsCompanyViewMode(true);
+                          }}
+                          className="w-full flex items-center gap-2.5 px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors"
+                        >
+                          <Eye size={16} className="text-slate-600 dark:text-slate-400" />
+                          <span className="text-[13px] font-medium text-slate-700 dark:text-slate-300">
+                            Visualizar Informações
+                          </span>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -383,7 +441,14 @@ export default function Fleet() {
         {/* Content Area */}
         <div className="relative z-10">
           {activeTab === "operations" && <OperationsTab />}
-          {activeTab === "company" && <CompanyTab />}
+          {activeTab === "company" && (
+            <CompanyTab
+              isEditingProp={isCompanyEditMode}
+              setIsEditingProp={setIsCompanyEditMode}
+              isViewingProp={isCompanyViewMode}
+              setIsViewingProp={setIsCompanyViewMode}
+            />
+          )}
           {activeTab === "hr" && (
             <RecruitmentTab onFormOpen={setIsRecruitmentFormOpen} />
           )}

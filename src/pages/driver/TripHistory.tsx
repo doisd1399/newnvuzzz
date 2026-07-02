@@ -43,6 +43,8 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 import { useAppStore } from "../../context/AppContext";
+import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
+import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
 
 export interface TripRecord {
   id: string;
@@ -66,6 +68,7 @@ export interface TripRecord {
 
   origem: string;
   destino: string;
+  [key: string]: any;
   valor: number;
   comprovanteUrl: string;
   status: string;
@@ -642,7 +645,7 @@ export default function TripHistory({
     simulador: currentCompany?.simulatorName || "",
     empresa: currentCompany?.companyName || "",
     motorista: defaultDriverName !== undefined ? defaultDriverName : (currentUser?.name || ""),
-    periodoPreset: "mes", // 'todos', 'hoje', '7dias', 'mes', 'data'
+    periodoPreset: "mes", // 'todos', 'hoje', 'semana', 'mes', 'data'
     periodoInicio: "",
     periodoFim: "",
   });
@@ -827,79 +830,60 @@ export default function TripHistory({
     return companyUsers.sort((a, b) => a.localeCompare(b));
   }, [trips, allCompanyMembers, users, activeCompanyId]);
 
-  const filteredTrips = trips.filter((trip) => {
-    if (
-      filters.motorista &&
-      trip.motoristaNome.toLowerCase() !== filters.motorista.toLowerCase()
-    ) {
-      return false;
-    }
-
-    let startDate = null;
-    let endDate = null;
-    const now = new Date();
+  const finalTrips = React.useMemo(() => {
+    const normalizedTrips = trips.map((t) => normalizeTrip(t as any));
+    
+    let startDate: Date | undefined = undefined;
+    let endDate: Date | undefined = undefined;
 
     if (filters.periodoPreset === "hoje") {
-      startDate = new Date();
-      startDate.setHours(0, 0, 0, 0);
-      endDate = new Date();
-      endDate.setHours(23, 59, 59, 999);
-    } else if (filters.periodoPreset === "7dias") {
-      startDate = new Date();
-      startDate.setDate(now.getDate() - 7);
-      startDate.setHours(0, 0, 0, 0);
-      endDate = new Date();
-      endDate.setHours(23, 59, 59, 999);
+      const range = getTodayRange();
+      startDate = range.start;
+      endDate = range.end;
+    } else if (filters.periodoPreset === "semana" || filters.periodoPreset === "7dias") {
+      const range = getWeeklyRange();
+      startDate = range.start;
+      endDate = range.end;
     } else if (filters.periodoPreset === "mes") {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-      endDate = new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999,
-      );
+      const range = getMonthlyRange();
+      startDate = range.start;
+      endDate = range.end;
     } else if (filters.periodoPreset === "data") {
       if (filters.periodoInicio) {
         startDate = new Date(filters.periodoInicio + "T00:00:00");
-        if (!filters.periodoFim) {
-          endDate = new Date(filters.periodoInicio + "T23:59:59");
-        }
       }
       if (filters.periodoFim) {
         endDate = new Date(filters.periodoFim + "T23:59:59");
       }
     }
 
-    if (startDate || endDate) {
-      const ts = trip.completedAt || trip.dataFechamento || trip.date || trip.dataLancamento || trip.createdAt;
-      const tripDate = ts?.toDate
-        ? ts.toDate()
-        : new Date(ts);
-        
-      if (startDate && tripDate < startDate) return false;
-      if (endDate && tripDate > endDate) return false;
-    }
+    const finalTrips = getFilteredTrips(
+      normalizedTrips,
+      startDate,
+      endDate,
+      undefined, // activeCompanyId is already filtered via query, but embeddedJob might differ, let's keep undefined here because trips are already scoped
+      filters.simulador,
+      companies,
+      filters.motorista
+    );
 
-    return true;
-  });
+    return finalTrips;
+  }, [trips, filters, companies]);
 
-  const totalViagens = filteredTrips.length;
-  const faturamentoTotal = filteredTrips.reduce(
-    (acc, current) => acc + (current.valor || 0),
+  const totalViagens = finalTrips.length;
+  const faturamentoTotal = finalTrips.reduce(
+    (acc, current) => acc + (current.normalizedValor || 0),
     0,
   );
 
   // --- Image Preloading Logic ---
   useEffect(() => {
     // Preload top visible trips
-    const toPreload = filteredTrips.slice(0, 15).filter(t => !!t.comprovanteUrl);
+    const toPreload = finalTrips.slice(0, 15).filter(t => !!t.comprovanteUrl);
     toPreload.forEach(t => {
       preloadComprovante(t.comprovanteUrl);
     });
-  }, [filteredTrips]);
+  }, [finalTrips]);
 
   useEffect(() => {
     // Notify parent when trip details are opened/closed
@@ -908,17 +892,17 @@ export default function TripHistory({
     }
     // Preload adjacent trips when a trip is selected
     if (selectedTrip) {
-      const idx = filteredTrips.findIndex(t => t.id === selectedTrip.id);
+      const idx = finalTrips.findIndex(t => t.id === selectedTrip.id);
       if (idx > 0) {
-        const prev = filteredTrips[idx - 1];
+        const prev = finalTrips[idx - 1];
         if (prev.comprovanteUrl) preloadComprovante(prev.comprovanteUrl);
       }
-      if (idx !== -1 && idx < filteredTrips.length - 1) {
-        const next = filteredTrips[idx + 1];
+      if (idx !== -1 && idx < finalTrips.length - 1) {
+        const next = finalTrips[idx + 1];
         if (next.comprovanteUrl) preloadComprovante(next.comprovanteUrl);
       }
     }
-  }, [selectedTrip, filteredTrips, onTripDetailsOpen]);
+  }, [selectedTrip, finalTrips, onTripDetailsOpen]);
   // ------------------------------
 
   const formatCurrency = React.useCallback((value: number) => {
@@ -1041,7 +1025,7 @@ export default function TripHistory({
                 if (expandedTrips.size > 0) {
                   setExpandedTrips(new Set());
                 } else {
-                  setExpandedTrips(new Set(filteredTrips.map((t) => t.id)));
+                  setExpandedTrips(new Set(finalTrips.map((t) => t.id)));
                 }
               }}
               title={expandedTrips.size > 0 ? "Recolher Todos" : "Expandir Todos"}
@@ -1079,7 +1063,7 @@ export default function TripHistory({
               {[
                 { id: "todos", label: "Tudo" },
                 { id: "hoje", label: "Hoje" },
-                { id: "7dias", label: "7 Dias" },
+                { id: "semana", label: "Esta Semana" },
                 { id: "mes", label: "Esse mês" },
                 { id: "data", label: "Data" },
               ].map((preset) => (
@@ -1140,27 +1124,27 @@ export default function TripHistory({
           <div className="flex justify-center p-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
           </div>
-        ) : filteredTrips.length === 0 ? (
+        ) : finalTrips.length === 0 ? (
           <div className="text-center p-8 text-gray-500 bg-white dark:bg-[#121213] rounded-2xl border border-gray-100 dark:border-gray-800">
             Nenhum histórico de viagens encontrado.
           </div>
         ) : (
-          filteredTrips.map((trip) => {
+          finalTrips.map((trip) => {
             const comp = companies.find((c: any) => c.id === trip.empresaId);
             const isExpanded = expandedTrips.has(trip.id);
 
             return (
               <TripListItem
                 key={trip.id}
-                trip={trip}
+                trip={trip as any}
                 comp={comp}
                 isExpanded={isExpanded}
                 toggleExpand={toggleExpand}
                 setSelectedTrip={setSelectedTrip}
                 setEditingTrip={setEditingTrip}
                 setDeletingTrip={setDeletingTrip}
-                canEdit={canEditTrip(trip)}
-                canDelete={canDeleteTrip(trip)}
+                canEdit={canEditTrip(trip as any)}
+                canDelete={canDeleteTrip(trip as any)}
                 formatCurrency={formatCurrency}
                 formatDate={formatDate}
                 formatTime={formatTime}
@@ -1221,17 +1205,17 @@ export default function TripHistory({
       {/* Modal Detailed View */}
       {selectedTrip &&
         (() => {
-          const selectedIndex = filteredTrips.findIndex(t => t.id === selectedTrip.id);
+          const selectedIndex = finalTrips.findIndex(t => t.id === selectedTrip.id);
           
           const handlePrevTrip = () => {
             if (selectedIndex > 0) {
-              setSelectedTrip(filteredTrips[selectedIndex - 1]);
+              setSelectedTrip(finalTrips[selectedIndex - 1] as any);
             }
           };
 
           const handleNextTrip = () => {
-            if (selectedIndex !== -1 && selectedIndex < filteredTrips.length - 1) {
-              setSelectedTrip(filteredTrips[selectedIndex + 1]);
+            if (selectedIndex !== -1 && selectedIndex < finalTrips.length - 1) {
+              setSelectedTrip(finalTrips[selectedIndex + 1] as any);
             }
           };
 
@@ -1258,10 +1242,10 @@ export default function TripHistory({
                       </button>
                       <button
                         onClick={handleNextTrip}
-                        disabled={selectedIndex === -1 || selectedIndex >= filteredTrips.length - 1}
+                        disabled={selectedIndex === -1 || selectedIndex >= finalTrips.length - 1}
                         className={cn(
                           "p-1.5 rounded-lg border transition-colors",
-                          selectedIndex === -1 || selectedIndex >= filteredTrips.length - 1
+                          selectedIndex === -1 || selectedIndex >= finalTrips.length - 1
                             ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
                             : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                         )}

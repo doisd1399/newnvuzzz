@@ -107,7 +107,7 @@ service cloud.firestore {
     
     // 13. historico_viagens
     match /historico_viagens/{tripId} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow create: if request.auth != null;
       allow update: if request.auth != null && (
         (request.auth.token.role in ["admin", "owner"] &&

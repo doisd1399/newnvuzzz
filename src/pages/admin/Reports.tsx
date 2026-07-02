@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useAppStore } from "../../context/AppContext";
+import { normalizeTrip, getFilteredTrips } from "../../lib/metricsEngine";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -43,63 +44,9 @@ export default function Reports({
   };
 
   const validTrips = useMemo(() => {
-    console.log(`[DIAGNÓSTICO 1] Quantidade total de documentos em historicoTrips: ${historicoTrips.length}`);
-    
-    const filtered = historicoTrips
-      .filter((t: any) => {
-        if (t.empresaId !== activeCompanyId) return false;
-        const status = (t.status || "").toLowerCase();
-        return status === "concluida" || status === "completed";
-      })
-      .map((t: any) => {
-        let date = new Date();
-        let fieldUsed = "nenhum";
-        
-        if (t.completedAt?.toDate) {
-          date = t.completedAt.toDate();
-          fieldUsed = "completedAt (Firestore Timestamp)";
-        } else if (t.dataLancamento?.toDate) {
-          date = t.dataLancamento.toDate();
-          fieldUsed = "dataLancamento (Firestore Timestamp)";
-        } else if (t.createdAt?.toDate) {
-          date = t.createdAt.toDate();
-          fieldUsed = "createdAt (Firestore Timestamp)";
-        } else if (t.completedAt) {
-          date = new Date(t.completedAt);
-          fieldUsed = "completedAt (String/Date)";
-        } else if (t.dataLancamento) {
-          date = new Date(t.dataLancamento);
-          fieldUsed = "dataLancamento (String/Date)";
-        } else if (t.createdAt) {
-          date = new Date(t.createdAt);
-          fieldUsed = "createdAt (String/Date)";
-        }
-        
-        const val = parseFloat(t.valor) || 0;
-        return { ...t, parsedDate: date, val, fieldUsed };
-      });
-
-    console.log(`[DIAGNÓSTICO 2] Quantidade de documentos após filtro status == "concluida" e empresaId == ${activeCompanyId}: ${filtered.length}`);
-    
-    if (filtered.length > 0) {
-      console.log(`[DIAGNÓSTICO 8] Primeiros 10 registros utilizados para agrupamento:`, 
-        filtered.slice(0, 10).map((t: any) => ({
-          empresaId: t.empresaId,
-          motoristaId: t.motoristaId,
-          valor: t.valor,
-          status: t.status,
-          createdAt: t.createdAt,
-          dataLancamento: t.dataLancamento,
-          completedAt: t.completedAt,
-        }))
-      );
-      
-      console.log(`[DIAGNÓSTICO 9] Campos utilizados para cálculo temporal (amostra dos 10 primeiros):`,
-        filtered.slice(0, 10).map((t: any) => t.fieldUsed)
-      );
-    }
-
-    return filtered;
+    const normalizedTrips = historicoTrips.map(t => normalizeTrip(t as any));
+    const filtered = getFilteredTrips(normalizedTrips, undefined, undefined, activeCompanyId);
+    return filtered.map(t => ({ ...t, parsedDate: t.metricDate, val: t.normalizedValor, fieldUsed: 'metricDate' }));
   }, [historicoTrips, activeCompanyId]);
 
   const generateHistory = (trips: any[], currentPeriod: "semanal" | "mensal") => {

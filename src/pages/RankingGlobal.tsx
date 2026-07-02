@@ -117,7 +117,7 @@ export default function RankingGlobal() {
     if (rankingType === "entre") {
       return groupMetricsByCompany(trips, sDate, eDate, simulator, companies);
     } else {
-      return groupMetricsByDriver(trips, sDate, eDate, selectedCompanyId, users);
+      return groupMetricsByDriver(trips, sDate, eDate, selectedCompanyId, users, simulator, companies);
     }
   }, [periodPreset, rankingType, trips, companies, simulator, selectedCompanyId, users, startDateStr, endDateStr]);
 

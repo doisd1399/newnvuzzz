@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { collection, onSnapshot, query } from "firebase/firestore";
 import { db } from "../../lib/firebase";
@@ -7,6 +7,8 @@ import { Button } from "../../components/ui/Button";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
 import { getJobRealTimestamp } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
+import { getFilteredTrips } from "../../lib/metricsEngine";
+import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
 import TripHistory from "../driver/TripHistory";
 import Reports from "./Reports";
 import {
@@ -22,7 +24,6 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
-  Clock,
   ShieldCheck,
   Package,
   Trash2,
@@ -33,7 +34,6 @@ import {
   Sparkles,
   AlertTriangle,
   Banknote,
-  CalendarDays,
   Hourglass,
   X,
   Check,
@@ -41,6 +41,9 @@ import {
   User as UserIcon,
   History,
   Activity,
+  ChevronRight,
+  CalendarDays,
+  Clock,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 
@@ -174,7 +177,9 @@ export default function DriverProfileIsolated() {
                 <Icon
                   size={16}
                   className={cn(
-                    activeTab === opt.id ? "text-blue-600 dark:text-[#0cb49f]" : "text-slate-500",
+                    activeTab === opt.id
+                      ? "text-blue-600 dark:text-[#0cb49f]"
+                      : "text-slate-500",
                   )}
                 />
                 <span
@@ -188,7 +193,10 @@ export default function DriverProfileIsolated() {
                   {opt.label}
                 </span>
                 {activeTab === opt.id && (
-                  <Check size={14} className="ml-auto text-blue-600 dark:text-[#0cb49f]" />
+                  <Check
+                    size={14}
+                    className="ml-auto text-blue-600 dark:text-[#0cb49f]"
+                  />
                 )}
               </button>
             );
@@ -258,13 +266,14 @@ export default function DriverProfileIsolated() {
   const currentLevelXp = levelData.currentLevelXp;
   const xpProgress = levelData.xpProgress;
 
-  const totalGanhos = historicoTrips
-    .filter((t) => t.motoristaId === driverId)
-    .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
+  const normalizedAllTrips = useMemo(() => historicoTrips.map((t: any) => normalizeTrip(t)), [historicoTrips]);
+  
+  const filteredDriverTrips = useMemo(() => {
+    return getFilteredTrips(normalizedAllTrips, undefined, undefined, undefined, undefined, companies, driverId);
+  }, [normalizedAllTrips, driverId, companies]);
 
-  const totalViagens = historicoTrips.filter(
-    (t) => t.motoristaId === driverId,
-  ).length;
+  const totalGanhos = filteredDriverTrips.reduce((acc, t) => acc + t.normalizedValor, 0);
+  const totalViagens = filteredDriverTrips.length;
 
   const [globalRank, setGlobalRank] = useState<{
     position: number;
@@ -434,14 +443,10 @@ export default function DriverProfileIsolated() {
               driverId={driverId as string}
               activeCompanyId={activeCompanyId}
               allCompanyMembers={allCompanyMembers}
-              posicaoRanking={globalRank?.position || "--"}
-              totalRanking={globalRank?.total || "--"}
               currentUser={driver}
-              totalGanhos={totalGanhos}
               displayLevel={displayLevel}
               currentLevelXp={currentLevelXp}
               xpProgress={xpProgress}
-              diffToNext={globalRank?.diffToNext}
             />
           </div>
         )}
@@ -454,68 +459,193 @@ export default function DriverProfileIsolated() {
                 Operação Ativa
               </h3>
               {activeJob && activeContract ? (
-                <div className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-[20px] p-5 shadow-sm dark:shadow-none">
-                  <div className="flex justify-between items-start mb-5 gap-4">
-                    <div className="min-w-0">
-                      <h4 className="font-bold text-[16px] text-gray-900 dark:text-[#fafafa] tracking-tight truncate">
-                        {activeContract.name}
-                      </h4>
-                      <div className="flex items-center flex-wrap gap-2 mt-2">
-                        {activeVehicle && (
-                          <span className="text-[13px] font-medium text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                            <Car size={14} className="text-gray-400" />{" "}
-                            {activeVehicle.name}
+                <div className="order-3 flex flex-col bg-white dark:bg-[#1A1F26] rounded-2xl sm:rounded-[24px] shadow-sm dark:shadow-none border border-gray-200 dark:border-[#2A2F3A] overflow-hidden mb-3 sm:mb-4">
+                  {/* Header */}
+                  <div
+                    className="relative overflow-hidden bg-[#1f242d] dark:bg-[#151921] p-3 sm:p-4 w-full cursor-pointer hover:bg-[#252b36] transition-colors"
+                    onClick={() => onViewJob(activeJob.id)}
+                  >
+                    {/* Subtle glow effect */}
+                    <div className="absolute top-[-50%] right-[-10%] w-[150px] h-[150px] bg-white/5 rounded-full blur-[40px] pointer-events-none"></div>
+
+                    <div className="flex justify-between items-start z-10 relative gap-3">
+                      <div className="flex flex-col pr-2 min-w-0">
+                        <span className="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1 mt-0.5">
+                          Operação atual
+                        </span>
+                        <h3 className="font-bold text-white text-[22px] sm:text-[26px] tracking-tight leading-none mb-1.5">
+                          {activeContract.name}
+                        </h3>
+                        <p className="text-[10px] sm:text-[11px] text-gray-400 font-medium leading-none truncate whitespace-nowrap">
+                          Siga as especificações do transporte.
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 flex pt-0.5">
+                        {activeJob.status === "pending" ? (
+                          <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-yellow-500/20 bg-yellow-500/10 text-yellow-400 rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+                            PENDENTE
                           </span>
-                        )}
-                        {activeTrailer && (
-                          <>
-                            <span className="text-gray-300 dark:text-gray-600">
-                              •
-                            </span>
-                            <span className="text-[13px] font-medium text-gray-500 dark:text-[#a1a1aa] flex items-center gap-1.5">
-                              <Truck size={14} className="text-gray-400" />{" "}
-                              {activeTrailer.name}
-                            </span>
-                          </>
+                        ) : (
+                          <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-[#0cb49f]/20 bg-[#0cb49f]/10 text-[#0cb49f] rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#0cb49f]"></span>
+                            TRABALHO ATIVO
+                          </span>
                         )}
                       </div>
                     </div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => onViewJob(activeJob.id)}
-                      className="h-9 px-4 bg-gray-50 dark:bg-[#2A2F3A] hover:bg-gray-100 dark:hover:bg-[#3f3f46] text-gray-700 dark:text-[#d4d4d8] text-[13px] font-bold border border-gray-200 dark:border-[#3A3F4A] rounded-xl shrink-0"
-                    >
-                      Detalhes
-                    </Button>
                   </div>
 
-                  <div className="pt-2">
-                    <div className="flex justify-between items-baseline mb-2">
-                      <span className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa]">
-                        {activeJob.progress}{" "}
-                        <span className="text-gray-400 font-semibold">
-                          / {activeContract.totalDeliveries} entregas
-                        </span>
-                      </span>
-                      <span className="text-[13px] font-bold text-gray-900 dark:text-[#fafafa]">
-                        {activeContract.totalDeliveries > 0
-                          ? Math.round(
-                              (activeJob.progress /
-                                activeContract.totalDeliveries) *
-                                100,
-                            )
-                          : 0}
-                        %
-                      </span>
+                  {/* Content Area */}
+                  <div className="p-3 pb-2 sm:p-4 sm:pb-3 flex flex-col gap-2.5">
+                    {/* Buttons Row (Vehicles and Trailer) */}
+                    <div className="flex flex-col gap-1.5">
+                      <button className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none cursor-default">
+                        <div className="flex flex-col w-full justify-center">
+                          <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                            Veículo
+                          </span>
+                          <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                            {activeVehicle?.name || "Nenhum"}
+                          </span>
+                        </div>
+                        <ChevronRight
+                          size={14}
+                          className="text-gray-300 dark:text-gray-600 shrink-0 ml-2"
+                        />
+                      </button>
+
+                      <button className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none cursor-default">
+                        <div className="flex flex-col w-full justify-center">
+                          <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                            Reboque
+                          </span>
+                          <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                            {activeTrailer?.name || "Nenhum"}
+                          </span>
+                        </div>
+                        <ChevronRight
+                          size={14}
+                          className="text-gray-300 dark:text-gray-600 shrink-0 ml-2"
+                        />
+                      </button>
                     </div>
-                    <div className="w-full h-2 bg-gray-100 dark:bg-[#27272a] rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-[#00D1FF] shadow-[0_0_10px_rgba(0,209,255,0.4)] rounded-full"
-                        style={{
-                          width: `${activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0}%`,
-                        }}
-                      ></div>
+
+                    {/* Metrics */}
+                    <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {activeJob.progress}/{activeContract.totalDeliveries}
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Entregas
+                        </span>
+                      </div>
+
+                      <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {Math.max(
+                            0,
+                            activeContract.totalDeliveries - activeJob.progress,
+                          )}
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Faltam
+                        </span>
+                      </div>
+
+                      <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {activeContract.totalDeliveries > 0
+                            ? Math.round(
+                                (activeJob.progress /
+                                  activeContract.totalDeliveries) *
+                                  100,
+                              )
+                            : 0}
+                          %
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Concluído
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Compact Progress bar */}
+                    <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
+                      <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
+                        <div
+                          className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
+                          style={{
+                            width: `${Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)}%`,
+                          }}
+                        ></div>
+                      </div>
+                      <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
+                        Progresso da operação
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Footer - Limit/Time */}
+                  <div className="flex items-center justify-between border-t border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] px-3 py-2 sm:px-4 sm:py-2.5 shrink-0 w-full overflow-hidden">
+                    <div className="flex flex-1 items-center gap-2 min-w-0 pr-1">
+                      <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center border border-gray-100 dark:border-transparent">
+                        <CalendarDays
+                          size={12}
+                          className="text-gray-600 dark:text-gray-400"
+                        />
+                      </div>
+                      <div className="flex flex-col min-w-0 overflow-hidden text-left">
+                        <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                          Prazo limite
+                        </span>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                          {activeJob.deadlineDate
+                            ? new Date(
+                                activeJob.deadlineDate,
+                              ).toLocaleDateString("pt-BR")
+                            : "Não definido"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="w-px h-5 bg-gray-100 dark:bg-[#2A2F3A] shrink-0 mx-1"></div>
+
+                    <div className="flex flex-1 items-center justify-end gap-2 min-w-0 pl-1 text-right">
+                      <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center order-1 border border-gray-100 dark:border-transparent">
+                        <Clock
+                          size={12}
+                          className="text-gray-600 dark:text-gray-400"
+                        />
+                      </div>
+                      <div className="flex flex-col min-w-0 overflow-hidden order-0">
+                        <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                          Tempo restante
+                        </span>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none truncate">
+                          {(() => {
+                            if (!activeJob.deadlineDate) return "Não definido";
+                            const diffMs =
+                              new Date(activeJob.deadlineDate).getTime() -
+                              new Date().getTime();
+                            if (diffMs <= 0) return "Vencido";
+                            const d = Math.floor(
+                              diffMs / (1000 * 60 * 60 * 24),
+                            );
+                            const h = Math.floor(
+                              (diffMs / (1000 * 60 * 60)) % 24,
+                            );
+                            const m = Math.floor((diffMs / 1000 / 60) % 60);
+                            return `${d} dias - ${h}h - ${m}min`;
+                          })()}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>

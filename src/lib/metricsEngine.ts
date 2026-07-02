@@ -2,6 +2,16 @@ import { NormalizedTrip, normalizeTrip } from "./tripNormalizer";
 
 export { normalizeTrip };
 
+export function getTodayRange(referenceDate = new Date()) {
+  const start = new Date(referenceDate);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setHours(23, 59, 59, 999);
+
+  return { start, end };
+}
+
 export function getWeeklyRange(referenceDate = new Date()) {
   const start = new Date(referenceDate);
   start.setDate(start.getDate() - start.getDay());
@@ -26,6 +36,9 @@ export function getMonthlyRange(referenceDate = new Date()) {
 }
 
 export function normalizeDate(date: string | Date | number) {
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+    return new Date(date.trim() + 'T00:00:00');
+  }
   return new Date(date);
 }
 
@@ -35,7 +48,8 @@ export function getFilteredTrips(
   endDate?: Date,
   empresaId?: string,
   simulator?: string,
-  companies?: any[] // Needed for simulator filtering
+  companies?: any[], // Needed for simulator filtering
+  motorista?: string // Motorista name or ID filter
 ) {
   return trips.filter((trip) => {
     if (!trip.isValid) return false;
@@ -47,10 +61,25 @@ export function getFilteredTrips(
 
     if (empresaId && trip.empresaId !== empresaId) return false;
 
-    if (simulator && simulator !== "Todos os simuladores" && companies) {
-      const comp = companies.find((c) => c.id === trip.empresaId);
-      const compSim = comp?.simulatorName || "Geral";
-      if (compSim !== simulator) return false;
+    if (simulator && simulator !== "Todos os simuladores" && simulator !== "all") {
+      // Allow fallback if companies list isn't provided but trip has simuladorNome
+      const tripSim = trip.simuladorNome;
+      if (companies && companies.length > 0) {
+        const comp = companies.find((c) => c.id === trip.empresaId);
+        const compSim = comp?.simulatorName || "Geral";
+        if (compSim !== simulator) return false;
+      } else if (tripSim && tripSim !== simulator) {
+        return false;
+      }
+    }
+
+    if (motorista && motorista !== "Todos os Motoristas" && motorista !== "all") {
+       if (
+         trip.motoristaNome?.toLowerCase() !== motorista.toLowerCase() &&
+         trip.motoristaId !== motorista
+       ) {
+         return false;
+       }
     }
 
     return true;
@@ -63,9 +92,10 @@ export function calculateWeeklyMetrics(
   endDate?: Date,
   empresaId?: string,
   simulator?: string,
-  companies?: any[]
+  companies?: any[],
+  motorista?: string
 ) {
-  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies);
+  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies, motorista);
 
   const tripsCount = filteredTrips.length;
   const totalRevenue = filteredTrips.reduce((acc, trip) => acc + trip.normalizedValor, 0);
@@ -116,9 +146,11 @@ export function groupMetricsByDriver(
   startDate?: Date,
   endDate?: Date,
   empresaId?: string,
-  users?: any[]
+  users?: any[],
+  simulator?: string,
+  companies?: any[]
 ) {
-  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId);
+  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies);
   const stats: Record<string, { id: string; name: string; logo: string; trips: number; val: number }> = {};
   
   filteredTrips.forEach((trip) => {
@@ -158,12 +190,22 @@ export function groupMetricsByDriver(
 
 // Ensure time boundaries for day-level filtering
 export function getStartOfDay(date: Date | string | number): Date {
-  const d = new Date(date);
+  let d: Date;
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+    d = new Date(date.trim() + 'T00:00:00');
+  } else {
+    d = new Date(date);
+  }
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
 }
 
 export function getEndOfDay(date: Date | string | number): Date {
-  const d = new Date(date);
+  let d: Date;
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+    d = new Date(date.trim() + 'T00:00:00');
+  } else {
+    d = new Date(date);
+  }
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 }
 

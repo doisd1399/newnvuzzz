@@ -35,7 +35,7 @@ export function normalizeTrip(trip: RawTrip): NormalizedTrip {
     trip.deleted === true;
 
   // Rule 1: Apenas viagens com status "concluida" são válidas para métricas.
-  const isCompletedStatus = status === "concluida" || status === "completed";
+  const isCompletedStatus = status === "concluida" || status === "concluída" || status === "completed";
   
   const isValid = !isCanceled && isCompletedStatus;
 

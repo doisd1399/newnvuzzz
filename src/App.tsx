@@ -16,6 +16,7 @@ import SeniorPanel from "./pages/admin/SeniorPanel";
 import DriverProfile from "./pages/driver/Profile";
 import RecordTrip from "./pages/driver/RecordTrip";
 import RecruitmentApply from "./pages/RecruitmentApply";
+import AuditPage from "./pages/AuditPage";
 import ApplicationStatus from "./pages/ApplicationStatus";
 
 import TripHistory from "./pages/driver/TripHistory";
@@ -33,6 +34,8 @@ import ContractDetailsPage from "./pages/admin/ContractDetailsPage";
 import Reports from "./pages/admin/Reports";
 
 import RankingGlobal from "./pages/RankingGlobal";
+
+import AuditPage from "./pages/AuditPage";
 
 const ProtectedRoute = ({
   children,
@@ -77,6 +80,7 @@ function AppRoutes() {
         <Route path="/apply/:companyId" element={<RecruitmentApply />} />
         <Route path="/register-company" element={<RegisterCompany />} />
         <Route path="/status" element={<ApplicationStatus />} />
+        <Route path="/audit" element={<AuditPage />} />
 
         {/* Admin Routes */}
         <Route

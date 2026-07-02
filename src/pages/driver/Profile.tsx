@@ -7,6 +7,8 @@ import { useAppStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import { getJobRealTimestamp } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
+import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
+import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
 import {
   TrendingUp,
   Target,
@@ -81,7 +83,7 @@ export default function Profile() {
   const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [periodFilter, setPeriodFilter] = useState<
-    "all" | "7d" | "15d" | "custom"
+    "all" | "hoje" | "semana" | "mes" | "custom"
   >("all");
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
@@ -138,16 +140,19 @@ export default function Profile() {
         job.completedAt || job.createdAt || new Date().toISOString();
       const jobDate = new Date(dateStr);
 
-      if (periodFilter === "7d") {
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        return jobDate >= sevenDaysAgo;
+      if (periodFilter === "hoje") {
+        const { start, end } = getTodayRange();
+        return jobDate >= start && jobDate <= end;
       }
 
-      if (periodFilter === "15d") {
-        const fifteenDaysAgo = new Date();
-        fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
-        return jobDate >= fifteenDaysAgo;
+      if (periodFilter === "semana") {
+        const { start, end } = getWeeklyRange();
+        return jobDate >= start && jobDate <= end;
+      }
+
+      if (periodFilter === "mes") {
+        const { start, end } = getMonthlyRange();
+        return jobDate >= start && jobDate <= end;
       }
 
       if (periodFilter === "custom") {
@@ -213,13 +218,14 @@ export default function Profile() {
   const currentLevelXp = levelData.currentLevelXp;
   const xpProgress = levelData.xpProgress;
 
-  const totalGanhos = historicoTrips
-    .filter((t) => t.motoristaId === currentUser.id)
-    .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
+  const normalizedAllTrips = useMemo(() => historicoTrips.map((t: any) => normalizeTrip(t)), [historicoTrips]);
+  
+  const filteredDriverTrips = useMemo(() => {
+    return getFilteredTrips(normalizedAllTrips, undefined, undefined, undefined, undefined, companies, currentUser.id);
+  }, [normalizedAllTrips, currentUser.id, companies]);
 
-  const totalViagens = historicoTrips.filter(
-    (t) => t.motoristaId === currentUser.id,
-  ).length;
+  const totalGanhos = filteredDriverTrips.reduce((acc, t) => acc + t.normalizedValor, 0);
+  const totalViagens = filteredDriverTrips.length;
 
   const currentActiveCompany = activeCompanyId
     ? companies.find((c) => c.id === activeCompanyId)
@@ -484,7 +490,9 @@ export default function Profile() {
                 <Icon
                   size={16}
                   className={cn(
-                    activeTab === opt.id ? "text-blue-600 dark:text-[#0cb49f]" : "text-slate-500",
+                    activeTab === opt.id
+                      ? "text-blue-600 dark:text-[#0cb49f]"
+                      : "text-slate-500",
                   )}
                 />
                 <span
@@ -733,11 +741,12 @@ export default function Profile() {
                   onChange={(e) => setPeriodFilter(e.target.value as any)}
                   className="w-full appearance-none bg-slate-50 dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 rounded-[14px] pl-10 pr-10 py-3 text-[13px] font-bold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/20 cursor-pointer hover:bg-slate-100 dark:hover:bg-white/5 transition-colors shadow-sm"
                 >
-                  <option value="all">Ver resumo de todo o período</option>
-                  <option value="7d">Ver resumo dos últimos 7 dias</option>
-                  <option value="15d">Ver resumo dos últimos 15 dias</option>
+                  <option value="all">Tudo</option>
+                  <option value="hoje">Hoje</option>
+                  <option value="semana">Semana Atual</option>
+                  <option value="mes">Mês Atual</option>
                   <option value="custom">
-                    Ver resumo de período personalizado
+                    Personalizado
                   </option>
                 </select>
                 <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-slate-400">
@@ -783,63 +792,190 @@ export default function Profile() {
                 Operação Ativa
               </h3>
               {activeJob && activeContract ? (
-                <div className="bg-slate-50 dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 rounded-[24px] p-5 shadow-[0_4px_24px_rgba(0,0,0,0.06)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.2)]">
-                  <div className="flex justify-between items-start mb-5 gap-3">
-                    <div className="min-w-0 flex-1">
-                      <h4 className="font-bold text-[16px] text-slate-900 dark:text-white tracking-tight truncate">
-                        {activeContract.name}
-                      </h4>
-                      <div className="flex items-center flex-wrap gap-2.5 mt-2">
-                        {activeVehicle && (
-                          <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400 flex items-center gap-1.5 bg-slate-200/50 dark:bg-slate-800/40 px-2 py-0.5 rounded-md">
-                            <Car
-                              size={13}
-                              className="text-teal-600 dark:text-teal-400"
-                            />{" "}
-                            {activeVehicle.name}
+                <div className="order-3 flex flex-col bg-white dark:bg-[#1A1F26] rounded-2xl sm:rounded-[24px] shadow-sm dark:shadow-none border border-gray-200 dark:border-[#2A2F3A] overflow-hidden mb-3 sm:mb-4">
+                  {/* Header */}
+                  <div className="relative overflow-hidden bg-[#1f242d] dark:bg-[#151921] p-3 sm:p-4 w-full">
+                    {/* Subtle glow effect */}
+                    <div className="absolute top-[-50%] right-[-10%] w-[150px] h-[150px] bg-white/5 rounded-full blur-[40px] pointer-events-none"></div>
+
+                    <div className="flex justify-between items-start z-10 relative gap-3">
+                      <div className="flex flex-col pr-2 min-w-0">
+                        <span className="text-[8px] sm:text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1 mt-0.5">
+                          Operação atual
+                        </span>
+                        <h3 className="font-bold text-white text-[22px] sm:text-[26px] tracking-tight leading-none mb-1.5">
+                          {activeContract.name}
+                        </h3>
+                        <p className="text-[10px] sm:text-[11px] text-gray-400 font-medium leading-none truncate whitespace-nowrap">
+                          Siga as especificações do transporte.
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 flex pt-0.5">
+                        {activeJob.status === "pending" ? (
+                          <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-yellow-500/20 bg-yellow-500/10 text-yellow-400 rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+                            PENDENTE
                           </span>
-                        )}
-                        {activeTrailer && (
-                          <>
-                            <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400 flex items-center gap-1.5 bg-slate-200/50 dark:bg-slate-800/40 px-2 py-0.5 rounded-md">
-                              <Truck
-                                size={13}
-                                className="text-teal-600 dark:text-teal-400"
-                              />{" "}
-                              {activeTrailer.name}
-                            </span>
-                          </>
+                        ) : (
+                          <span className="px-1.5 py-0.5 text-[8px] sm:text-[9px] font-semibold border border-[#0cb49f]/20 bg-[#0cb49f]/10 text-[#0cb49f] rounded-full flex items-center gap-1 whitespace-nowrap tracking-wide">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#0cb49f]"></span>
+                            TRABALHO ATIVO
+                          </span>
                         )}
                       </div>
                     </div>
                   </div>
 
-                  <div className="pt-1">
-                    <div className="flex justify-between items-baseline mb-2">
-                      <span className="text-[13px] font-bold text-slate-900 dark:text-white tracking-tight">
-                        {activeJob.progress}{" "}
-                        <span className="text-slate-500 font-medium">
-                          / {activeContract.totalDeliveries} entregas
-                        </span>
-                      </span>
-                      <span className="text-[12px] font-bold text-teal-600 dark:text-teal-400">
-                        {activeContract.totalDeliveries > 0
-                          ? Math.round(
-                              (activeJob.progress /
-                                activeContract.totalDeliveries) *
-                                100,
-                            )
-                          : 0}
-                        %
-                      </span>
+                  {/* Content Area */}
+                  <div className="p-3 pb-2 sm:p-4 sm:pb-3 flex flex-col gap-2.5">
+                    {/* Buttons Row (Vehicles and Trailer) */}
+                    <div className="flex flex-col gap-1.5">
+                      <button className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none cursor-default">
+                        <div className="flex flex-col w-full justify-center">
+                          <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                            Veículo
+                          </span>
+                          <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                            {activeVehicle?.name || "Nenhum"}
+                          </span>
+                        </div>
+                        <ChevronRight
+                          size={14}
+                          className="text-gray-300 dark:text-gray-600 shrink-0 ml-2"
+                        />
+                      </button>
+
+                      <button className="flex items-center justify-between border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1f242d] rounded-[10px] py-1.5 px-3 text-left group shadow-sm dark:shadow-none cursor-default">
+                        <div className="flex flex-col w-full justify-center">
+                          <span className="text-[8px] font-bold text-gray-400 uppercase tracking-wider leading-none mb-0.5">
+                            Reboque
+                          </span>
+                          <span className="text-[11px] sm:text-[12px] font-bold text-slate-800 dark:text-[#fafafa] leading-tight break-words">
+                            {activeTrailer?.name || "Nenhum"}
+                          </span>
+                        </div>
+                        <ChevronRight
+                          size={14}
+                          className="text-gray-300 dark:text-gray-600 shrink-0 ml-2"
+                        />
+                      </button>
                     </div>
-                    <div className="w-full h-2 bg-slate-200/80 dark:bg-slate-800/60 rounded-full overflow-hidden shadow-inner">
-                      <div
-                        className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full"
-                        style={{
-                          width: `${activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0}%`,
-                        }}
-                      ></div>
+
+                    {/* Metrics */}
+                    <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {activeJob.progress}/{activeContract.totalDeliveries}
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Entregas
+                        </span>
+                      </div>
+
+                      <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {Math.max(
+                            0,
+                            activeContract.totalDeliveries - activeJob.progress,
+                          )}
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Faltam
+                        </span>
+                      </div>
+
+                      <div className="w-px h-6 bg-gray-200/60 dark:bg-[#2A2F3A] shrink-0"></div>
+
+                      <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
+                        <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
+                          {activeContract.totalDeliveries > 0
+                            ? Math.round(
+                                (activeJob.progress /
+                                  activeContract.totalDeliveries) *
+                                  100,
+                              )
+                            : 0}
+                          %
+                        </span>
+                        <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
+                          Concluído
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Compact Progress bar */}
+                    <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
+                      <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
+                        <div
+                          className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
+                          style={{
+                            width: `${Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)}%`,
+                          }}
+                        ></div>
+                      </div>
+                      <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
+                        Progresso da operação
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Footer - Limit/Time */}
+                  <div className="flex items-center justify-between border-t border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] px-3 py-2 sm:px-4 sm:py-2.5 shrink-0 w-full overflow-hidden">
+                    <div className="flex flex-1 items-center gap-2 min-w-0 pr-1">
+                      <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center border border-gray-100 dark:border-transparent">
+                        <CalendarDays
+                          size={12}
+                          className="text-gray-600 dark:text-gray-400"
+                        />
+                      </div>
+                      <div className="flex flex-col min-w-0 overflow-hidden text-left">
+                        <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                          Prazo limite
+                        </span>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
+                          {activeJob.deadlineDate
+                            ? new Date(
+                                activeJob.deadlineDate,
+                              ).toLocaleDateString("pt-BR")
+                            : "Não definido"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="w-px h-5 bg-gray-100 dark:bg-[#2A2F3A] shrink-0 mx-1"></div>
+
+                    <div className="flex flex-1 items-center justify-end gap-2 min-w-0 pl-1 text-right">
+                      <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-md bg-gray-50 dark:bg-[#2A2F3A] flex flex-shrink-0 items-center justify-center order-1 border border-gray-100 dark:border-transparent">
+                        <Clock
+                          size={12}
+                          className="text-gray-600 dark:text-gray-400"
+                        />
+                      </div>
+                      <div className="flex flex-col min-w-0 overflow-hidden order-0">
+                        <span className="text-[7px] sm:text-[8px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">
+                          Tempo restante
+                        </span>
+                        <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none truncate">
+                          {(() => {
+                            if (!activeJob.deadlineDate) return "Não definido";
+                            const diffMs =
+                              new Date(activeJob.deadlineDate).getTime() -
+                              new Date().getTime();
+                            if (diffMs <= 0) return "Vencido";
+                            const d = Math.floor(
+                              diffMs / (1000 * 60 * 60 * 24),
+                            );
+                            const h = Math.floor(
+                              (diffMs / (1000 * 60 * 60)) % 24,
+                            );
+                            const m = Math.floor((diffMs / 1000 / 60) % 60);
+                            return `${d} dias - ${h}h - ${m}min`;
+                          })()}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
