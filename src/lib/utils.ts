@@ -93,3 +93,29 @@ export function getJobRealTimestamp(job: any, historicoTrips: any[] = []): numbe
 
   return 0;
 }
+
+export const getNomeContratoHistorico = (viagem: any, contrato?: any) => {
+  return (
+    viagem?.contractNameSnapshot ||
+    viagem?.contratoNome ||
+    viagem?.nomeContrato ||
+    viagem?.contractName ||
+    viagem?.contratoNumero ||
+    viagem?.numeroContrato ||
+    contrato?.name ||
+    contrato?.nome ||
+    contrato?.numero ||
+    "Contrato não identificado"
+  );
+};
+
+export const formatDriverName = (fullName?: string) => {
+  if (!fullName) return "";
+  const parts = fullName.trim().toLowerCase().split(/\s+/);
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  return `${first.charAt(0).toUpperCase() + first.slice(1)} ${last.charAt(0).toUpperCase() + last.slice(1)}`;
+};

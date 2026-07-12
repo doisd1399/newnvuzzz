@@ -47,7 +47,7 @@ const tabOptions = [
 
 const fleetOptions = [
   { id: "drivers", label: "Funcionários", icon: Users },
-  { id: "contracts", label: "Contratos", icon: FileText },
+  { id: "contracts", label: "Operações", icon: FileText },
   { id: "vehicles", label: "Veículos", icon: Truck },
   { id: "trailers", label: "Reboques", icon: Container },
 ];
@@ -439,7 +439,7 @@ export default function Fleet() {
         )}
 
         {/* Content Area */}
-        <div className="relative z-10">
+        <div className="relative">
           {activeTab === "operations" && <OperationsTab />}
           {activeTab === "company" && (
             <CompanyTab
@@ -456,6 +456,8 @@ export default function Fleet() {
             <TripHistory
               isInsideAdminTab={true}
               onTripDetailsOpen={setIsTripDetailsOpen}
+              mode="company"
+              companyId={activeCompanyId || undefined}
             />
           )}
 

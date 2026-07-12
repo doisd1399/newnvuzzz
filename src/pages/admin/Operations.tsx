@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { differenceInDays, format } from "date-fns";
 import { cn, getJobRealTimestamp } from "../../lib/utils";
+import { useTripHistory } from "../../hooks/useTripHistory";
 
 type StatusFilter = "all" | "ongoing" | "active" | "delayed" | "completed";
 
@@ -41,8 +42,8 @@ export default function Operations() {
     jobDemands,
     activeCompanyId,
     rejectJobDemand,
-    historicoTrips,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ongoing");
   const [search, setSearch] = useState("");
@@ -73,8 +74,7 @@ export default function Operations() {
     }
   }, [location.state, location.pathname, navigate]);
 
-  // Computed status for a job
-  const getJobStatusDetails = (job: any, contract: any) => {
+  const getJobStatusDetails = React.useCallback((job: any, contract: any) => {
     if (job.status === "completed") {
       let isLegacyCompleted = false;
       let wasOnTime = false;
@@ -153,31 +153,39 @@ export default function Operations() {
       bg: "bg-gray-50 dark:bg-[#1A1F26]",
       icon: Clock,
     };
-  };
+  }, []);
 
-  const activeJobsList = jobs
-    .map((job) => {
-      const contract = contracts.find((c) => c.id === job.contractId);
-      const driver = users.find((u) => u.id === job.driverId);
-      const vehicle = vehicles.find((v) => v.id === job.vehicleId);
-      const trailer = trailers.find((t) => t.id === job.trailerId);
-      const company = companies.find((c) => c.id === job.companyId);
+  const activeJobsList = React.useMemo(() => {
+    const contractsMap = new Map(contracts.map((c) => [c.id, c]));
+    const usersMap = new Map(users.map((u) => [u.id, u]));
+    const vehiclesMap = new Map(vehicles.map((v) => [v.id, v]));
+    const trailersMap = new Map(trailers.map((t) => [t.id, t]));
+    const companiesMap = new Map(companies.map((c) => [c.id, c]));
 
-      const statusDetails = getJobStatusDetails(job, contract);
-      const daysLeft = differenceInDays(new Date(job.deadlineDate), new Date());
+    return jobs
+      .map((job) => {
+        const contract = contractsMap.get(job.contractId);
+        const driver = usersMap.get(job.driverId);
+        const vehicle = vehiclesMap.get(job.vehicleId);
+        const trailer = trailersMap.get(job.trailerId);
+        const company = companiesMap.get(job.companyId);
 
-      return {
-        ...job,
-        contract,
-        driver,
-        vehicle,
-        trailer,
-        company,
-        statusDetails,
-        daysLeft,
-      };
-    })
-    .filter((j) => j.contract && j.driver);
+        const statusDetails = getJobStatusDetails(job, contract);
+        const daysLeft = differenceInDays(new Date(job.deadlineDate), new Date());
+
+        return {
+          ...job,
+          contract,
+          driver,
+          vehicle,
+          trailer,
+          company,
+          statusDetails,
+          daysLeft,
+        };
+      })
+      .filter((j) => j.contract && j.driver);
+  }, [jobs, contracts, users, vehicles, trailers, companies, getJobStatusDetails]);
 
   // Filtragem
   const filteredJobs = activeJobsList.filter((job) => {

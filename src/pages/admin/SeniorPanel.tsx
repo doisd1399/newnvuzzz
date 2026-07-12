@@ -42,12 +42,16 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { toast } from "sonner";
+import { syncSingleSimulatorMember, removeSimulatorMember } from "../../lib/syncSimulatorMembers";
 import { cn } from "../../lib/utils";
 
 export default function SeniorPanel() {
+  const { isSeniorAuthenticated, setIsSeniorAuthenticated, setActiveCompanyId, switchRole, setSeniorCompanyId } = useAppStore();
   const [password, setPassword] = useState("");
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loadingAction, setLoadingAction] = useState(false);
+  const [unlocked, setUnlocked] = useState(
+    sessionStorage.getItem("seniorPanelUnlocked") === "true"
+  );
 
   // Global Data States
   const [registrations, setRegistrations] = useState<any[]>([]);
@@ -76,7 +80,7 @@ export default function SeniorPanel() {
   const [confirmDeleteRegId, setConfirmDeleteRegId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (unlocked) {
       const unsubs: any[] = [];
 
       const qRegs = query(
@@ -132,7 +136,7 @@ export default function SeniorPanel() {
 
       return () => unsubs.forEach((unsub) => unsub());
     }
-  }, [isAuthenticated]);
+  }, [unlocked]);
 
   const companyStats = useMemo(() => {
     return allCompanies.map((c) => {
@@ -168,7 +172,9 @@ export default function SeniorPanel() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (password === "9173") {
-      setIsAuthenticated(true);
+      setIsSeniorAuthenticated(true);
+      setUnlocked(true);
+      sessionStorage.setItem("seniorPanelUnlocked", "true");
     } else {
       toast.error("Senha incorreta.");
     }
@@ -340,6 +346,17 @@ export default function SeniorPanel() {
       }
 
       await batch.commit();
+
+      if (finalUserId) {
+        await syncSingleSimulatorMember(
+          finalUserId, 
+          newCompanyRef.id, 
+          "active", 
+          ["admin", "driver"], 
+          reg.simulatorName
+        );
+      }
+
       toast.success("Empresa aprovada com sucesso!");
       setShowApproveConfirm(null);
       setSelectedRegistrationId(null);
@@ -401,6 +418,7 @@ export default function SeniorPanel() {
       const membersToUpdate = allMembers.filter((m) => m.companyId === id);
       membersToUpdate.forEach((m) => {
         batch.delete(doc(db, "companyMembers", m.id));
+        removeSimulatorMember(m.userId, id);
       });
 
       const usersToUpdate = allUsers.filter((u) => u.companyId === id);
@@ -444,11 +462,15 @@ export default function SeniorPanel() {
   };
 
   const viewCompanyProfile = (companyId: string) => {
-    setSelectedCompanyId(companyId);
-    setActiveTab("profile");
+    sessionStorage.setItem("seniorAccess", "true");
+    sessionStorage.setItem("seniorCompanyId", companyId);
+    setSeniorCompanyId(companyId);
+    setActiveCompanyId(companyId);
+    switchRole("admin", companyId);
+    window.location.href = "/admin/fleet";
   };
 
-  if (!isAuthenticated) {
+  if (!unlocked) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[70vh] p-4">
         <Card className="w-full max-w-sm rounded-[24px] overflow-hidden border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] shadow-xl dark:shadow-none">

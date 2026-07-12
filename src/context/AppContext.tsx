@@ -8,6 +8,7 @@ import React, {
 import { toast } from "sonner";
 import { auth, db } from "../lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
+import { syncSingleSimulatorMember, removeSimulatorMember } from "../lib/syncSimulatorMembers";
 import {
   doc,
   getDoc,
@@ -134,6 +135,15 @@ export interface CompanyProfile {
   recruitmentSettings?: RecruitmentSettings;
 }
 
+export interface Sequence {
+  id: string;
+  companyId: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  deleted?: boolean;
+}
+
 export interface Contract {
   id: string;
   userId?: string;
@@ -147,6 +157,9 @@ export interface Contract {
   mode: "simple" | "detailed";
   deliveries?: ContractDelivery[]; // Only for detailed mode
   status: "active" | "completed";
+  sequenceId?: string;
+  sequenceOrder?: number;
+  deleted?: boolean;
 }
 
 export interface Job {
@@ -160,6 +173,7 @@ export interface Job {
   trailerId?: string;
   status: "pending" | "active" | "completed" | "cancelled" | "awaiting_completion";
   progress: number; // Num of completed deliveries
+  contractNameSnapshot?: string;
   completedRoutes?: { origin: string; destination: string }[]; // For simple mode deliveries
   deadlineDate: string; // ISO String (legacy fallback)
   createdAt?: string;
@@ -355,6 +369,10 @@ const MOCK_JOBS: Job[] = [
 
 // --- Context Setup ---
 interface AppContextType {
+  isSeniorAuthenticated: boolean;
+  setIsSeniorAuthenticated: (val: boolean) => void;
+  seniorCompanyId: string | null;
+  setSeniorCompanyId: (val: string | null) => void;
   currentUser: User | null;
   setCurrentUser: (user: User | null) => void;
   activeRole: Role | null;
@@ -372,8 +390,8 @@ interface AppContextType {
   vehicles: Vehicle[];
   trailers: Trailer[];
   contracts: Contract[];
+  sequences: Sequence[];
   jobs: Job[];
-  historicoTrips: any[];
   jobDemands: JobDemand[];
   companies: CompanyProfile[];
   allCompanies: CompanyProfile[];
@@ -413,6 +431,9 @@ interface AppContextType {
     updates: Partial<Omit<Contract, "id">>,
   ) => Promise<void>;
   deleteContract: (id: string) => void;
+  createSequence: (sequence: Omit<Sequence, "id" | "createdAt">) => Promise<void>;
+  updateSequence: (id: string, updates: Partial<Omit<Sequence, "id">>) => Promise<void>;
+  deleteSequence: (id: string) => Promise<void>;
   assignJob: (
     contractId: string,
     driverId: string,
@@ -459,8 +480,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [membershipsLoaded, setMembershipsLoaded] = useState(false);
   const [memberships, setMemberships] = useState<CompanyMember[]>([]);
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(() => {
+    const seniorAccess = sessionStorage.getItem("seniorAccess") === "true";
+    const seniorCompanyId = sessionStorage.getItem("seniorCompanyId");
+    if (seniorAccess && seniorCompanyId) {
+      return seniorCompanyId;
+    }
     return localStorage.getItem("activeCompanyId");
   });
+  const [isSeniorAuthenticated, setIsSeniorAuthenticated] = useState<boolean>(() => sessionStorage.getItem("isSeniorAuthenticated") === "true");
+  const [seniorCompanyId, setSeniorCompanyId] = useState<string | null>(() => sessionStorage.getItem("seniorCompanyId"));
   const [activeRole, setActiveRole] = useState<Role | null>(() => {
     return localStorage.getItem("activeRole") as Role | null;
   });
@@ -554,8 +582,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [trailers, setTrailers] = useState<Trailer[]>([]);
   const [contracts, setContracts] = useState<Contract[]>([]);
+  const [sequences, setSequences] = useState<Sequence[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [historicoTrips, setHistoricoTrips] = useState<any[]>([]);
   const [jobDemands, setJobDemands] = useState<JobDemand[]>([]);
   const [companies, setCompanies] = useState<CompanyProfile[]>([]);
   const [driverRequests, setDriverRequests] = useState<DriverRequest[]>([]);
@@ -567,6 +595,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [recruitmentApplications, setRecruitmentApplications] = useState<
     RecruitmentApplication[]
   >([]);
+
+  useEffect(() => {
+    if (isSeniorAuthenticated) {
+      sessionStorage.setItem("isSeniorAuthenticated", "true");
+    } else {
+      sessionStorage.removeItem("isSeniorAuthenticated");
+    }
+    if (seniorCompanyId) {
+      sessionStorage.setItem("seniorCompanyId", seniorCompanyId);
+    } else {
+      sessionStorage.removeItem("seniorCompanyId");
+    }
+  }, [isSeniorAuthenticated, seniorCompanyId]);
 
   useEffect(() => {
     if (activeCompanyId) {
@@ -674,6 +715,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             .commit()
             .then(() => {
               // Snapshot listener should pick up the newly created docs shortly.
+              if (currentUser.memberships) {
+                Object.entries(currentUser.memberships).forEach(([compId, membershipData]) => {
+                  const rolesList = membershipData.roles || [membershipData.role] || [];
+                  syncSingleSimulatorMember(currentUser.id, compId, membershipData.status || "active", rolesList);
+                });
+              }
+              if (currentUser.companyId && (!currentUser.memberships || !currentUser.memberships[currentUser.companyId])) {
+                const rolesList = currentUser.roles || (currentUser.role ? [currentUser.role] : ["admin", "driver"]);
+                syncSingleSimulatorMember(currentUser.id, currentUser.companyId, "active", rolesList);
+              }
             })
             .catch((e) => {
               console.error("Auto-migration failed:", e.message);
@@ -746,8 +797,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     const validCompanyIds = memberships.map((m) => m.companyId);
 
     // Check if current activeCompanyId is still valid and corresponds to an actual membership
-    const isStale =
-      !activeCompanyId || !validCompanyIds.includes(activeCompanyId);
+    const isStale = !activeCompanyId || (!validCompanyIds.includes(activeCompanyId) && !(isSeniorAuthenticated && seniorCompanyId === activeCompanyId));
 
     if (isStale) {
       // Find default membership: prefer admin if user role defaults to admin, otherwise first
@@ -767,6 +817,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       if (currentMember) {
         if (!activeRole || !currentMember.roles.includes(activeRole)) {
           setActiveRole(currentMember.roles[0] as Role);
+        }
+      } else if (isSeniorAuthenticated && seniorCompanyId === activeCompanyId) {
+        if (activeRole !== "admin") {
+          setActiveRole("admin");
         }
       }
     }
@@ -790,6 +844,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const isActiveUser = useMemo(() => {
     if (!currentUser) return false;
+    const seniorAccess = sessionStorage.getItem("seniorAccess") === "true";
+    const seniorId = sessionStorage.getItem("seniorCompanyId");
+    if (seniorAccess && seniorId === activeCompanyId) return true;
+    if (isSeniorAuthenticated && seniorCompanyId === activeCompanyId) return true;
     const currentMembership = memberships.find(
       (m) => m.companyId === activeCompanyId,
     );
@@ -797,9 +855,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       currentMembership?.status === "active" ||
       currentMembership?.roles?.includes("admin") === true
     );
-  }, [currentUser, memberships, activeCompanyId]);
+  }, [currentUser, memberships, activeCompanyId, isSeniorAuthenticated, seniorCompanyId]);
 
-  const targetCompanyId = activeCompanyId || currentUserCompanyId;
+  const targetCompanyId = useMemo(() => {
+    const seniorAccess = sessionStorage.getItem("seniorAccess") === "true";
+    const seniorId = sessionStorage.getItem("seniorCompanyId");
+    if (seniorAccess && seniorId) {
+      return seniorId;
+    }
+    return activeCompanyId || currentUserCompanyId;
+  }, [activeCompanyId, currentUserCompanyId]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -819,11 +884,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     let unsubVehicles: () => void = () => {};
     let unsubTrailers: () => void = () => {};
     let unsubContracts: () => void = () => {};
+    let unsubSequences: () => void;
     let unsubJobs: () => void = () => {};
     let unsubDemands: () => void = () => {};
     let unsubUsers: () => void = () => {};
     let unsubAllCompanyMembers: () => void = () => {};
-    let unsubTrips: (() => void) | undefined;
+    
 
     const handleSnapError = (prefix: string) => (error: any) => {
       if (error.code !== "permission-denied") {
@@ -833,10 +899,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
     if (isActive) {
       // For dependent resources (vehicles, trailers, contracts, jobs), Admins and Drivers fetch by companyId.
-      const vehicleQuery = targetCompanyId
+      const vehicleQuery = activeCompanyId
         ? query(
             collection(db, "veiculos"),
-            where("companyId", "==", targetCompanyId),
+            where("companyId", "==", activeCompanyId),
           )
         : null;
 
@@ -853,10 +919,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           handleSnapError("Error fetching veiculos snap"),
         );
 
-      const trailerQuery = targetCompanyId
+      const trailerQuery = activeCompanyId
         ? query(
             collection(db, "reboques"),
-            where("companyId", "==", targetCompanyId),
+            where("companyId", "==", activeCompanyId),
           )
         : null;
 
@@ -873,65 +939,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           handleSnapError("Error fetching reboques snap"),
         );
 
-      const contractQuery = targetCompanyId
+      const contractQuery = activeCompanyId
         ? query(
             collection(db, "contratos"),
-            where("companyId", "==", targetCompanyId),
+            where("companyId", "==", activeCompanyId),
           )
         : null;
+
+      const sequenceQuery = activeCompanyId
+        ? query(
+            collection(db, "sequencias"),
+            where("companyId", "==", activeCompanyId)
+          )
+        : null;
+
+      if (sequenceQuery)
+        unsubSequences = onSnapshot(
+          sequenceQuery,
+          (snap) => {
+            setSequences(
+              snap.docs
+                .map((doc) => ({ ...doc.data(), id: doc.id }) as Sequence)
+                .filter((s) => !s.deleted)
+            );
+          },
+          handleSnapError("Error fetching sequencias snap")
+        );
 
       if (contractQuery)
         unsubContracts = onSnapshot(
           contractQuery,
           (snap) => {
             setContracts(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as Contract,
-              ),
+              snap.docs
+                .map((doc) => ({ ...doc.data(), id: doc.id }) as Contract)
+                .filter((c) => !c.deleted)
             );
           },
           handleSnapError("Error fetching contratos snap"),
         );
 
-      // For jobs, we can query by companyId when acting as admin, or motoristaId when acting as driver
-      const jobQuery =
-        activeRole === "admin" && targetCompanyId
+      // For jobs, query by companyId and driverId directly in Firestore to avoid overfetching
+      const jobQuery = activeCompanyId
+        ? activeRole === "admin"
           ? query(
               collection(db, "trabalhos"),
-              where("companyId", "==", targetCompanyId),
+              where("companyId", "==", activeCompanyId),
             )
-          : query(collection(db, "trabalhos"), where("driverId", "==", uid));
-
-      unsubJobs = onSnapshot(
-        jobQuery,
-        (snap) => {
-          let loadedJobs = snap.docs.map(
-            (doc) => ({ ...doc.data(), id: doc.id }) as Job,
-          );
-          if (targetCompanyId) {
-            loadedJobs = loadedJobs.filter(
-              (j) => j.companyId === targetCompanyId,
-            );
-          }
-          setJobs(loadedJobs);
-        },
-        handleSnapError("Error fetching trabalhos snap"),
-      );
-
-      const tripsQuery = targetCompanyId
-        ? query(
-            collection(db, "historico_viagens"),
-            where("empresaId", "==", targetCompanyId),
-          )
+          : query(
+              collection(db, "trabalhos"),
+              where("companyId", "==", activeCompanyId),
+              where("driverId", "==", uid),
+            )
         : null;
 
-      if (tripsQuery) {
-        unsubTrips = onSnapshot(
-          tripsQuery,
+      if (jobQuery) {
+        unsubJobs = onSnapshot(
+          jobQuery,
           (snap) => {
-            setHistoricoTrips(snap.docs.map(doc => ({ ...doc.data(), id: doc.id })));
+            setJobs(
+              snap.docs.map(
+                (doc) => ({ ...doc.data(), id: doc.id }) as Job,
+              ),
+            );
           },
-          handleSnapError("Error fetching historico_viagens snap"),
+          handleSnapError("Error fetching trabalhos snap"),
         );
       }
 
@@ -1130,7 +1202,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubTrailers();
       unsubContracts();
       unsubJobs();
-      if (unsubTrips) unsubTrips();
+      
       unsubUsers();
       unsubAllCompanyMembers();
       unsubDriverRequests();
@@ -1138,7 +1210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubDemands();
       unsubRecruitmentApps();
     };
-  }, [currentUserId, targetCompanyId, activeRole, isActiveUser]);
+  }, [currentUserId, targetCompanyId, activeCompanyId, activeRole, isActiveUser]);
 
   useEffect(() => {
     if (!activeCompanyId || allCompanyMembers.length === 0) return;
@@ -1342,11 +1414,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             permissions: [],
             joinedAt: new Date().toISOString(),
           });
+          syncSingleSimulatorMember(userId, app.companyId, "active", ["driver"]);
         } else {
           await updateDoc(doc(db, "companyMembers", mqs.docs[0].id), {
             status: "active",
             roles: arrayUnion("driver"),
           });
+          const currentRoles = mqs.docs[0].data().roles || [];
+          if (!currentRoles.includes("driver")) currentRoles.push("driver");
+          syncSingleSimulatorMember(userId, app.companyId, "active", currentRoles);
         }
       } else {
         // create new user profile using Auth UID if available
@@ -1373,6 +1449,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           permissions: [],
           joinedAt: new Date().toISOString(),
         });
+        syncSingleSimulatorMember(userId, app.companyId, "active", ["driver"]);
       }
 
       await updateDoc(doc(db, "recruitment_applications", applicationId), {
@@ -1457,6 +1534,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         permissions: ["admin", "owner", "manage_fleet", "all"],
         joinedAt: new Date().toISOString(),
       });
+      syncSingleSimulatorMember(uid, newDoc.id, "active", ["admin", "driver"]);
 
       setActiveCompanyId(newDoc.id);
       setActiveRole("admin");
@@ -1522,6 +1600,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       membersToQuery.forEach((docSnap) => {
         batch.delete(docSnap.ref);
+        const data = docSnap.data();
+        removeSimulatorMember(data.userId, id);
       });
 
       batch.delete(doc(db, "frotas", id));
@@ -1541,7 +1621,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const activeCompany = companies.find((c) => c.id === activeCompanyId);
       if (!activeCompany) return;
 
-      await addDoc(collection(db, "contratos"), {
+      
+      const rawPayload = {
         ...data,
         simulator: activeCompany.simulatorName, // Auto-populate simulator
         companyName: activeCompany.companyName, // Auto-populate company name
@@ -1549,7 +1630,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         companyId: activeCompanyId,
         status: "active",
         createdAt: new Date().toISOString(),
+      };
+      
+      const cleanPayload = { ...rawPayload };
+      Object.keys(cleanPayload).forEach(key => {
+        if (cleanPayload[key] === undefined) {
+          cleanPayload[key] = null;
+        }
       });
+
+      await addDoc(collection(db, "contratos"), cleanPayload);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const createSequence = async (sequence: Omit<Sequence, "id" | "createdAt">) => {
+    try {
+      getCurrentUserId();
+      await addDoc(collection(db, "sequencias"), {
+        ...sequence,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const updateSequence = async (id: string, updates: Partial<Omit<Sequence, "id">>) => {
+    try {
+      getCurrentUserId();
+      const cleanUpdates: any = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value === undefined) cleanUpdates[key] = deleteField();
+        else cleanUpdates[key] = value;
+      }
+      await updateDoc(doc(db, "sequencias", id), cleanUpdates);
+    } catch (e) {
+      handleFirebaseError(e);
+    }
+  };
+
+  const deleteSequence = async (id: string) => {
+    try {
+      getCurrentUserId();
+      await updateDoc(doc(db, "sequencias", id), { deleted: true });
+      
+      // Remova as operações associadas
+      const batch = writeBatch(db);
+      const relatedContracts = contracts.filter(c => c.sequenceId === id);
+      relatedContracts.forEach(c => {
+        batch.update(doc(db, "contratos", c.id), { sequenceId: deleteField(), sequenceOrder: deleteField() });
+      });
+      await batch.commit();
     } catch (e) {
       handleFirebaseError(e);
     }
@@ -1578,7 +1711,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const deleteContract = async (id: string) => {
     try {
       getCurrentUserId();
-      await deleteDoc(doc(db, "contratos", id));
+      // Use soft delete instead of complete removal to preserve history
+      await updateDoc(doc(db, "contratos", id), { 
+        deleted: true,
+        deletedAt: new Date().toISOString()
+      });
     } catch (e) {
       handleFirebaseError(e);
     }
@@ -1709,11 +1846,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
+      const contract = contracts.find(c => c.id === job?.contractId);
+      const contractNameSnapshot = contract?.name || (contract as any)?.nome || job?.contractNameSnapshot || "Contrato não identificado";
+
       await updateDoc(doc(db, "trabalhos", jobId), { 
         status: "completed",
         completedAt: now.toISOString(),
         completionStatus,
-        completionTimeOffset
+        completionTimeOffset,
+        contractNameSnapshot
       });
       if (job) {
         if (job.vehicleId) {
@@ -1990,11 +2131,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           permissions: [],
           joinedAt: new Date().toISOString(),
         });
+        syncSingleSimulatorMember(req.motoristaId, req.empresaId, "active", ["driver"]);
       } else {
         await updateDoc(doc(db, "companyMembers", qs.docs[0].id), {
           status: "active",
           roles: arrayUnion("driver"),
         });
+        const existingRoles = qs.docs[0].data().roles || [];
+        if (!existingRoles.includes("driver")) existingRoles.push("driver");
+        syncSingleSimulatorMember(req.motoristaId, req.empresaId, "active", existingRoles);
       }
 
       // Notify user
@@ -2059,7 +2204,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       const memberRoles = membership?.roles || ["driver"];
 
-      if (membership && memberRoles.includes(role)) {
+      const hasSeniorAccess = isSeniorAuthenticated && (seniorCompanyId === targetCompanyId || newCompanyId === targetCompanyId);
+
+      if ((membership && memberRoles.includes(role)) || hasSeniorAccess) {
         setActiveRole(role);
         setActiveCompanyId(targetCompanyId);
 
@@ -2073,7 +2220,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             ...currentUser,
             role,
             companyId: targetCompanyId,
-            roles: memberRoles,
+            roles: hasSeniorAccess ? ["admin"] : memberRoles,
           });
         } catch (e) {
           console.error("Failed to persist role/company switch:", e);
@@ -2123,6 +2270,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         await updateDoc(doc(db, "companyMembers", memberDoc.id), {
           roles: [...memberData.roles, "admin"],
         });
+        syncSingleSimulatorMember(driverId, activeCompanyId, memberData.status || "active", [...memberData.roles, "admin"]);
       }
 
       // Update legacy user doc
@@ -2180,6 +2328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       await updateDoc(doc(db, "companyMembers", memberDoc.id), {
         roles: newRoles,
       });
+      syncSingleSimulatorMember(driverId, activeCompanyId, memberData.status || "active", newRoles);
 
       const driverRef = doc(db, "users", driverId);
       const driverDoc = await getDoc(driverRef);
@@ -2243,6 +2392,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const qs = await getDocs(memberQuery);
       if (!qs.empty) {
         await deleteDoc(doc(db, "companyMembers", qs.docs[0].id));
+        removeSimulatorMember(driverId, activeCompanyId);
       }
 
       const driverRef = doc(db, "users", driverId);
@@ -2320,6 +2470,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         permissions: [],
         joinedAt: new Date().toISOString(),
       });
+      syncSingleSimulatorMember(newUserId, activeCompanyId, "active", ["driver"]);
     } catch (e) {
       console.error("Erro ao criar motorista manual:", e);
       handleFirebaseError(e);
@@ -2529,20 +2680,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const batch = writeBatch(db);
       let updates = 0;
 
-      for (const driver of companyUsers) {
-        const allDriverJobs = companyJobs.filter(
-          (j) => j.driverId === driver.id && j.status === "completed",
-        );
-        const activeJob = companyJobs.find(
-          (j) =>
-            j.driverId === driver.id &&
-            ["pending", "active", "delayed"].includes(j.status),
-        );
+      // Pass 1: Build O(1) lookup structures
+      const completedJobsProgressByDriver = new Map<string, { count: number, totalProgress: number }>();
+      const activeJobProgressByDriver = new Map<string, number>();
+      const activeVehicleIds = new Set<string>();
+      const activeTrailerIds = new Set<string>();
 
-        const totalDeliveries =
-          allDriverJobs.reduce((acc, job) => acc + job.progress, 0) +
-          (activeJob ? activeJob.progress : 0);
-        const xp = totalDeliveries * 150 + allDriverJobs.length * 50;
+      for (const job of companyJobs) {
+        if (job.status === "completed") {
+          const current = completedJobsProgressByDriver.get(job.driverId) || { count: 0, totalProgress: 0 };
+          current.count += 1;
+          current.totalProgress += job.progress || 0;
+          completedJobsProgressByDriver.set(job.driverId, current);
+        } else if (["pending", "active", "delayed"].includes(job.status)) {
+          if (!activeJobProgressByDriver.has(job.driverId)) {
+            activeJobProgressByDriver.set(job.driverId, job.progress || 0);
+          }
+        }
+        
+        if (["pending", "active"].includes(job.status)) {
+          if (job.vehicleId) activeVehicleIds.add(job.vehicleId);
+          if (job.trailerId) activeTrailerIds.add(job.trailerId);
+        }
+      }
+
+      for (const driver of companyUsers) {
+        const completedStats = completedJobsProgressByDriver.get(driver.id) || { count: 0, totalProgress: 0 };
+        const activeProgress = activeJobProgressByDriver.get(driver.id) || 0;
+
+        const totalDeliveries = completedStats.totalProgress + activeProgress;
+        const xp = totalDeliveries * 150 + completedStats.count * 50;
         const calculatedLevel = Math.floor(xp / 1000) + 1;
 
         let needsUpdate = false;
@@ -2559,10 +2726,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       for (const v of companyVehicles) {
         if (v.status === "in_use") {
-          const hasActiveJob = companyJobs.some(
-            (j) =>
-              j.vehicleId === v.id && ["pending", "active"].includes(j.status),
-          );
+          const hasActiveJob = activeVehicleIds.has(v.id);
           if (!hasActiveJob) {
             batch.update(doc(db, "veiculos", v.id), { status: "available" });
             updates++;
@@ -2575,10 +2739,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       for (const t of companyTrailers) {
         if (t.status === "in_use") {
-          const hasActiveJob = companyJobs.some(
-            (j) =>
-              j.trailerId === t.id && ["pending", "active"].includes(j.status),
-          );
+          const hasActiveJob = activeTrailerIds.has(t.id);
           if (!hasActiveJob) {
             batch.update(doc(db, "reboques", t.id), { status: "available" });
             updates++;
@@ -2634,6 +2795,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     return {
+      isSeniorAuthenticated,
+      setIsSeniorAuthenticated,
+      seniorCompanyId,
+      setSeniorCompanyId,
       currentUser,
       setCurrentUser,
       authInitialized,
@@ -2642,16 +2807,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       allCompanyMembers,
       activeRole,
       memberships,
-      vehicles: vehicles.filter((v) => v.companyId === activeCompanyId),
-      trailers: trailers.filter((t) => t.companyId === activeCompanyId),
-      contracts: contracts.filter((c) => c.companyId === activeCompanyId),
-      jobs: jobs.filter((j) => j.companyId === activeCompanyId),
-      historicoTrips: historicoTrips.filter(t => t.empresaId === activeCompanyId),
+      vehicles,
+      trailers,
+      contracts,
+        sequences,
+        createSequence,
+        updateSequence,
+        deleteSequence,
+      jobs,
       jobDemands: jobDemands.filter(
         (jd) =>
           jd.companyId === activeCompanyId || jd.driverId === currentUser?.id,
       ),
-      companies: companies.filter(c => memberships?.some(m => m.companyId === c.id)),
+      companies: isSeniorAuthenticated ? companies : companies.filter(c => memberships?.some(m => m.companyId === c.id)),
       allCompanies: companies,
       activeCompanyId,
       setActiveCompanyId,
@@ -2723,8 +2891,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     vehicles,
     trailers,
     contracts,
+        sequences,
+        createSequence,
+        updateSequence,
+        deleteSequence,
     jobs,
-    historicoTrips,
     jobDemands,
     companies,
     activeCompanyId,

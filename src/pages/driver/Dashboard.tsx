@@ -8,7 +8,6 @@ import {
   CardTitle,
 } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { cn } from "../../lib/utils";
 import {
   FileText,
   Calendar,
@@ -49,7 +48,8 @@ import { query, collection, where, onSnapshot } from "firebase/firestore";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import TripHistory from "./TripHistory";
 
-import { getJobRealTimestamp } from "../../lib/utils";
+import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
+import { useTripHistory } from "../../hooks/useTripHistory";
 import {
   OperationResultModal,
   OperationResultData,
@@ -79,8 +79,9 @@ function DashboardComponent({
     updateUserOnlineStatus,
     activeCompanyId,
     allCompanyMembers,
-    historicoTrips,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [now, setNow] = useState(new Date());
 
@@ -108,11 +109,12 @@ function DashboardComponent({
 
   // --- MOVED HOOKS TO TOP ---
   const myJob = useMemo(() => {
+    const contractsSet = new Set(contracts.map(c => c.id));
     const validJobs = jobs.filter(
       (j) =>
         j.driverId === currentUser?.id &&
         (j.status === "active" || j.status === "awaiting_completion") &&
-        contracts.some((c) => c.id === j.contractId),
+        contractsSet.has(j.contractId),
     );
 
     // Prioritize active, then sort by newest
@@ -126,11 +128,12 @@ function DashboardComponent({
   }, [jobs, currentUser?.id, contracts]);
 
   const pendingDriverJobs = useMemo(() => {
+    const contractsSet = new Set(contracts.map(c => c.id));
     const valid = jobs.filter(
       (j) =>
         j.driverId === currentUser?.id &&
         j.status === "pending" &&
-        contracts.some((c) => c.id === j.contractId),
+        contractsSet.has(j.contractId),
     );
     valid.sort((a, b) => {
       const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -145,6 +148,45 @@ function DashboardComponent({
     [myJob, contracts],
   );
 
+  const currentOperationTrips = useMemo(() => {
+    if (!myJob) return [];
+    return historicoTrips.filter((t: any) => {
+      if (t.jobId && t.jobId === myJob.id) return true;
+      if (t.contratoId !== myJob.contractId) return false;
+      if (t.motoristaId !== currentUser?.id) return false;
+      
+      const parseDateSafe = (d: any): Date | null => {
+        if (!d) return null;
+        if (d.toDate && typeof d.toDate === "function")
+          return d.toDate();
+        if (d.seconds) return new Date(d.seconds * 1000);
+        const date = new Date(d);
+        if (isNaN(date.getTime())) return null;
+        return date;
+      };
+
+      const rawTripDate = parseDateSafe(
+        t.createdAt || t.dataLancamento,
+      );
+      const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+      const assignedTime = myJob.assignedAt ? new Date(myJob.assignedAt).getTime() : 0;
+      const completedTime = myJob.completedAt ? new Date(myJob.completedAt).getTime() : Date.now() + 86400000;
+      return (
+        tripTime >= assignedTime && tripTime <= completedTime
+      );
+    });
+  }, [historicoTrips, myJob, currentUser?.id]);
+
+  const totalGanhosCurrentOperation = useMemo(() => {
+    return currentOperationTrips.reduce((acc: number, curr: any) => {
+      let v = Number(curr.valor);
+      if (isNaN(v) && typeof curr.valor === "string") {
+        v = parseFloat(curr.valor.replace(/\D/g, "")) / 100;
+      }
+      return acc + (isNaN(v) ? 0 : v);
+    }, 0);
+  }, [currentOperationTrips]);
+
   const vehicle = useMemo(
     () => (myJob ? vehicles.find((v) => v.id === myJob.vehicleId) : null),
     [myJob, vehicles],
@@ -157,18 +199,21 @@ function DashboardComponent({
   }, [myJob, contract, trailers]);
 
   const unassignedContracts = useMemo(
-    () =>
-      contracts.filter(
+    () => {
+      const assignedContractIds = new Set(jobs.map(j => j.contractId));
+      return contracts.filter(
         (c) =>
           c.companyId === activeCompanyId &&
-          !jobs.some((j) => j.contractId === c.id),
-      ),
+          !assignedContractIds.has(c.id),
+      );
+    },
     [contracts, jobs, activeCompanyId],
   );
 
   const completedJobs = useMemo(
-    () =>
-      jobs
+    () => {
+      const contractsMap = new Map(contracts.map(c => [c.id, c]));
+      return jobs
         .filter(
           (j) => j.driverId === currentUser?.id && j.status === "completed",
         )
@@ -176,10 +221,8 @@ function DashboardComponent({
           const dateA = getJobRealTimestamp(a, historicoTrips);
           const dateB = getJobRealTimestamp(b, historicoTrips);
 
-          const contractA =
-            contracts.find((c) => c.id === a.contractId)?.name || "";
-          const contractB =
-            contracts.find((c) => c.id === b.contractId)?.name || "";
+          const contractA = getNomeContratoHistorico(a, contractsMap.get(a.contractId));
+          const contractB = getNomeContratoHistorico(b, contractsMap.get(b.contractId));
 
           if (dateB !== dateA) {
             console.log(
@@ -192,7 +235,8 @@ function DashboardComponent({
             `[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | Fallback string comparison`,
           );
           return contractA.localeCompare(contractB);
-        }),
+        });
+    },
     [jobs, contracts, currentUser?.id, historicoTrips],
   );
   // -------------------------
@@ -713,8 +757,7 @@ function DashboardComponent({
                   Última Operação
                 </p>
                 <p className="font-bold text-[11px] text-gray-900 dark:text-[#fafafa] truncate leading-none">
-                  {contracts.find((c) => c.id === lastJob.contractId)?.name ||
-                    "Concluída"}
+                  {getNomeContratoHistorico(lastJob, contracts.find((c) => c.id === lastJob.contractId))}
                 </p>
               </div>
             </div>

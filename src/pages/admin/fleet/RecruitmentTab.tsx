@@ -59,6 +59,8 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [selectedHistoryApp, setSelectedHistoryApp] = useState<RecruitmentApplication | null>(null);
+  
+  const usersByEmail = React.useMemo(() => new Map(users.map(u => [u.email, u])), [users]);
 
   const handleSetSelectedHistoryApp = (app: RecruitmentApplication | null) => {
     setSelectedHistoryApp(app);
@@ -303,7 +305,7 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
             ) : (
               <div className="space-y-2">
                 {pendingApps.map((app) => {
-                  const userMatch = users.find((u) => u.email === app.email);
+                  const userMatch = usersByEmail.get(app.email);
                   const displayPhoto =
                     app.photoURL ||
                     userMatch?.photoURL ||
@@ -367,7 +369,7 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
             ) : (
               <div className="space-y-2">
                 {historyApps.map((app) => {
-                  const userMatch = users.find((u) => u.email === app.email);
+                  const userMatch = usersByEmail.get(app.email);
                   const displayPhoto =
                     app.photoURL ||
                     userMatch?.photoURL ||

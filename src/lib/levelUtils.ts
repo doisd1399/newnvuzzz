@@ -1,3 +1,4 @@
+import { getNomeContratoHistorico } from "./utils";
 import { getJobRealTimestamp } from "./utils";
 
 export function getDriverLevelData(driverId: string, jobs: any[], contracts: any[], historicoTrips: any[] = []) {
@@ -11,8 +12,8 @@ export function getDriverLevelData(driverId: string, jobs: any[], contracts: any
             return tsB - tsA;
         }
 
-        const contractA = contracts.find((c) => c.id === a.contractId)?.name || "";
-        const contractB = contracts.find((c) => c.id === b.contractId)?.name || "";
+        const contractA = getNomeContratoHistorico(a, contracts.find((c) => c.id === a.contractId));
+        const contractB = getNomeContratoHistorico(b, contracts.find((c) => c.id === b.contractId));
         return contractA.localeCompare(contractB);
     });
 

@@ -14,6 +14,8 @@ import {
   Award,
   Shield,
   Hexagon,
+  CalendarCheck,
+  DollarSign,
 } from "lucide-react";
 import {
   getWeeklyRange,
@@ -158,11 +160,33 @@ export const DriverPerformanceCard = ({
     if (activeCompanyId && t.empresaId && t.empresaId !== activeCompanyId) {
       return false;
     }
-    return t.motoristaId === driverId;
+    return t.motoristaId === driverId || t.driverId === driverId;
   });
 
-  const currentPeriodStatsMap: Record<string, { trips: number; val: number }> =
-    {};
+  const validMembers = useMemo(() => {
+    if (!allCompanyMembers) return [];
+    const map = new Map<string, any>();
+    allCompanyMembers.forEach(m => {
+      if (!m.userId) {
+        console.warn("Audit: Membro ignorado (sem userId)", m);
+        return;
+      }
+      if (m.status !== "active") return;
+      if (!m.roles?.includes("driver")) return;
+      if (activeCompanyId && m.companyId !== activeCompanyId) return;
+      map.set(m.userId, m);
+    });
+    return Array.from(map.values());
+  }, [allCompanyMembers, activeCompanyId]);
+
+  const currentPeriodStatsMap: Record<string, { trips: number; val: number }> = {};
+  
+  if (validMembers && validMembers.length > 0) {
+    validMembers.forEach(m => {
+      currentPeriodStatsMap[m.userId] = { trips: 0, val: 0 };
+    });
+  }
+
   normalizedHistorico.forEach((trip) => {
     if (trip.metricDate >= sDate && trip.metricDate <= eDate) {
       if (
@@ -172,14 +196,20 @@ export const DriverPerformanceCard = ({
       ) {
         return;
       }
-      const mId = trip.motoristaId;
+      const mId = trip.motoristaId || trip.driverId; // fallback
       if (!mId) return;
-      if (!currentPeriodStatsMap[mId])
-        currentPeriodStatsMap[mId] = { trips: 0, val: 0 };
-      currentPeriodStatsMap[mId].trips += 1;
-      currentPeriodStatsMap[mId].val += trip.normalizedValor;
+      // Only include valid active drivers for the total calculation
+      if (currentPeriodStatsMap.hasOwnProperty(mId)) {
+        currentPeriodStatsMap[mId].trips += 1;
+        currentPeriodStatsMap[mId].val += trip.normalizedValor;
+      }
     }
   });
+
+  if (driverId && !currentPeriodStatsMap[driverId]) {
+    // If current driver is somehow not in validMembers, add them to show their position
+    currentPeriodStatsMap[driverId] = { trips: 0, val: 0 };
+  }
 
   const currentPeriodStatsArray = Object.keys(currentPeriodStatsMap)
     .map((id) => ({
@@ -195,10 +225,7 @@ export const DriverPerformanceCard = ({
     (d) => d.id === driverId,
   );
   const currentPosition = currentDriverPos >= 0 ? currentDriverPos + 1 : "--";
-  const currentTotalDrivers =
-    allCompanyMembers && allCompanyMembers.length > 0
-      ? allCompanyMembers.length
-      : Math.max(currentPeriodStatsArray.length, 1);
+  const currentTotalDrivers = Math.max(currentPeriodStatsArray.length, 1);
   const currentDiffToNext =
     currentDriverPos > 0
       ? currentPeriodStatsArray[currentDriverPos - 1].val -
@@ -238,25 +265,57 @@ export const DriverPerformanceCard = ({
   const runDays = Math.max(1, differenceInDays(actualEndDate, sDate) + 1);
   const mediaDiaria = viagensRealizadas / runDays;
 
-  const scoreRaw = 15 > 0 ? (viagensRealizadas / 15) * 100 : 0;
+  // -- RELATIVE PERFORMANCE CALCULATION --
+  let currentTripsAllDrivers = normalizedHistorico.filter(t => t.metricDate >= sDate && t.metricDate <= eDate);
+  
+  if (activeCompanyId && validMembers) {
+     const memberIds = new Set(validMembers.map(m => m.userId));
+     currentTripsAllDrivers = currentTripsAllDrivers.filter(t => memberIds.has(t.motoristaId || t.driverId));
+  }
+
+  const driverStats: Record<string, { diasComViagem: Set<string>; viagens: number; ganhos: number }> = {};
+  
+  currentTripsAllDrivers.forEach(t => {
+      const dId = t.motoristaId || t.driverId;
+      if (!dId) return;
+      if (!driverStats[dId]) {
+          driverStats[dId] = { diasComViagem: new Set(), viagens: 0, ganhos: 0 };
+      }
+      driverStats[dId].diasComViagem.add(new Date(t.metricDate).toDateString());
+      driverStats[dId].viagens += 1;
+      driverStats[dId].ganhos += t.normalizedValor;
+  });
+
+  if (!driverStats[driverId]) {
+      driverStats[driverId] = { diasComViagem: new Set(), viagens: 0, ganhos: 0 };
+  }
+
+  let maxDias = Math.max(1, Math.ceil(runDays * 0.5));
+  let maxViagens = Math.max(1, runDays * 1);
+  let maxGanhos = Math.max(1, runDays * 100);
+
+  Object.values(driverStats).forEach(st => {
+      if (st.diasComViagem.size > maxDias) maxDias = st.diasComViagem.size;
+      if (st.viagens > maxViagens) maxViagens = st.viagens;
+      if (st.ganhos > maxGanhos) maxGanhos = st.ganhos;
+  });
+
+  const myStats = {
+      diasComViagem: new Set(currentTrips.map(t => new Date(t.metricDate).toDateString())),
+      viagens: currentTrips.length,
+      ganhos: currentTrips.reduce((acc, t) => acc + t.normalizedValor, 0)
+  };
+  const constanciaScore = Math.min(100, Math.round((myStats.diasComViagem.size / maxDias) * 100)) || 0;
+  const viagensScore = Math.min(100, Math.round((myStats.viagens / maxViagens) * 100)) || 0;
+  const ganhosScore = Math.min(100, Math.round((myStats.ganhos / maxGanhos) * 100)) || 0;
+
+  const scoreRaw = Math.round((constanciaScore + viagensScore + ganhosScore) / 3);
   const score = Math.round(scoreRaw);
+  const displayScore = Math.min(100, score);
+  // --------------------------------------
 
   const getStatus = (score: number) => {
-    if (score >= 120)
-      return {
-        label: "Extraordinário",
-        color: "text-teal-600 dark:text-teal-400",
-        bg: "bg-teal-500 dark:bg-teal-400",
-        index: 5,
-        desc: (
-          <>
-            Você está acima de 95%
-            <br />
-            dos motoristas neste período.
-          </>
-        ),
-      };
-    if (score >= 100)
+    if (score >= 90)
       return {
         label: "Excelente",
         color: "text-emerald-600 dark:text-emerald-400",
@@ -264,23 +323,21 @@ export const DriverPerformanceCard = ({
         index: 4,
         desc: (
           <>
-            Você está acima de 82%
-            <br />
-            dos motoristas neste período.
+            Ritmo de operação intenso e<br />
+            altamente competitivo.
           </>
         ),
       };
-    if (score >= 80)
+    if (score >= 70)
       return {
         label: "Bom",
-        color: "text-pink-600 dark:text-pink-400",
-        bg: "bg-pink-500 dark:bg-pink-400",
+        color: "text-teal-600 dark:text-teal-400",
+        bg: "bg-teal-500 dark:bg-teal-400",
         index: 3,
         desc: (
           <>
-            Você está acima de 60%
-            <br />
-            dos motoristas neste período.
+            Operação consistente com<br />
+            bom volume de viagens.
           </>
         ),
       };
@@ -292,42 +349,28 @@ export const DriverPerformanceCard = ({
         index: 2,
         desc: (
           <>
-            Seu ritmo está na média
-            <br />
-            dos motoristas da frota.
-          </>
-        ),
-      };
-    if (score >= 20)
-      return {
-        label: "Baixo",
-        color: "text-orange-600 dark:text-orange-400",
-        bg: "bg-orange-500 dark:bg-orange-400",
-        index: 1,
-        desc: (
-          <>
-            Seu volume de viagens
-            <br />
-            está abaixo da média.
+            Ritmo moderado, há espaço<br />
+            para acelerar.
           </>
         ),
       };
     return {
-      label: "Muito baixo",
-      color: "text-red-600 dark:text-red-400",
-      bg: "bg-red-500 dark:bg-red-400",
-      index: 0,
+      label: "Abaixo do Esperado",
+      color: "text-slate-500 dark:text-slate-400",
+      bg: "bg-slate-400 dark:bg-slate-600",
+      index: 1,
       desc: (
         <>
-          Você tem um ritmo operacional
-          <br />
-          crítico no momento.
+          Baixa atividade no<br />
+          período selecionado.
         </>
       ),
     };
   };
 
   const status = getStatus(score);
+  const bannerTextColor = status.color.split(" ").find(c => c.startsWith("dark:"))?.replace("dark:", "") || status.color;
+  const bannerBgColor = bannerTextColor.replace("text-", "bg-");
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("pt-BR", {
@@ -372,6 +415,12 @@ export const DriverPerformanceCard = ({
       }
 
       const driverStatsMap: Record<string, { trips: number; val: number }> = {};
+      
+      if (validMembers && validMembers.length > 0) {
+        validMembers.forEach(m => {
+          driverStatsMap[m.userId] = { trips: 0, val: 0 };
+        });
+      }
 
       normalizedHistorico.forEach((trip) => {
         if (trip.metricDate >= periodStart && trip.metricDate <= periodEnd) {
@@ -382,13 +431,18 @@ export const DriverPerformanceCard = ({
           ) {
             return;
           }
-          const mId = trip.motoristaId;
+          const mId = trip.motoristaId || trip.driverId;
           if (!mId) return;
-          if (!driverStatsMap[mId]) driverStatsMap[mId] = { trips: 0, val: 0 };
-          driverStatsMap[mId].trips += 1;
-          driverStatsMap[mId].val += trip.normalizedValor;
+          if (driverStatsMap.hasOwnProperty(mId)) {
+            driverStatsMap[mId].trips += 1;
+            driverStatsMap[mId].val += trip.normalizedValor;
+          }
         }
       });
+      
+      if (driverId && !driverStatsMap[driverId]) {
+        driverStatsMap[driverId] = { trips: 0, val: 0 };
+      }
 
       const driverStatsArray = Object.keys(driverStatsMap)
         .map((id) => ({
@@ -403,8 +457,8 @@ export const DriverPerformanceCard = ({
       const driverPos = driverStatsArray.findIndex((d) => d.id === driverId);
       const position = driverPos >= 0 ? driverPos + 1 : "--";
       const total =
-        allCompanyMembers && allCompanyMembers.length > 0
-          ? allCompanyMembers.length
+        validMembers && validMembers.length > 0
+          ? Math.max(validMembers.length, driverStatsArray.length)
           : Math.max(driverStatsArray.length, 1);
 
       const driverData =
@@ -426,7 +480,7 @@ export const DriverPerformanceCard = ({
     normalizedHistorico,
     driverId,
     activeCompanyId,
-    allCompanyMembers,
+    validMembers,
   ]);
 
   const scales = [
@@ -443,9 +497,9 @@ export const DriverPerformanceCard = ({
       {/* CARD 1: RITMO OPERACIONAL */}
       <div className="w-full rounded-[24px] flex flex-col relative shadow-[0_4px_24px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.2)] bg-white dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 p-4 sm:p-5">
         {/* Banner */}
-        <div className="relative w-full bg-gradient-to-br from-[#061922] via-[#0A2E38] to-[#041419] rounded-[20px] text-white mb-4 shadow-sm">
+        <div className="relative w-full bg-[#031c22] rounded-[16px] sm:rounded-[20px] text-white mb-4 shadow-sm overflow-hidden">
           {/* Backgrounds container with overflow-hidden */}
-          <div className="absolute inset-0 rounded-[20px] overflow-hidden pointer-events-none">
+          <div className="absolute inset-0 rounded-[16px] sm:rounded-[20px] overflow-hidden pointer-events-none">
             {/* Glows and particles */}
             <div className="absolute top-[-30%] left-[-10%] w-[80%] h-[150%] bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-teal-400/10 via-transparent to-transparent pointer-events-none" />
             <div className="absolute bottom-[-50%] right-[-10%] w-[80%] h-[120%] bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-emerald-500/10 via-transparent to-transparent pointer-events-none" />
@@ -482,17 +536,17 @@ export const DriverPerformanceCard = ({
           </div>
 
           {/* Banner Content */}
-          <div className="flex flex-col w-full p-4 sm:p-5 md:p-6 relative z-10">
+          <div className="flex flex-col w-full p-3 sm:p-5 md:p-6 relative z-10 gap-3 sm:gap-6">
             {/* Header: Title and Period Select */}
-            <div className="flex flex-row justify-between items-center w-full mb-3 sm:mb-4 gap-2">
-              <h3 className="text-[10px] sm:text-[13px] font-bold text-white uppercase tracking-wider shrink-0">
+            <div className="flex flex-row justify-between items-center w-full gap-2">
+              <h3 className="text-[10px] sm:text-[14px] font-bold text-white uppercase tracking-wider shrink-0">
                 1. RITMO OPERACIONAL
               </h3>
 
               <div className="relative" ref={periodSelectorRef}>
                 <div
                   onClick={() => setIsPeriodSelectorOpen(!isPeriodSelectorOpen)}
-                  className="flex items-center gap-1 sm:gap-1.5 bg-white/10 hover:bg-white/15 transition-colors border border-white/10 rounded-full px-2 py-1 sm:px-3 sm:py-1.5 cursor-pointer backdrop-blur-md shrink-0"
+                  className="flex items-center gap-1 sm:gap-2 bg-white/5 hover:bg-white/10 transition-colors border border-white/10 rounded-full px-2 py-1 sm:px-4 sm:py-2 cursor-pointer backdrop-blur-md shrink-0"
                 >
                   <svg
                     width="12"
@@ -505,19 +559,12 @@ export const DriverPerformanceCard = ({
                     strokeLinejoin="round"
                     className="text-white/80 sm:w-[14px] sm:h-[14px]"
                   >
-                    <rect
-                      x="3"
-                      y="4"
-                      width="18"
-                      height="18"
-                      rx="2"
-                      ry="2"
-                    ></rect>
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
                     <line x1="16" y1="2" x2="16" y2="6"></line>
                     <line x1="8" y1="2" x2="8" y2="6"></line>
                     <line x1="3" y1="10" x2="21" y2="10"></line>
                   </svg>
-                  <span className="text-[9px] sm:text-[11px] font-medium text-white/90">
+                  <span className="text-[9px] sm:text-[13px] font-medium text-white/90">
                     Período: {getPeriodLabel()}
                   </span>
                   <svg
@@ -530,7 +577,7 @@ export const DriverPerformanceCard = ({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     className={cn(
-                      "text-white/60 ml-0.5 sm:ml-1 sm:w-[14px] sm:h-[14px] transition-transform",
+                      "text-white/60 ml-0.5 sm:ml-1 transition-transform sm:w-[14px] sm:h-[14px]",
                       isPeriodSelectorOpen && "rotate-180",
                     )}
                   >
@@ -539,7 +586,7 @@ export const DriverPerformanceCard = ({
                 </div>
 
                 {isPeriodSelectorOpen && (
-                  <div className="absolute right-0 top-full mt-2 w-64 sm:w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div className="absolute right-0 top-full mt-2 w-48 sm:w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden">
                     <div className="p-1">
                       {[
                         "Semana atual",
@@ -551,7 +598,7 @@ export const DriverPerformanceCard = ({
                           key={period}
                           onClick={() => handlePeriodSelect(period as any)}
                           className={cn(
-                            "w-full text-left px-3 py-2 text-sm font-medium rounded-lg transition-colors",
+                            "w-full text-left px-3 py-2 text-xs sm:text-sm font-medium rounded-lg transition-colors",
                             selectedPeriod === period
                               ? "bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400"
                               : "text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800",
@@ -566,205 +613,98 @@ export const DriverPerformanceCard = ({
               </div>
             </div>
 
-            {/* Main Area: Status and Level */}
-            <div className="flex flex-row w-full items-center justify-between">
-              {/* Left Area - Status */}
-              <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0 pr-1 sm:pr-2">
-                <div className="relative w-[52px] h-[52px] sm:w-[72px] sm:h-[72px] shrink-0 flex items-center justify-center">
-                  <svg
-                    className="w-full h-full -rotate-90 drop-shadow-[0_0_12px_rgba(20,184,166,0.4)]"
-                    viewBox="0 0 36 36"
-                  >
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      className="stroke-white/10"
-                      strokeWidth="1.5"
-                    />
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="16"
-                      fill="none"
-                      className={cn(
-                        "transition-all duration-1000",
-                        status.color.replace(/text-/g, "stroke-"),
-                      )}
-                      strokeWidth="2"
-                      strokeDasharray={`${Math.min(100, Math.max(5, score))} 100`}
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                  <TrendingUp
-                    size={16}
-                    className={cn(
-                      "absolute sm:w-[20px] sm:h-[20px]",
-                      status.color,
-                    )}
-                    strokeWidth={2.5}
-                  />
+            {/* Middle Row: Status and Índice Final */}
+            <div className="flex flex-row items-center justify-between">
+              {/* Left: Circle + Status */}
+              <div className="flex items-center gap-2 sm:gap-4 flex-1">
+                <div className="relative w-[32px] h-[32px] sm:w-[64px] sm:h-[64px] rounded-full border border-teal-500/30 flex items-center justify-center shrink-0">
+                  <ArrowUpRight size={16} className={cn("sm:w-[28px] sm:h-[28px]", bannerTextColor)} strokeWidth={2.5} />
                 </div>
-                <div className="flex flex-col min-w-0">
-                  <span
-                    className={cn(
-                      "text-[15px] sm:text-[22px] font-bold tracking-tight leading-none mb-0.5 sm:mb-1 truncate",
-                      status.color,
-                    )}
-                  >
+                <div className="flex flex-col">
+                  <span className={cn("text-[14px] sm:text-[26px] font-bold tracking-tight leading-none mb-0.5 sm:mb-1.5", bannerTextColor)}>
                     {status.label}
                   </span>
-                  <span className="text-[9px] sm:text-[11px] text-white/80 font-medium leading-[1.2] sm:leading-[1.3]">
+                  <span className="text-[8px] sm:text-[14px] text-white/80 font-medium leading-[1.2] sm:leading-[1.3] max-w-[140px] sm:max-w-[280px]">
                     {status.desc}
                   </span>
                 </div>
               </div>
 
               {/* Separator */}
-              <div className="w-[1px] h-12 sm:h-14 bg-white/20 mx-1.5 sm:mx-4 shrink-0" />
+              <div className="w-px h-8 sm:h-12 bg-white/10 mx-2 sm:mx-4 shrink-0"></div>
 
-              {/* Right Area - Level */}
-              <div className="flex items-center gap-1.5 sm:gap-3 shrink-0 pl-1">
-                {/* Premium 3D Shield */}
-                <div className="relative w-[48px] h-[48px] sm:w-[72px] sm:h-[72px] shrink-0 flex items-center justify-center">
-                  <svg
-                    viewBox="0 0 100 100"
-                    className="w-full h-full drop-shadow-[0_4px_16px_rgba(20,184,166,0.4)]"
-                  >
-                    <defs>
-                      <linearGradient
-                        id="chrome1"
-                        x1="0%"
-                        y1="0%"
-                        x2="100%"
-                        y2="100%"
-                      >
-                        <stop
-                          offset="0%"
-                          stopColor="#ffffff"
-                          stopOpacity="0.9"
-                        />
-                        <stop
-                          offset="30%"
-                          stopColor="#94a3b8"
-                          stopOpacity="0.5"
-                        />
-                        <stop
-                          offset="50%"
-                          stopColor="#14B8A6"
-                          stopOpacity="0.4"
-                        />
-                        <stop
-                          offset="80%"
-                          stopColor="#0f172a"
-                          stopOpacity="0.8"
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="#ffffff"
-                          stopOpacity="0.7"
-                        />
-                      </linearGradient>
-                      <linearGradient
-                        id="chrome2"
-                        x1="100%"
-                        y1="0%"
-                        x2="0%"
-                        y2="100%"
-                      >
-                        <stop
-                          offset="0%"
-                          stopColor="#e2e8f0"
-                          stopOpacity="0.8"
-                        />
-                        <stop
-                          offset="50%"
-                          stopColor="#0d2a3a"
-                          stopOpacity="0.6"
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="#2dd4bf"
-                          stopOpacity="0.9"
-                        />
-                      </linearGradient>
-                      <radialGradient id="glassGlow" cx="50%" cy="30%" r="60%">
-                        <stop
-                          offset="0%"
-                          stopColor="#ffffff"
-                          stopOpacity="0.3"
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="#0f172a"
-                          stopOpacity="0.4"
-                        />
-                      </radialGradient>
-                    </defs>
-
-                    {/* Outer Chrome Border */}
-                    <path
-                      d="M50 5 L92 22 L92 52 C92 78 50 97 50 97 C50 97 8 78 8 52 L8 22 Z"
-                      fill="url(#chrome2)"
-                    />
-
-                    {/* Inner Glass Core */}
-                    <path
-                      d="M50 9 L88 24 L88 51 C88 74 50 92 50 92 C50 92 12 74 12 51 L12 24 Z"
-                      fill="url(#glassGlow)"
-                      stroke="url(#chrome1)"
-                      strokeWidth="1.5"
-                    />
-
-                    {/* Highlight reflection */}
-                    <path
-                      d="M50 11 L85 25 L85 46 C85 66 50 84 50 84 C50 84 50 11 50 11 Z"
-                      fill="#ffffff"
-                      fillOpacity="0.15"
-                    />
-                  </svg>
-
-                  {/* The star inside */}
-                  <Star
-                    size={20}
-                    className="absolute text-white drop-shadow-[0_2px_8px_rgba(255,255,255,0.6)] z-10 sm:w-[28px] sm:h-[28px]"
-                    fill="currentColor"
-                    strokeWidth={1}
-                  />
-                </div>
-
-                <div className="flex flex-col items-start">
-                  <span className="text-[8px] sm:text-[10px] font-bold text-white uppercase tracking-[0.1em] mb-0">
-                    NÍVEL
+              {/* Right: Índice Final */}
+              <div className="flex flex-col items-end sm:items-start shrink-0">
+                <span className="text-[7px] sm:text-[11px] text-white/60 font-medium tracking-wider uppercase mb-0.5 sm:mb-1">
+                  ÍNDICE FINAL
+                </span>
+                <div className="flex items-baseline gap-0.5 sm:gap-1">
+                  <span className={cn("text-[20px] sm:text-[40px] font-bold leading-none", bannerTextColor)}>
+                    {displayScore}
                   </span>
-                  <span className="text-[28px] sm:text-[40px] font-bold text-white leading-none drop-shadow-[0_2px_12px_rgba(255,255,255,0.2)] tracking-tighter">
-                    {displayLevel}
+                  <span className="text-[10px] sm:text-[18px] text-white/60 font-medium">
+                    /100
                   </span>
                 </div>
               </div>
             </div>
+
+            {/* Indicators Row */}
+            <div className="flex flex-row items-center justify-between gap-1 sm:gap-10 mt-0 sm:mt-1">
+              <div className="flex items-center gap-1.5 sm:gap-3">
+                <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full border border-teal-500/30 flex items-center justify-center shrink-0">
+                   <CalendarCheck size={12} className={cn("sm:w-[18px] sm:h-[18px]", bannerTextColor)} strokeWidth={2} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Constância</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{constanciaScore}%</span>
+                </div>
+              </div>
+              <div className="w-px h-5 sm:h-8 bg-white/10 shrink-0"></div>
+              <div className="flex items-center gap-1.5 sm:gap-3">
+                <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full border border-teal-500/30 flex items-center justify-center shrink-0">
+                   <TrendingUp size={12} className={cn("sm:w-[18px] sm:h-[18px]", bannerTextColor)} strokeWidth={2.5} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Viagens</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{viagensScore}%</span>
+                </div>
+              </div>
+              <div className="w-px h-5 sm:h-8 bg-white/10 shrink-0"></div>
+              <div className="flex items-center gap-1.5 sm:gap-3">
+                <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full border border-teal-500/30 flex items-center justify-center shrink-0">
+                   <DollarSign size={12} className={cn("sm:w-[18px] sm:h-[18px]", bannerTextColor)} strokeWidth={2.5} />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Ganhos</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{ganhosScore}%</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bottom Row: XP Progress */}
+            <div className="flex flex-row items-center gap-2 sm:gap-4 mt-1 sm:mt-2 bg-[#021317] rounded-[10px] sm:rounded-2xl p-1.5 sm:p-3 border border-white/5">
+              <div className="flex-1 flex flex-col gap-1 sm:gap-2">
+                <div className="flex justify-between items-center px-1">
+                   <span className="text-[9px] sm:text-[14px] font-medium text-white/90">{Math.floor(currentLevelXp) % 1000} / 1.000 XP</span>
+                   <span className={cn("text-[9px] sm:text-[13px] font-semibold", bannerTextColor)}>{Math.round(xpProgress)}%</span>
+                </div>
+                <div className="w-full h-1.5 sm:h-2.5 bg-[#0a2e38] rounded-full overflow-hidden">
+                  <div className={cn("h-full rounded-full", bannerBgColor)} style={{"width": `${Math.max(2, xpProgress)}%`}}></div>
+                </div>
+              </div>
+              <div className="w-px h-6 sm:h-8 bg-white/10 shrink-0"></div>
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 pr-0.5 sm:pr-2">
+                 <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full bg-teal-500/20 border border-teal-500/30 flex items-center justify-center shrink-0">
+                    <Star size={12} className={cn("sm:w-[18px] sm:h-[18px]", bannerTextColor)} fill="currentColor" />
+                 </div>
+                 <span className="text-[9px] sm:text-[14px] font-bold text-white uppercase tracking-wider">
+                   Nível <span className={cn("text-[11px] sm:text-[16px] ml-0.5", bannerTextColor)}>{displayLevel}</span>
+                 </span>
+              </div>
+            </div>
           </div>
         </div>
-
-        {/* XP Bar Section (Below Banner) */}
-        <div className="w-full flex flex-col gap-1.5 mb-4 px-1">
-          <div className="flex justify-between items-end w-full">
-            <span className="text-[11px] sm:text-[13px] font-semibold text-slate-600 dark:text-slate-300">
-              {Math.floor(currentLevelXp)} / 1.000 XP
-            </span>
-            <span className="text-[11px] sm:text-[13px] font-bold text-teal-600 dark:text-teal-400">
-              {Math.round(xpProgress)}%
-            </span>
-          </div>
-          <div className="w-full h-2 sm:h-2.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-200 dark:border-white/5">
-            <div
-              className="h-full bg-teal-500 rounded-full transition-all duration-1000"
-              style={{ width: `${Math.max(2, xpProgress)}%` }}
-            />
-          </div>
-        </div>
-
         {/* KPIs Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 mb-3">
           {/* KPI 1: Ganhos */}
@@ -797,7 +737,7 @@ export const DriverPerformanceCard = ({
                 strokeWidth={2.5}
               />
               <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-widest">
-                Ranking Global
+                Ranking Interno
               </span>
             </div>
             <div className="flex items-baseline gap-1 mb-1">

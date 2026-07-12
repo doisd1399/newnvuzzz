@@ -31,17 +31,10 @@ import {
 } from "lucide-react";
 
 import { cn } from "../../lib/utils";
+import { collection, query, where, orderBy, limit, startAfter, getDocs, doc, updateDoc, deleteDoc, getAggregateFromServer, sum, count } from "firebase/firestore";
 import { db } from "../../lib/firebase";
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  getDocs,
-  doc,
-  updateDoc,
-  deleteDoc,
-} from "firebase/firestore";
+import { useTripHistory } from "../../hooks/useTripHistory";
+import { TripsRepository } from "../../repositories/TripsRepository";
 import { useAppStore } from "../../context/AppContext";
 import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
 import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
@@ -322,7 +315,8 @@ const TripListItem = React.memo(({
   canDelete,
   formatCurrency,
   formatDate,
-  formatTime
+  formatTime,
+  tripNumber,
 }: {
   trip: TripRecord;
   comp: any;
@@ -336,6 +330,7 @@ const TripListItem = React.memo(({
   formatCurrency: (v: number) => string;
   formatDate: (d: any) => string;
   formatTime: (d: any) => string;
+  tripNumber?: number;
 }) => {
   const getCompanyColor = (name: string) => {
     const colors = [
@@ -432,7 +427,8 @@ const TripListItem = React.memo(({
         {/* Vertical Divider */}
         <div className="absolute left-[50%] top-1.5 bottom-1.5 w-px bg-gray-50 dark:bg-gray-800/60" />
 
-        <div className="flex items-center gap-2 pl-3 min-w-0">
+        <div className="flex items-center justify-between pl-3 min-w-0 w-full">
+          <div className="flex items-center gap-2 min-w-0">
           <Gamepad2
             size={12}
             className="text-gray-500 dark:text-gray-400 shrink-0"
@@ -445,6 +441,14 @@ const TripListItem = React.memo(({
               {trip.simuladorNome || "-"}
             </span>
           </div>
+        </div>
+          {tripNumber !== undefined && (
+            <div className="flex flex-col items-center justify-center shrink-0 ml-1">
+              <div className="flex items-center justify-center w-6 h-6 rounded bg-gray-100 dark:bg-gray-800/80 text-[11px] font-bold text-gray-700 dark:text-gray-300">
+                {tripNumber.toString().padStart(2, '0')}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -603,24 +607,31 @@ export default function TripHistory({
   isInsideAdminTab = false,
   onTripDetailsOpen,
   defaultDriverName,
+  defaultDriverId,
   hideDriverFilter = false,
+  mode,
+  companyId,
 }: {
   embeddedJob?: any;
   hideHeader?: boolean;
   isInsideAdminTab?: boolean;
   onTripDetailsOpen?: (isOpen: boolean) => void;
   defaultDriverName?: string;
+  defaultDriverId?: string;
   hideDriverFilter?: boolean;
+  mode?: "driver" | "company";
+  companyId?: string;
 } = {}) {
   const navigate = useNavigate();
   const {
     currentUser,
-    activeCompanyId,
+    activeCompanyId: contextActiveCompanyId,
     activeRole,
     companies,
     users,
     allCompanyMembers,
   } = useAppStore();
+  const activeCompanyId = companyId || contextActiveCompanyId;
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(null);
@@ -640,180 +651,212 @@ export default function TripHistory({
   }, []);
 
   const currentCompany = companies.find((c: any) => c.id === activeCompanyId);
+  const isSeniorAccess = sessionStorage.getItem("seniorAccess") === "true";
+  const isAdminOrSenior = activeRole === "admin" || isSeniorAccess;
 
-  const [filters, setFilters] = useState({
+  const initialFilters = {
     simulador: currentCompany?.simulatorName || "",
     empresa: currentCompany?.companyName || "",
-    motorista: defaultDriverName !== undefined ? defaultDriverName : (currentUser?.name || ""),
+    motoristaId: mode === "company" ? "" : (defaultDriverId !== undefined 
+      ? defaultDriverId 
+      : (isAdminOrSenior ? "" : (currentUser?.id || ""))),
+    motorista: mode === "company" ? "" : (defaultDriverName !== undefined 
+      ? defaultDriverName 
+      : (isAdminOrSenior ? "" : (currentUser?.name || ""))),
     periodoPreset: "mes", // 'todos', 'hoje', 'semana', 'mes', 'data'
     periodoInicio: "",
     periodoFim: "",
-  });
+  };
+
+  const [pendingFilters, setPendingFilters] = useState(initialFilters);
+  const [appliedFilters, setAppliedFilters] = useState(initialFilters);
+  const [summaryStats, setSummaryStats] = useState({ totalViagens: 0, faturamentoTotal: 0, hasData: false });
+
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [lastDoc, setLastDoc] = useState<any>(null);
+  const [indexErrorUrl, setIndexErrorUrl] = useState<string | null>(null);
+
+  const observerTarget = React.useRef<HTMLDivElement>(null);
 
   // Backfill for old records
   useEffect(() => {
-    const runBackfill = async () => {
-      if (!activeCompanyId) return;
-      try {
-        const qTrips = query(
-          collection(db, "historico_viagens"),
-          where("empresaId", "==", activeCompanyId),
-        );
-        const tripsSnap = await getDocs(qTrips);
+    TripsRepository.runBackfill(activeCompanyId || "");
+  }, [activeCompanyId]);
 
-        let needsMigration = false;
-        for (const docSnap of tripsSnap.docs) {
-          const t = docSnap.data();
-          if (
-            !t.veiculoNome ||
-            t.veiculoNome === "-" ||
-            !t.contratoNumero ||
-            t.contratoNumero === "-"
-          ) {
-            needsMigration = true;
-            break;
+  const loadTrips = async (isLoadMore = false) => {
+    if (!currentUser || !activeCompanyId) return;
+
+    if (isLoadMore) {
+      if (loadingMore || !hasMore) return;
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+      if (!isLoadMore) {
+        setTrips([]);
+        setLastDoc(null);
+        setSummaryStats({ totalViagens: 0, faturamentoTotal: 0, hasData: false });
+      }
+      setHasMore(true);
+    }
+
+    setIndexErrorUrl(null);
+
+    try {
+      const constraints: any[] = [
+        where("empresaId", "==", activeCompanyId)
+      ];
+
+      if (embeddedJob) {
+        constraints.push(where("contratoId", "==", embeddedJob.contractId));
+      } else {
+        let startDate: Date | undefined = undefined;
+        let endDate: Date | undefined = undefined;
+
+        if (appliedFilters.periodoPreset === "hoje") {
+          const range = getTodayRange();
+          startDate = range.start;
+          endDate = range.end;
+        } else if (appliedFilters.periodoPreset === "semana" || appliedFilters.periodoPreset === "7dias") {
+          const range = getWeeklyRange();
+          startDate = range.start;
+          endDate = range.end;
+        } else if (appliedFilters.periodoPreset === "mes") {
+          const range = getMonthlyRange();
+          startDate = range.start;
+          endDate = range.end;
+        } else if (appliedFilters.periodoPreset === "data") {
+          if (appliedFilters.periodoInicio) {
+            startDate = new Date(appliedFilters.periodoInicio + "T00:00:00");
+          }
+          if (appliedFilters.periodoFim) {
+            endDate = new Date(appliedFilters.periodoFim + "T23:59:59");
           }
         }
 
-        if (!needsMigration) return;
+        if (startDate) {
+          constraints.push(where("createdAt", ">=", startDate));
+        }
+        if (endDate) {
+          constraints.push(where("createdAt", "<=", endDate));
+        }
+        
+        if (appliedFilters.motoristaId) {
+          constraints.push(where("motoristaId", "==", appliedFilters.motoristaId));
+        } else if (appliedFilters.motorista) {
+          constraints.push(where("motoristaNome", "==", appliedFilters.motorista));
+        }
 
-        const [vSnap, cSnap, tSnap] = await Promise.all([
-          getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("companyId", "==", activeCompanyId),
-            ),
-          ),
-          getDocs(
-            query(
-              collection(db, "contracts"),
-              where("companyId", "==", activeCompanyId),
-            ),
-          ),
-          getDocs(
-            query(
-              collection(db, "trailers"),
-              where("companyId", "==", activeCompanyId),
-            ),
-          ),
-        ]);
-
-        const vMap = new Map(vSnap.docs.map((d) => [d.id, d.data()]));
-        const cMap = new Map(cSnap.docs.map((d) => [d.id, d.data()]));
-        const tMap = new Map(tSnap.docs.map((d) => [d.id, d.data()]));
-
-        const updates = tripsSnap.docs.map(async (docSnap) => {
-          const tData = docSnap.data();
-          if (
-            !tData.veiculoNome ||
-            tData.veiculoNome === "-" ||
-            !tData.contratoNumero ||
-            tData.contratoNumero === "-"
-          ) {
-            const v = vMap.get(tData.veiculoId);
-            const c = cMap.get(tData.contratoId);
-            const t = tMap.get(tData.reboqueId);
-
-            const veiculoNome = v
-              ? `${v.name || ""}`.trim()
-              : "Veículo não encontrado";
-            const veiculoPlaca = v?.plate || "";
-            const contratoNumero = c ? c.name : "Contrato não encontrado";
-            const contratoDescricao = "";
-            const reboqueNome = t
-              ? `${t.name || ""}`.trim()
-              : "Reboque não encontrado";
-
-            await updateDoc(doc(db, "historico_viagens", docSnap.id), {
-              veiculoNome,
-              veiculoPlaca,
-              contratoNumero,
-              contratoDescricao,
-              reboqueNome,
+        if (!isLoadMore) {
+          const qAgg = query(collection(db, "historico_viagens"), ...constraints);
+          getAggregateFromServer(qAgg, {
+            totalTrips: count(),
+            totalEarnings: sum("valor")
+          }).then(aggregateSnapshot => {
+            setSummaryStats({
+              totalViagens: aggregateSnapshot.data().totalTrips,
+              faturamentoTotal: aggregateSnapshot.data().totalEarnings || 0,
+              hasData: true
             });
-          }
-        });
-
-        await Promise.all(updates);
-      } catch (err) {
-        console.error("Backfill failed:", err);
-      }
-    };
-
-    runBackfill();
-  }, [activeCompanyId]);
-
-  useEffect(() => {
-    if (!currentUser || !activeCompanyId) return;
-
-    let q = query(
-      collection(db, "historico_viagens"),
-      where("empresaId", "==", activeCompanyId),
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        let fetchedTrips = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as TripRecord[];
-
-        if (embeddedJob) {
-          fetchedTrips = fetchedTrips.filter(t => {
-            if (t.contratoId !== embeddedJob.contractId) return false;
-            if ((t as any).jobId && (t as any).jobId === embeddedJob.id) return true;
-            
-            // Time-based filtering fallback for trips that don't have jobId
-            const rawTripDate = t.createdAt?.toDate ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt) : null);
-            const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
-            
-            const assignedAt = embeddedJob.assignedAt ? new Date(embeddedJob.assignedAt).getTime() : 0;
-            const completedAt = embeddedJob.completedAt ? new Date(embeddedJob.completedAt).getTime() : Date.now() + 86400000;
-            
-            return tripTime >= assignedAt && tripTime <= completedAt;
+          }).catch(aggErr => {
+            console.error("Erro ao buscar agregados:", aggErr);
+            setSummaryStats({ totalViagens: 0, faturamentoTotal: 0, hasData: false });
           });
         }
 
-        // Sort client-side to avoid composite index requirements in Firestore
+        constraints.push(orderBy("createdAt", "desc"));
+      }
+
+      const PAGE_SIZE = 30;
+      if (!embeddedJob) constraints.push(limit(PAGE_SIZE));
+
+      if (isLoadMore && lastDoc && !embeddedJob) {
+        constraints.push(startAfter(lastDoc));
+      }
+
+      const q = query(collection(db, "historico_viagens"), ...constraints);
+      const snapshot = await getDocs(q);
+
+      let fetchedTrips = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TripRecord));
+
+      if (embeddedJob) {
+        fetchedTrips = fetchedTrips.filter(t => {
+          if ((t as any).jobId && (t as any).jobId === embeddedJob.id) return true;
+          if (t.contratoId !== embeddedJob.contractId) return false;
+          if (t.motoristaId !== embeddedJob.driverId) return false;
+          const rawTripDate = t.createdAt?.toDate ? t.createdAt.toDate() : (t.createdAt ? new Date(t.createdAt as any) : null);
+          const tripTime = rawTripDate ? rawTripDate.getTime() : 0;
+          const assignedAt = embeddedJob.assignedAt ? new Date(embeddedJob.assignedAt).getTime() : 0;
+          const completedAt = embeddedJob.completedAt ? new Date(embeddedJob.completedAt).getTime() : Date.now() + 86400000;
+          return tripTime >= assignedAt && tripTime <= completedAt;
+        });
+        
         fetchedTrips.sort((a, b) => {
-          const dateA = a.createdAt?.toDate
-            ? a.createdAt.toDate().getTime()
-            : a.createdAt
-              ? new Date(a.createdAt).getTime()
-              : a.dataLancamento?.toDate
-                ? a.dataLancamento.toDate().getTime()
-                : new Date(a.dataLancamento || 0).getTime();
-          const dateB = b.createdAt?.toDate
-            ? b.createdAt.toDate().getTime()
-            : b.createdAt
-              ? new Date(b.createdAt).getTime()
-              : b.dataLancamento?.toDate
-                ? b.dataLancamento.toDate().getTime()
-                : new Date(b.dataLancamento || 0).getTime();
+          const dateA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt as any).getTime() : 0);
+          const dateB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt as any).getTime() : 0);
           return dateB - dateA;
         });
+        
+        setHasMore(false);
+      } else {
+        setHasMore(snapshot.docs.length === PAGE_SIZE);
+        setLastDoc(snapshot.docs[snapshot.docs.length - 1]);
+      }
 
-        setTrips(fetchedTrips);
-        setLoading(false);
+      setTrips(prev => {
+        if (isLoadMore) {
+          const existingIds = new Set(prev.map(t => t.id));
+          const uniqueNew = fetchedTrips.filter(t => !existingIds.has(t.id));
+          return [...prev, ...uniqueNew];
+        }
+        return fetchedTrips;
+      });
+    } catch (error: any) {
+      console.error("Erro ao carregar viagens:", error);
+      if (error?.message && error.message.includes("requires an index")) {
+        const match = error.message.match(/(https:\/\/[^\s]+)/);
+        if (match) {
+          setIndexErrorUrl(match[1]);
+        }
+      }
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTrips();
+  }, [appliedFilters, activeCompanyId, embeddedJob]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries[0].isIntersecting && hasMore && !loading && !loadingMore) {
+          loadTrips(true);
+        }
       },
-      (error) => {
-        console.error("Erro ao buscar histórico de viagens:", error);
-        setLoading(false);
-      },
+      { threshold: 0.1 }
     );
-
-    return () => unsubscribe();
-  }, [currentUser, activeCompanyId, activeRole]);
+    if (observerTarget.current) observer.observe(observerTarget.current);
+    return () => {
+      if (observerTarget.current) observer.unobserve(observerTarget.current);
+    };
+  }, [hasMore, loading, loadingMore, lastDoc, activeCompanyId, appliedFilters, embeddedJob]);
 
   // Client-side filtering
   const uniqueMotoristas = React.useMemo(() => {
     if (!allCompanyMembers || allCompanyMembers.length === 0) {
       // Fallback to trip drivers if members not loaded
-      const tripDrivers = trips
-        .map((t) => t.motoristaNome)
-        .filter((v, i, a) => v && v !== "-" && a.indexOf(v) === i);
-      return tripDrivers.sort((a, b) => a.localeCompare(b));
+      const tripDriversMap = new Map<string, string>();
+      trips.forEach(t => {
+        if (t.motoristaId && t.motoristaNome && t.motoristaNome !== "-") {
+          tripDriversMap.set(t.motoristaId, t.motoristaNome);
+        }
+      });
+      return Array.from(tripDriversMap.entries())
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name));
     }
 
     const memberIds = new Set(
@@ -822,56 +865,27 @@ export default function TripHistory({
         .map((m) => m.userId),
     );
 
-    const companyUsers = users
-      .filter((u) => memberIds.has(u.id))
-      .map((u) => u.name)
-      .filter((v, i, a) => v && a.indexOf(v) === i);
+    const companyUsersList = users
+      .filter((u) => memberIds.has(u.id) && u.name)
+      .map((u) => ({ id: u.id, name: u.name }));
 
-    return companyUsers.sort((a, b) => a.localeCompare(b));
+    // Deduplicate
+    const uniqueMap = new Map<string, string>();
+    companyUsersList.forEach(u => uniqueMap.set(u.id, u.name!));
+
+    return Array.from(uniqueMap.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }, [trips, allCompanyMembers, users, activeCompanyId]);
 
+  const companiesMap = React.useMemo(() => new Map(companies.map(c => [c.id, c])), [companies]);
+
   const finalTrips = React.useMemo(() => {
-    const normalizedTrips = trips.map((t) => normalizeTrip(t as any));
-    
-    let startDate: Date | undefined = undefined;
-    let endDate: Date | undefined = undefined;
+    return trips.map((t) => normalizeTrip(t as any));
+  }, [trips]);
 
-    if (filters.periodoPreset === "hoje") {
-      const range = getTodayRange();
-      startDate = range.start;
-      endDate = range.end;
-    } else if (filters.periodoPreset === "semana" || filters.periodoPreset === "7dias") {
-      const range = getWeeklyRange();
-      startDate = range.start;
-      endDate = range.end;
-    } else if (filters.periodoPreset === "mes") {
-      const range = getMonthlyRange();
-      startDate = range.start;
-      endDate = range.end;
-    } else if (filters.periodoPreset === "data") {
-      if (filters.periodoInicio) {
-        startDate = new Date(filters.periodoInicio + "T00:00:00");
-      }
-      if (filters.periodoFim) {
-        endDate = new Date(filters.periodoFim + "T23:59:59");
-      }
-    }
-
-    const finalTrips = getFilteredTrips(
-      normalizedTrips,
-      startDate,
-      endDate,
-      undefined, // activeCompanyId is already filtered via query, but embeddedJob might differ, let's keep undefined here because trips are already scoped
-      filters.simulador,
-      companies,
-      filters.motorista
-    );
-
-    return finalTrips;
-  }, [trips, filters, companies]);
-
-  const totalViagens = finalTrips.length;
-  const faturamentoTotal = finalTrips.reduce(
+  const totalViagens = summaryStats.hasData ? summaryStats.totalViagens : finalTrips.length;
+  const faturamentoTotal = summaryStats.hasData ? summaryStats.faturamentoTotal : finalTrips.reduce(
     (acc, current) => acc + (current.normalizedValor || 0),
     0,
   );
@@ -952,7 +966,15 @@ export default function TripHistory({
   const confirmDeleteTrip = async () => {
     if (!deletingTrip) return;
     try {
-      await deleteDoc(doc(db, "historico_viagens", deletingTrip.id));
+      await TripsRepository.deleteTrip(deletingTrip.id);
+      setTrips(prev => prev.filter(t => t.id !== deletingTrip.id));
+      if (summaryStats.hasData) {
+        setSummaryStats(prev => ({
+          ...prev,
+          totalViagens: Math.max(0, prev.totalViagens - 1),
+          faturamentoTotal: Math.max(0, prev.faturamentoTotal - (deletingTrip.valor || 0))
+        }));
+      }
       setDeletingTrip(null);
     } catch (error) {
       console.error("Erro ao deletar viagem:", error);
@@ -970,8 +992,8 @@ export default function TripHistory({
       )}
     >
       {/* Header Section */}
-      {!hideHeader && (
-        <div className="flex items-start justify-between mb-4 pt-2">
+      <div className={cn("flex items-start mb-4 pt-2", hideHeader ? "justify-end" : "justify-between")}>
+        {!hideHeader && (
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2">
               {!isInsideAdminTab && (
@@ -990,10 +1012,14 @@ export default function TripHistory({
               <div className="flex items-center pl-8 mt-1.5">
                 <div className="flex items-center bg-transparent border border-gray-200 dark:border-gray-800 rounded-lg px-2 py-0.5 hover:bg-gray-50 dark:hover:bg-[#1A1F26] transition-colors max-w-[160px] sm:max-w-[200px]">
                   <select
-                    value={filters.motorista}
-                    onChange={(e) =>
-                      setFilters({ ...filters, motorista: e.target.value })
-                    }
+                    value={pendingFilters.motoristaId}
+                    onChange={(e) => {
+                      const selectedId = e.target.value;
+                      const selectedMotorista = uniqueMotoristas.find(m => m.id === selectedId);
+                      const selectedName = selectedMotorista ? selectedMotorista.name : "";
+                      setPendingFilters({ ...pendingFilters, motoristaId: selectedId, motorista: selectedName });
+                      setAppliedFilters({ ...appliedFilters, motoristaId: selectedId, motorista: selectedName });
+                    }}
                     className="bg-transparent text-[11px] sm:text-[12px] font-semibold text-gray-700 dark:text-gray-300 outline-none cursor-pointer pr-4 appearance-none truncate w-full"
                     style={{
                       backgroundImage: `url("data:image/svg+xml,%3Csvg stroke='currentColor' fill='none' stroke-width='2' viewBox='0 0 24 24' stroke-linecap='round' stroke-linejoin='round' height='1em' width='1em' xmlns='http://www.w3.org/2000/svg'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
@@ -1007,11 +1033,11 @@ export default function TripHistory({
                     </option>
                     {uniqueMotoristas.map((m) => (
                       <option
-                        key={m}
-                        value={m}
+                        key={m.id}
+                        value={m.id}
                         className="bg-white dark:bg-[#121213]"
                       >
-                        {m}
+                        {m.name}
                       </option>
                     ))}
                   </select>
@@ -1019,24 +1045,26 @@ export default function TripHistory({
               </div>
             )}
           </div>
-          <div className="flex items-center gap-4 mt-1 mr-2">
-            <button
-              onClick={() => {
-                if (expandedTrips.size > 0) {
-                  setExpandedTrips(new Set());
-                } else {
-                  setExpandedTrips(new Set(finalTrips.map((t) => t.id)));
-                }
-              }}
-              title={expandedTrips.size > 0 ? "Recolher Todos" : "Expandir Todos"}
-              className="flex justify-center items-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
-            >
-              {expandedTrips.size > 0 ? (
-                <ChevronsDownUp size={18} className="stroke-[2.5]" />
-              ) : (
-                <ChevronsUpDown size={18} className="stroke-[2.5]" />
-              )}
-            </button>
+        )}
+        <div className="flex items-center gap-4 mt-1 mr-2">
+          <button
+            onClick={() => {
+              if (expandedTrips.size > 0) {
+                setExpandedTrips(new Set());
+              } else {
+                setExpandedTrips(new Set(finalTrips.map((t) => t.id)));
+              }
+            }}
+            title={expandedTrips.size > 0 ? "Recolher Todos" : "Expandir Todos"}
+            className="flex justify-center items-center text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors"
+          >
+            {expandedTrips.size > 0 ? (
+              <ChevronsDownUp size={18} className="stroke-[2.5]" />
+            ) : (
+              <ChevronsUpDown size={18} className="stroke-[2.5]" />
+            )}
+          </button>
+          {!embeddedJob && (
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={cn(
@@ -1048,12 +1076,12 @@ export default function TripHistory({
             >
               <Settings2 size={18} className="stroke-[2.5]" />
             </button>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Filter Card inline */}
-      {showFilters && (
+      {showFilters && !embeddedJob && (
         <div className="bg-white dark:bg-[#121213] border border-gray-200 dark:border-gray-800 rounded-xl p-3 mb-5 shadow-sm flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
           <div>
             <label className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1 block">
@@ -1070,11 +1098,11 @@ export default function TripHistory({
                 <button
                   key={preset.id}
                   onClick={() =>
-                    setFilters({ ...filters, periodoPreset: preset.id })
+                    setPendingFilters({ ...pendingFilters, periodoPreset: preset.id })
                   }
                   className={cn(
                     "flex-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap",
-                    filters.periodoPreset === preset.id
+                    pendingFilters.periodoPreset === preset.id
                       ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
                       : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/5",
                   )}
@@ -1085,22 +1113,22 @@ export default function TripHistory({
             </div>
           </div>
 
-          {filters.periodoPreset === "data" && (
+          {pendingFilters.periodoPreset === "data" && (
             <div className="pt-2 animate-in fade-in duration-200 flex justify-center">
               <DateRangeCalendar
                 startDate={
-                  filters.periodoInicio
-                    ? new Date(filters.periodoInicio + "T12:00:00")
+                  pendingFilters.periodoInicio
+                    ? new Date(pendingFilters.periodoInicio + "T12:00:00")
                     : null
                 }
                 endDate={
-                  filters.periodoFim
-                    ? new Date(filters.periodoFim + "T12:00:00")
+                  pendingFilters.periodoFim
+                    ? new Date(pendingFilters.periodoFim + "T12:00:00")
                     : null
                 }
                 onChange={(start, end) =>
-                  setFilters({
-                    ...filters,
+                  setPendingFilters({
+                    ...pendingFilters,
                     periodoInicio: start
                       ? start.toISOString().split("T")[0]
                       : "",
@@ -1110,6 +1138,15 @@ export default function TripHistory({
               />
             </div>
           )}
+          <button
+            onClick={() => {
+              setAppliedFilters(pendingFilters);
+              setShowFilters(false);
+            }}
+            className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            Aplicar Filtros
+          </button>
         </div>
       )}
 
@@ -1120,6 +1157,35 @@ export default function TripHistory({
           !embeddedJob ? "pb-12 px-0" : "pb-4 px-0"
         )}
       >
+        {indexErrorUrl && (
+          <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl p-4 mb-2 shadow-sm animate-in fade-in">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5">
+                <svg className="w-5 h-5 text-yellow-600 dark:text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-[14px] font-semibold text-yellow-800 dark:text-yellow-300 mb-1">
+                  Ação Necessária no Banco de Dados
+                </h3>
+                <p className="text-[13px] text-yellow-700 dark:text-yellow-400 mb-3 leading-relaxed">
+                  Para que a otimização de consultas e filtros combinados funcione, o Firestore exige a criação de um índice composto. Isso é normal ao adicionar novas capacidades de ordenação no servidor.
+                </p>
+                <a 
+                  href={indexErrorUrl} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-300 px-3 py-1.5 rounded-lg text-[13px] font-semibold hover:bg-yellow-200 dark:hover:bg-yellow-800 transition-colors"
+                >
+                  Criar Índice no Firebase
+                  <ArrowRight size={14} />
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="flex justify-center p-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
@@ -1129,8 +1195,8 @@ export default function TripHistory({
             Nenhum histórico de viagens encontrado.
           </div>
         ) : (
-          finalTrips.map((trip) => {
-            const comp = companies.find((c: any) => c.id === trip.empresaId);
+          finalTrips.map((trip, index) => {
+            const comp = companiesMap.get(trip.empresaId);
             const isExpanded = expandedTrips.has(trip.id);
 
             return (
@@ -1148,14 +1214,21 @@ export default function TripHistory({
                 formatCurrency={formatCurrency}
                 formatDate={formatDate}
                 formatTime={formatTime}
+                tripNumber={embeddedJob ? finalTrips.length - index : undefined}
               />
             );
           })
         )}
+        {loadingMore && (
+          <div className="flex justify-center p-4">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+          </div>
+        )}
+        <div ref={observerTarget} className="h-10 w-full shrink-0" />
       </div>
 
       {/* Fixed Bottom Summary Bar */}
-      {!hideHeader && (
+      {(!hideHeader || embeddedJob) && (
         <div className="fixed bottom-6 md:bottom-8 z-30 flex flex-col items-end pointer-events-none right-4 md:right-8 pb-[env(safe-area-inset-bottom,0px)]">
           {/* Expanded Summary Card */}
           <div
@@ -1506,14 +1579,25 @@ export default function TripHistory({
                   const destino = form.destino.value;
                   const valor = parseFloat(form.valor.value);
 
-                  await updateDoc(
-                    doc(db, "historico_viagens", editingTrip.id),
-                    {
-                      origem,
-                      destino,
-                      valor,
-                    },
-                  );
+                  await TripsRepository.updateTrip(editingTrip.id, {
+                    origem,
+                    destino,
+                    valor,
+                  });
+
+                  setTrips(prev => prev.map(t => {
+                    if (t.id === editingTrip.id) {
+                      return { ...t, origem, destino, valor };
+                    }
+                    return t;
+                  }));
+
+                  if (summaryStats.hasData && editingTrip.valor !== valor) {
+                    setSummaryStats(prev => ({
+                      ...prev,
+                      faturamentoTotal: prev.faturamentoTotal - (editingTrip.valor || 0) + valor
+                    }));
+                  }
 
                   setEditingTrip(null);
                 } catch (error) {

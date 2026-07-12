@@ -10,6 +10,7 @@ export default function ManageContract() {
   
   const {
     contracts,
+    sequences,
     createContract,
     updateContract,
     trailers,
@@ -26,6 +27,7 @@ export default function ManageContract() {
   const [deadlineDays, setDeadlineDays] = useState(7);
   const [mode, setMode] = useState<"simple" | "detailed">("simple");
   const [totalDeliveries, setTotalDeliveries] = useState(1);
+  const [selectedSequenceId, setSelectedSequenceId] = useState<string>("");
 
   // Detailed mode state
   const [deliveries, setDeliveries] = useState<
@@ -48,6 +50,7 @@ export default function ManageContract() {
         setDeadlineDays(contract.deadlineDays || 1);
         setMode(contract.mode);
         setTotalDeliveries(contract.totalDeliveries || 1);
+        setSelectedSequenceId(contract.sequenceId || "");
         if (contract.deliveries && contract.deliveries.length > 0) {
           setDeliveries(
             contract.deliveries.map((d) => ({
@@ -94,30 +97,35 @@ export default function ManageContract() {
     
     try {
       if (id) {
+        const existingContract = contracts.find((c) => c.id === id);
         await updateContract(id, {
           name,
           simulator,
-          trailerId: trailerId || undefined,
+          trailerId: trailerId || null,
           deadlineDays,
           mode,
           totalDeliveries: actualTotal,
           deliveries: mode === "detailed" ? deliveries.filter((d) => d.origin && d.destination).map((d) => ({ ...d, id: ("id" in d) ? (d as any).id : crypto.randomUUID() })) : [],
+          sequenceId: selectedSequenceId || null,
+          sequenceOrder: selectedSequenceId ? (selectedSequenceId === existingContract?.sequenceId ? existingContract.sequenceOrder : 999) : null,
         });
       } else {
         await createContract({
           companyId: activeCompanyId || "",
           name,
           simulator,
-          trailerId: trailerId || undefined,
+          trailerId: trailerId || null,
           deadlineDays,
           mode,
           totalDeliveries: actualTotal,
           deliveries: mode === "detailed" ? deliveries.filter((d) => d.origin && d.destination).map((d) => ({ ...d, id: ("id" in d) ? (d as any).id : crypto.randomUUID() })) : [],
+          sequenceId: selectedSequenceId || null,
+          sequenceOrder: selectedSequenceId ? 999 : null,
         });
       }
       
       // Navigate back after success
-      navigate(-1);
+      navigate("/admin/fleet", { state: { activeTab: "contracts" } });
     } catch (error) {
       console.error(error);
     } finally {
@@ -134,11 +142,11 @@ export default function ManageContract() {
           {/* Header */}
           <div className="shrink-0 p-4 sm:p-5 border-b border-gray-100 dark:border-[#2A2F3A] flex items-center justify-between bg-white dark:bg-[#1A1F26] z-10">
             <h2 className="text-[19px] font-semibold tracking-tight text-gray-900 dark:text-[#fafafa]">
-              {id ? "Editar Contrato" : "Novo Contrato"}
+              {id ? "Editar Operação" : "Nova Operação"}
             </h2>
             <button
               type="button"
-              onClick={() => navigate(-1)}
+              onClick={() => navigate("/admin/fleet", { state: { activeTab: "contracts" } })}
               className="w-8 h-8 rounded-full bg-gray-100 dark:bg-[#18181b] text-gray-500 dark:text-[#a1a1aa] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-white/10 transition-colors shrink-0"
             >
               <X size={18} />
@@ -150,7 +158,7 @@ export default function ManageContract() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-[13px] font-semibold text-gray-700 dark:text-[#d4d4d8] mb-1.5">
-                    Título do Contrato
+                    Nome da Operação
                   </label>
                   <input
                     type="text"
@@ -192,6 +200,24 @@ export default function ManageContract() {
                     ))}
                   </select>
                 </div>
+                
+                <div>
+                  <label className="block text-[13px] font-semibold text-gray-700 dark:text-[#d4d4d8] mb-1.5">
+                    Adicionar à pasta (Opcional)
+                  </label>
+                  <select
+                    value={selectedSequenceId}
+                    onChange={(e) => setSelectedSequenceId(e.target.value)}
+                    className="w-full bg-white dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] rounded-xl px-3.5 py-2.5 text-[14px] text-gray-900 dark:text-[#fafafa] focus:outline-none focus:ring-2 focus:ring-blue-500/50 appearance-none transition-shadow transition-colors"
+                  >
+                    <option value="">Sem pasta</option>
+                    {sequences.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div>
                   <label className="block text-[13px] font-semibold text-gray-700 dark:text-[#d4d4d8] mb-1.5">
                     Prazo (Dias)
@@ -209,7 +235,7 @@ export default function ManageContract() {
 
               <div className="space-y-4 pt-2">
                 <label className="block text-[13px] font-semibold text-gray-700 dark:text-[#d4d4d8]">
-                  Modo do Contrato
+                  Modo da Operação
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <label className="flex items-center gap-3 cursor-pointer bg-white dark:bg-[#09090b] px-4 py-3 rounded-xl border border-gray-200 dark:border-[#2A2F3A] hover:border-blue-500/50 dark:hover:border-blue-500/50 transition-colors shadow-sm dark:shadow-none">
@@ -251,7 +277,7 @@ export default function ManageContract() {
                   />
                   <p className="text-[12px] text-gray-500 dark:text-[#a1a1aa] mt-2">
                     O motorista precisará completar este número de trabalhos
-                    para finalizar o contrato. Não há rotas predefinidas.
+                    para finalizar a operação. Não há rotas predefinidas.
                   </p>
                 </div>
               )}
@@ -261,7 +287,7 @@ export default function ManageContract() {
                   <div className="flex flex-col gap-3 mb-2">
                     <div>
                       <h4 className="text-[14px] font-semibold text-gray-900 dark:text-[#fafafa]">
-                        Rotas do Contrato ({deliveries.length})
+                        Rotas da Operação ({deliveries.length})
                       </h4>
                       <p className="text-[12px] text-gray-500 dark:text-[#a1a1aa] mt-1">
                         O motorista deverá completar estas viagens específicas.
@@ -338,7 +364,7 @@ export default function ManageContract() {
                 type="button"
                 variant="outline"
                 className="w-full sm:w-auto h-10 px-5 text-[14px] bg-white dark:bg-[#1A1F26] border-gray-200 dark:border-[#2A2F3A] text-gray-700 dark:text-[#d4d4d8]"
-                onClick={() => navigate(-1)}
+                onClick={() => navigate("/admin/fleet", { state: { activeTab: "contracts" } })}
                 disabled={isSubmitting}
               >
                  Cancelar

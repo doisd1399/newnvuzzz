@@ -19,8 +19,9 @@ import { cn } from "../../../lib/utils";
 import { toast } from "sonner";
 
 import { UserPlus, X, Image as ImageIcon, Truck, Clock, Check, User, Briefcase } from "lucide-react";
-import { convertFileToBase64, compressImage } from "../../../lib/utils";
+import { convertFileToBase64, compressImage, getNomeContratoHistorico } from "../../../lib/utils";
 import { getDriverLevelData } from "../../../lib/levelUtils";
+import { useTripHistory } from "../../../hooks/useTripHistory";
 
 export default function DriversTab() {
   const navigate = useNavigate();
@@ -38,8 +39,8 @@ export default function DriversTab() {
     currentUser,
     createManualDriver,
     allCompanyMembers,
-    historicoTrips,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [driverToRemove, setDriverToRemove] = useState<string | null>(null);
 
   const [processingRoleChangeId, setProcessingRoleChangeId] = useState<
@@ -479,7 +480,7 @@ export default function DriversTab() {
                                 <div className="flex flex-col justify-center min-w-0 pr-2">
                                     <span className="text-[9px] md:text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-[1px] md:mb-0.5">Última Operação</span>
                                     <span className="text-[13px] md:text-[14px] font-bold text-slate-900 dark:text-[#fafafa] truncate">
-                                      {allDriverJobs?.[0] ? contracts.find(c => c.id === allDriverJobs[0].contractId)?.name || 'Desconhecida' : 'Nenhuma'}
+                                      {allDriverJobs?.[0] ? getNomeContratoHistorico(allDriverJobs[0], contracts.find(c => c.id === allDriverJobs[0].contractId)) : 'Nenhuma'}
                                     </span>
                                 </div>
                               </div>
@@ -504,7 +505,7 @@ export default function DriversTab() {
                                 <div className="flex flex-col justify-center min-w-0 pr-2">
                                     <span className="text-[9px] md:text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-[1px] md:mb-0.5">Última Operação</span>
                                     <span className="text-[13px] md:text-[14px] font-bold text-slate-900 dark:text-[#fafafa] truncate">
-                                      {allDriverJobs?.[0] ? contracts.find(c => c.id === allDriverJobs[0].contractId)?.name || 'Desconhecida' : 'Nenhuma'}
+                                      {allDriverJobs?.[0] ? getNomeContratoHistorico(allDriverJobs[0], contracts.find(c => c.id === allDriverJobs[0].contractId)) : 'Nenhuma'}
                                     </span>
                                 </div>
                               </div>

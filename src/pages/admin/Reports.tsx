@@ -17,6 +17,7 @@ import { useAppStore } from "../../context/AppContext";
 import { normalizeTrip, getFilteredTrips } from "../../lib/metricsEngine";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { useTripHistory } from "../../hooks/useTripHistory";
 
 export default function Reports({
   defaultDriverId,
@@ -28,7 +29,8 @@ export default function Reports({
   isInsideAdminTab?: boolean;
 } = {}) {
   const navigate = useNavigate();
-  const { historicoTrips = [], activeCompanyId, users = [], activeRole, currentUser } = useAppStore();
+  const { activeCompanyId, users = [], activeRole, currentUser } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [period, setPeriod] = useState<"semanal" | "mensal">("semanal");
   const [mode, setMode] = useState<"empresa" | "funcionarios">("funcionarios"); // Default to funcionarios if we pass driverId
   const [selectedDriverId, setSelectedDriverId] = useState<string | null>(defaultDriverId || null);

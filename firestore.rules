@@ -104,6 +104,11 @@ service cloud.firestore {
     match /companyMembers/{id} {
       allow read, write: if isAuthenticated();
     }
+
+    // 12b. simulator_members
+    match /simulator_members/{id} {
+      allow read, write: if isAuthenticated();
+    }
     
     // 13. historico_viagens
     match /historico_viagens/{tripId} {

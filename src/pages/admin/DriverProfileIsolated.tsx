@@ -5,7 +5,7 @@ import { db } from "../../lib/firebase";
 import { useAppStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
-import { getJobRealTimestamp } from "../../lib/utils";
+import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips } from "../../lib/metricsEngine";
 import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
@@ -45,7 +45,8 @@ import {
   CalendarDays,
   Clock,
 } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { useTripHistory } from "../../hooks/useTripHistory";
+import { TripsRepository } from "../../repositories/TripsRepository";
 
 export default function DriverProfileIsolated() {
   const { id: driverId } = useParams<{ id: string }>();
@@ -70,8 +71,8 @@ export default function DriverProfileIsolated() {
     activeCompanyId,
     allCompanyMembers,
     deleteJob,
-    historicoTrips,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [jobToDelete, setJobToDelete] = useState<string | null>(null);
@@ -249,10 +250,8 @@ export default function DriverProfileIsolated() {
         return tsB - tsA;
       }
 
-      const contractA =
-        contracts.find((c) => c.id === a.contractId)?.name || "";
-      const contractB =
-        contracts.find((c) => c.id === b.contractId)?.name || "";
+      const contractA = getNomeContratoHistorico(a, contracts.find((c) => c.id === a.contractId));
+      const contractB = getNomeContratoHistorico(b, contracts.find((c) => c.id === b.contractId));
       return contractA.localeCompare(contractB);
     });
 
@@ -291,17 +290,15 @@ export default function DriverProfileIsolated() {
         .map((c) => c.id),
     );
 
-    const q = query(collection(db, "historico_viagens"));
     const membersQ = query(collection(db, "companyMembers"));
 
     let unsubTrips: () => void;
     let unsubMembers: () => void;
 
-    unsubTrips = onSnapshot(q, (snap) => {
+    unsubTrips = TripsRepository.listenAllTrips((trips) => {
       const earningsByDriver: Record<string, number> = {};
 
-      snap.docs.forEach((doc) => {
-        const data = doc.data();
+      trips.forEach((data) => {
         if (simulatorCompanies.has(data.empresaId)) {
           const mId = data.motoristaId;
           const valor = Number(data.valor) || 0;
@@ -820,7 +817,7 @@ export default function DriverProfileIsolated() {
                               {/* Name and Badge */}
                               <div className="flex items-center gap-2.5 min-w-0">
                                 <h4 className="text-[15px] sm:text-[16px] font-semibold text-gray-900 dark:text-[#fafafa] truncate">
-                                  {contract?.name || "Contrato"}
+                                  {getNomeContratoHistorico(job, contract)}
                                 </h4>
                                 <span
                                   className={cn(
@@ -1061,6 +1058,7 @@ export default function DriverProfileIsolated() {
             hideHeader={true}
             hideDriverFilter={true}
             defaultDriverName={driver.name}
+            defaultDriverId={driver.id}
             isInsideAdminTab={true}
           />
         )}

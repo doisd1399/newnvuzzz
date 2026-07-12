@@ -65,7 +65,7 @@ import {
   parseISO,
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { cn } from "../../../lib/utils";
+import { cn, formatDriverName } from "../../../lib/utils";
 import {
   normalizeTrip,
   getFilteredTrips,
@@ -77,13 +77,13 @@ import {
   getCustomRange,
 } from "../../../lib/metricsEngine";
 import { DesempenhoOperacionalCard } from "../../../components/DesempenhoOperacionalCard";
+import { useTripHistory } from "../../../hooks/useTripHistory";
 
 export default function OperationsTab() {
   const {
     users,
     contracts,
     jobs,
-    historicoTrips,
     vehicles,
     trailers,
     companies,
@@ -98,6 +98,7 @@ export default function OperationsTab() {
     globalStartDateStr,
     globalEndDateStr,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const navigate = useNavigate();
 
   const formatCurrency = (val: number) => {
@@ -312,9 +313,18 @@ export default function OperationsTab() {
   const { workingDrivers, freeDrivers } = useMemo(() => {
     const workingIds = new Set<string>();
     const workingJobsByDriverId = new Map<string, any>();
+    
+    const operatingStatuses = [
+      "active",
+      "assigned",
+      "in_progress",
+      "em_andamento",
+      "em_operacao",
+      "started",
+    ];
 
     for (const job of activeJobsList) {
-      if (job.companyId === activeCompanyId && job.driverId) {
+      if (job.companyId === activeCompanyId && job.driverId && operatingStatuses.includes(job.status)) {
         workingIds.add(job.driverId);
         workingJobsByDriverId.set(job.driverId, job);
       }
@@ -614,11 +624,11 @@ export default function OperationsTab() {
                           <img
                             src={driver?.photoURL || driver?.avatar}
                             alt={driver?.name}
-                            className="w-11 h-11 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                            className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
                             referrerPolicy="no-referrer"
                           />
                         ) : (
-                          <div className="w-11 h-11 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
+                          <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
                             {driver?.name?.substring(0, 2).toUpperCase() || "M"}
                           </div>
                         )}
@@ -967,14 +977,28 @@ export default function OperationsTab() {
                       className="w-full text-left p-3.5 sm:p-4 flex flex-col gap-3.5"
                     >
                       <div className="flex justify-between items-start w-full">
-                        <div className="flex flex-col gap-0 min-w-0 pr-4">
-                          <h3 className="text-[15px] sm:text-[17px] font-semibold text-[#111827] dark:text-white leading-tight mb-0 truncate">
-                            {job.driver!.name}
-                          </h3>
-                          <span className="text-[12px] font-medium text-[#6B7280] leading-tight truncate">
-                            {job.contract!.name}
-                          </span>
-                        </div>
+                          <div className="flex items-center gap-3 min-w-0 pr-4">
+                            {job.driver?.photoURL || job.driver?.avatar ? (
+                              <img
+                                src={job.driver?.photoURL || job.driver?.avatar}
+                                alt={job.driver?.name}
+                                className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
+                                {job.driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                              </div>
+                            )}
+                            <div className="flex flex-col gap-0 min-w-0">
+                              <h3 className="text-[15px] sm:text-[17px] font-semibold text-[#111827] dark:text-white leading-tight mb-0 truncate">
+                                {formatDriverName(job.driver!.name)}
+                              </h3>
+                              <span className="text-[12px] font-medium text-[#6B7280] leading-tight truncate">
+                                {job.contract!.name}
+                              </span>
+                            </div>
+                          </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           {/* Switch ON/OFF */}
@@ -1576,13 +1600,27 @@ export default function OperationsTab() {
                         className="w-full text-left p-4 sm:p-5 flex flex-col gap-4"
                       >
                         <div className="flex justify-between items-start w-full">
-                          <div className="flex flex-col gap-0 min-w-0 pr-4">
-                            <h3 className="text-[15px] sm:text-[17px] font-semibold text-[#111827] dark:text-white leading-tight mb-0 truncate">
-                              {job.driver!.name}
-                            </h3>
-                            <span className="text-[12px] font-medium text-[#6B7280] leading-tight truncate">
-                              {job.contract!.name}
-                            </span>
+                          <div className="flex items-center gap-3 min-w-0 pr-4">
+                            {job.driver?.photoURL || job.driver?.avatar ? (
+                              <img
+                                src={job.driver?.photoURL || job.driver?.avatar}
+                                alt={job.driver?.name}
+                                className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
+                                {job.driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                              </div>
+                            )}
+                            <div className="flex flex-col gap-0 min-w-0">
+                              <h3 className="text-[15px] sm:text-[17px] font-semibold text-[#111827] dark:text-white leading-tight mb-0 truncate">
+                                {formatDriverName(job.driver!.name)}
+                              </h3>
+                              <span className="text-[12px] font-medium text-[#6B7280] leading-tight truncate">
+                                {job.contract!.name}
+                              </span>
+                            </div>
                           </div>
 
                           <div className="flex items-center gap-1.5 shrink-0">

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useTripsRealtime } from "../../../hooks/useTripsRealtime";
 import { useAppStore } from "../../../context/AppContext";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -47,6 +48,7 @@ export default function CompanyTab({
     memberships,
   } = useAppStore();
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
+  const { trips: historicoTrips = [] } = useTripsRealtime();
   const [internalIsEditing, setInternalIsEditing] = useState(false);
   
   const isEditing =
@@ -460,7 +462,7 @@ export default function CompanyTab({
       )}
 
       <CompanyPerformanceCard
-        historicoTrips={jobs.filter(j => j.status === 'completed')}
+        historicoTrips={historicoTrips}
         companyId={activeCompanyId!}
         allCompanies={companies}
       />

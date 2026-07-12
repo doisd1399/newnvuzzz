@@ -148,11 +148,37 @@ export function groupMetricsByDriver(
   empresaId?: string,
   users?: any[],
   simulator?: string,
-  companies?: any[]
+  companies?: any[],
+  companyDrivers?: any[]
 ) {
   const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies);
   const stats: Record<string, { id: string; name: string; logo: string; trips: number; val: number }> = {};
   
+  // Preload company drivers (Internal Ranking Dynamic)
+  if (companyDrivers && companyDrivers.length > 0) {
+    companyDrivers.forEach(m => {
+      if (m.userId) {
+        const user = users?.find(u => u.id === m.userId);
+        let driverName = user?.name || "Motorista Desconhecido";
+        if (driverName) {
+          const parts = driverName.trim().split(" ");
+          if (parts.length > 1) {
+            driverName = `${parts[0]} ${parts[1]}`;
+          } else {
+            driverName = parts[0];
+          }
+        }
+        stats[m.userId] = {
+          id: m.userId,
+          name: driverName,
+          logo: user?.photoURL || "",
+          trips: 0,
+          val: 0
+        };
+      }
+    });
+  }
+
   filteredTrips.forEach((trip) => {
     const mId = trip.motoristaId;
     if (!mId) return;

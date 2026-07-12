@@ -52,8 +52,8 @@ export default function ContractDetailsPage() {
   if (!contractId || !contract) {
     return (
       <div className="p-6">
-        <Button onClick={() => navigate(-1)} variant="outline">Voltar</Button>
-        <p className="mt-4 text-gray-500">Contrato não encontrado.</p>
+        <Button onClick={() => navigate("/admin/fleet", { state: { activeTab: "contracts" } })} variant="outline">Voltar</Button>
+        <p className="mt-4 text-gray-500">Operação não encontrada.</p>
       </div>
     );
   }
@@ -61,18 +61,55 @@ export default function ContractDetailsPage() {
   const trailer = contract.trailerId
     ? trailers.find((t) => t.id === contract.trailerId)
     : null;
-  const contractJobs = jobs
-    .filter((j) => j.contractId === contractId)
-    .sort((a, b) => {
-      // Sort active first, then pending, then completed/cancelled
-      const statusOrder: Record<string, number> = {
-        active: 1,
-        pending: 2,
-        completed: 3,
-        cancelled: 4,
-      };
-      return (statusOrder[a.status] || 99) - (statusOrder[b.status] || 99);
-    });
+  const operatingStatuses = [
+    "active",
+    "assigned",
+    "in_progress",
+    "em_andamento",
+    "em_operacao",
+    "started",
+  ];
+
+  const motoristasEmOperacao = jobs
+    .filter((trabalho) => {
+      const trabalhoContratoId = trabalho.contractId || (trabalho as any).contratoId;
+
+      const motoristaId =
+        trabalho.driverId ||
+        (trabalho as any).assignedDriverId ||
+        (trabalho as any).motoristaId ||
+        (trabalho as any).userId;
+
+      return (
+        trabalhoContratoId === contractId &&
+        operatingStatuses.includes(trabalho.status) &&
+        Boolean(motoristaId)
+      );
+    })
+    .map((trabalho) => {
+      const motoristaId =
+        trabalho.driverId ||
+        (trabalho as any).assignedDriverId ||
+        (trabalho as any).motoristaId ||
+        (trabalho as any).userId;
+
+      const motorista = users.find((m) => m.id === motoristaId);
+
+      if (!motorista) return null;
+
+      return { motorista, trabalho };
+    })
+    .filter(Boolean) as { motorista: any; trabalho: any }[];
+
+  const uniqueMotoristasEmOperacao = [];
+  const seenDrivers = new Set();
+  
+  for (const item of motoristasEmOperacao) {
+    if (!seenDrivers.has(item.motorista.id)) {
+      seenDrivers.add(item.motorista.id);
+      uniqueMotoristasEmOperacao.push(item);
+    }
+  }
 
   const handleAssign = () => {
     navigate("/admin/assign", {
@@ -165,6 +202,9 @@ export default function ContractDetailsPage() {
     setIsDeleting(true);
   };
 
+  const usersMap = React.useMemo(() => new Map(users.map(u => [u.id, u])), [users]);
+  const trailersMap = React.useMemo(() => new Map(trailers.map(t => [t.id, t])), [trailers]);
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-[#09090b] flex flex-col pb-20">
       {/* Top Header */}
@@ -172,12 +212,12 @@ export default function ContractDetailsPage() {
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => navigate(-1)}
+              onClick={() => navigate("/admin/fleet", { state: { activeTab: "contracts" } })}
               className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-[#2A2F3A] transition-colors"
             >
               <ArrowLeft size={20} className="text-gray-600 dark:text-[#d4d4d8]" />
             </button>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-[#fafafa]">Detalhes do Contrato</h1>
+            <h1 className="text-xl font-bold text-gray-900 dark:text-[#fafafa]">Detalhes da Operação</h1>
           </div>
           
           <div className="flex items-center gap-2">
@@ -217,7 +257,7 @@ export default function ContractDetailsPage() {
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-[13px] font-medium text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:hover:bg-[#3f3f46] transition-colors"
                     >
                       <Pencil size={14} className="text-gray-400" />
-                      Editar Contrato
+                      Editar Operação
                     </button>
                     <div className="h-px w-full bg-gray-100 dark:bg-[#18181b]"></div>
                     <button
@@ -228,7 +268,7 @@ export default function ContractDetailsPage() {
                       className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-[13px] font-medium text-red-600 hover:bg-red-50 dark:bg-red-500/10 transition-colors"
                     >
                       <Trash2 size={14} className="text-red-500" />
-                      Excluir Contrato
+                      Excluir Operação
                     </button>
                   </div>
                 </>
@@ -307,30 +347,32 @@ export default function ContractDetailsPage() {
         )}
 
         {/* Motoristas em Operação */}
-        {contractJobs.length > 0 && (
-          <section>
-            <div className="flex items-center gap-2 mb-4">
-              <h3 className="text-[15px] font-bold text-gray-900 dark:text-[#fafafa] ml-1">
-                Motoristas em Operação
-              </h3>
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <h3 className="text-[15px] font-bold text-gray-900 dark:text-[#fafafa] ml-1">
+              Motoristas em Operação
+            </h3>
+            {uniqueMotoristasEmOperacao.length > 0 && (
               <span className="text-[11px] font-bold text-gray-500 dark:text-[#a1a1aa] bg-gray-200 dark:bg-[#2A2F3A] px-2 py-0.5 rounded-full">
-                {contractJobs.length}
+                {uniqueMotoristasEmOperacao.length}
               </span>
-            </div>
+            )}
+          </div>
 
+          {uniqueMotoristasEmOperacao.length === 0 ? (
+            <div className="bg-white dark:bg-[#1A1F26] rounded-2xl border border-gray-200 dark:border-[#2A2F3A] p-6 text-center text-[14px] text-gray-500 dark:text-gray-400 shadow-sm">
+              Nenhum motorista em operação nesta operação no momento.
+            </div>
+          ) : (
             <div className="flex flex-col gap-3">
-              {contractJobs.map((job) => {
-                const driver = users.find((u) => u.id === job.driverId);
+              {uniqueMotoristasEmOperacao.map(({ motorista: driver, trabalho: job }) => {
                 const statusDetails = getJobStatusDetails(job);
                 const progressPct = Math.round(
                   (job.progress / Math.max(1, contract.totalDeliveries)) * 100,
                 );
                 const deliveriesLeft = contract.totalDeliveries - job.progress;
                 const effectiveTrailerId = job.trailerId || contract.trailerId;
-                const currentTrailer = trailers.find(
-                  (t) => t.id === effectiveTrailerId,
-                );
-
+                const currentTrailer = effectiveTrailerId ? trailersMap.get(effectiveTrailerId) : undefined;
                 const isExpanded = expandedJobId === job.id;
                 const isOverdue =
                   differenceInDays(new Date(job.deadlineDate), new Date()) < 0;
@@ -463,8 +505,8 @@ export default function ContractDetailsPage() {
                 );
               })}
             </div>
-          </section>
-        )}
+          )}
+        </section>
       </div>
 
       {isDeleting && (
@@ -473,7 +515,7 @@ export default function ContractDetailsPage() {
             <div className="w-12 h-12 bg-red-100 dark:bg-red-500/20 text-red-600 rounded-full flex items-center justify-center mb-4">
               <Trash2 size={24} />
             </div>
-            <h3 className="text-lg font-bold text-gray-900 dark:text-[#fafafa] mb-2">Excluir Contrato?</h3>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-[#fafafa] mb-2">Excluir Operação?</h3>
             <p className="text-[13px] text-gray-500 dark:text-[#a1a1aa] mb-6">
               Esta ação não pode ser desfeita e todas as informações vinculadas serão removidas.
             </p>
@@ -490,7 +532,7 @@ export default function ContractDetailsPage() {
                 onClick={() => {
                   deleteContract(contractId);
                   setIsDeleting(false);
-                  navigate(-1);
+                  navigate("/admin/fleet", { state: { activeTab: "contracts" } });
                 }}
               >
                 Excluir
@@ -506,9 +548,9 @@ export default function ContractDetailsPage() {
             <div className="w-12 h-12 bg-red-100 dark:bg-red-500/20 text-red-600 rounded-full flex items-center justify-center mb-4">
               <AlertTriangle size={24} />
             </div>
-            <h3 className="text-lg font-bold text-gray-900 dark:text-[#fafafa] mb-2">Cancelar Contrato?</h3>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-[#fafafa] mb-2">Cancelar Operação?</h3>
             <p className="text-[13px] text-gray-500 dark:text-[#a1a1aa] mb-6">
-              Este contrato será cancelado e o motorista perderá o acesso de sua finalização.
+              Esta operação será cancelado e o motorista perderá o acesso de sua finalização.
             </p>
             <div className="flex items-center gap-3 w-full">
               <Button

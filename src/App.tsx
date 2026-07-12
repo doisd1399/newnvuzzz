@@ -35,8 +35,6 @@ import Reports from "./pages/admin/Reports";
 
 import RankingGlobal from "./pages/RankingGlobal";
 
-import AuditPage from "./pages/AuditPage";
-
 const ProtectedRoute = ({
   children,
   allowedRole,
@@ -219,6 +217,54 @@ const LegacyMigration = () => {
   return null;
 };
 
+const ContractSnapshotMigration = () => {
+  const { jobs, contracts } = useAppStore();
+
+  useEffect(() => {
+    if (jobs.length === 0 || contracts.length === 0) return;
+
+    if (localStorage.getItem("contract_snapshot_migration_v1_done")) return;
+
+    const runMigration = async () => {
+      try {
+        const { getFirestore, writeBatch, doc } = await import("firebase/firestore");
+        const db = getFirestore();
+        const batch = writeBatch(db);
+        let updates = 0;
+
+        console.log("=== INICIANDO MIGRAÇÃO DE CONTRATOS (SNAPSHOTS) ===");
+
+        for (const job of jobs) {
+          if (job.status !== "completed") continue;
+          if (job.contractNameSnapshot) continue; // Already migrated
+
+          const contract = contracts.find((c) => c.id === job.contractId);
+          const finalName = contract?.name || (contract as any)?.nome || (job as any).contractName || (job as any).nomeContrato || "Contrato não identificado";
+          const ref = doc(db, "trabalhos", job.id);
+          batch.update(ref, { contractNameSnapshot: finalName });
+          updates++;
+          console.log(`[Snapshot Migration] Atualizando job ${job.id} com contrato: ${finalName}`);
+        }
+
+        if (updates > 0) {
+          await batch.commit();
+          console.log(`[Snapshot Migration] ${updates} jobs atualizados.`);
+        } else {
+          console.log(`[Snapshot Migration] Nenhum job precisava ser atualizado.`);
+        }
+
+        localStorage.setItem("contract_snapshot_migration_v1_done", "true");
+      } catch (e) {
+        console.error("[Snapshot Migration] Erro:", e);
+      }
+    };
+
+    runMigration();
+  }, [jobs, contracts]);
+
+  return null;
+};
+
 export default function App() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -241,6 +287,7 @@ export default function App() {
 
   return (
     <AppProvider>
+      <ContractSnapshotMigration />
       <LegacyMigration />
       <Toaster position="top-right" richColors />
       <AppRoutes />

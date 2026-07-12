@@ -32,6 +32,7 @@ import {
 } from "firebase/firestore";
 import { toast } from "sonner";
 import { uploadService } from "../../services/uploadService";
+import { TripsRepository } from "../../repositories/TripsRepository";
 
 const generateImageHash = async (file: File): Promise<string> => {
   if (!window.crypto || !window.crypto.subtle) {
@@ -245,11 +246,9 @@ export default function RecordTrip() {
       try {
         const hash = await generateImageHash(file);
         
-        const tripsRef = collection(db, "historico_viagens");
-        const q = query(tripsRef, where("imageHash", "==", hash));
-        const querySnapshot = await getDocs(q);
+        const isDuplicate = await TripsRepository.checkImageHash(hash);
         
-        if (!querySnapshot.empty) {
+        if (isDuplicate) {
           toast.error("Esta imagem já foi utilizada em um lançamento anterior.");
           setIsUploading(false);
           setImagePreview(null);
@@ -361,7 +360,7 @@ export default function RecordTrip() {
         data.uploadLocation = uploadLocation;
       }
 
-      const docRef = await addDoc(collection(db, "historico_viagens"), data);
+      const docRef = await TripsRepository.addTrip(data);
       
       // Save tripId inside doc
       await updateDoc(docRef, { tripId: docRef.id });

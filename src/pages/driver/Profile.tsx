@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { useAppStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
-import { getJobRealTimestamp } from "../../lib/utils";
+import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
 import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
@@ -57,9 +57,10 @@ import {
   Banknote,
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { cn } from "../../lib/utils";
 import { ProfileModal } from "../../components/ProfileModal";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
+import { useTripHistory } from "../../hooks/useTripHistory";
+import { TripsRepository } from "../../repositories/TripsRepository";
 
 export default function Profile() {
   const {
@@ -75,8 +76,8 @@ export default function Profile() {
     setActiveCompanyId,
     allCompanyMembers,
     memberships,
-    historicoTrips,
   } = useAppStore();
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
@@ -182,10 +183,8 @@ export default function Profile() {
       const dateA = new Date(tsA);
       const dateB = new Date(tsB);
 
-      const contractA =
-        contracts.find((c) => c.id === a.contractId)?.name || "";
-      const contractB =
-        contracts.find((c) => c.id === b.contractId)?.name || "";
+      const contractA = getNomeContratoHistorico(a, contracts.find((c) => c.id === a.contractId));
+      const contractB = getNomeContratoHistorico(b, contracts.find((c) => c.id === b.contractId));
 
       // Fallback if they exactly match
       if (tsB !== tsA) {
@@ -237,8 +236,17 @@ export default function Profile() {
     diffToNext: number | null;
   } | null>(null);
 
+  const simulatorCompanies = useMemo(() => {
+    const membershipCompanyIds = new Set(memberships?.map(m => m.companyId) || []);
+    return companies.filter((c) => membershipCompanyIds.has(c.id));
+  }, [companies, memberships]);
+
+  // Dictionary for quick lookups in history map
+  const contractsMap = useMemo(() => new Map(contracts.map(c => [c.id, c])), [contracts]);
+  const vehiclesMap = useMemo(() => new Map(vehicles.map(v => [v.id, v])), [vehicles]);
+  const trailersMap = useMemo(() => new Map(trailers.map(t => [t.id, t])), [trailers]);
+
   const formatCurrency = (val?: number) => {
-    if (val === undefined) return "R$ 0,00";
     return new Intl.NumberFormat("pt-BR", {
       style: "currency",
       currency: "BRL",
@@ -247,12 +255,6 @@ export default function Profile() {
 
   useEffect(() => {
     if (!currentActiveCompany?.simulatorName || !currentUser?.id) return;
-
-    // Consulta Otimizada: Apenas membros e viagens da empresa atual para calcular a posição no leaderboard local
-    const q = query(
-      collection(db, "historico_viagens"),
-      where("empresaId", "==", currentActiveCompany.id),
-    );
 
     // Obter apenas os membros da empresa atual
     const membersQ = query(
@@ -264,11 +266,10 @@ export default function Profile() {
     let unsubMembers: () => void;
 
     // Calculado dinamicamente e atualizado automaticamente para o contexto da empresa
-    unsubTrips = onSnapshot(q, (snap) => {
+    unsubTrips = TripsRepository.listenCompanyTrips(currentActiveCompany.id, (trips) => {
       const earningsByDriver: Record<string, number> = {};
 
-      snap.docs.forEach((doc) => {
-        const data = doc.data();
+      trips.forEach((data) => {
         const mId = data.motoristaId;
         const valor = Number(data.valor) || 0;
         earningsByDriver[mId] = (earningsByDriver[mId] || 0) + valor;
@@ -589,8 +590,7 @@ export default function Profile() {
                 Selecione o Simulador:
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {companies
-                  .filter((c) => memberships?.some((m) => m.companyId === c.id))
+                {simulatorCompanies
                   .map((c) => {
                     const isSelected = c.id === activeCompanyId;
                     return (
@@ -996,16 +996,10 @@ export default function Profile() {
               {filteredHistoryJobs.length > 0 ? (
                 <div className="space-y-3">
                   {filteredHistoryJobs.map((job) => {
-                    const contract = contracts.find(
-                      (c) => c.id === job.contractId,
-                    );
+                    const contract = contractsMap.get(job.contractId);
                     const jobTrailerId = job.trailerId || contract?.trailerId;
-                    const vehicle = vehicles.find(
-                      (v) => v.id === job.vehicleId,
-                    );
-                    const trailer = jobTrailerId
-                      ? trailers.find((t) => t.id === jobTrailerId)
-                      : null;
+                    const vehicle = vehiclesMap.get(job.vehicleId);
+                    const trailer = jobTrailerId ? trailersMap.get(jobTrailerId) : null;
 
                     const parseDateSafe = (d: any): Date | null => {
                       if (!d) return null;
@@ -1150,7 +1144,7 @@ export default function Profile() {
                               {/* Name and Badge */}
                               <div className="flex items-center gap-2.5 min-w-0">
                                 <h4 className="text-[15px] sm:text-[16px] font-bold text-slate-900 dark:text-white truncate tracking-tight">
-                                  {contract?.name || "Contrato"}
+                                  {getNomeContratoHistorico(job, contract)}
                                 </h4>
                                 <span
                                   className={cn(

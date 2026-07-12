@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { ChevronLeft, Trophy, ChevronDown, List as ListIcon, Building2, Users, ChevronRight, Crown, Calendar, X } from "lucide-react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../context/AppContext";
@@ -23,6 +23,7 @@ export default function RankingGlobal() {
   const { trips } = useTripsRealtime();
   const [companies, setCompanies] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [companyDrivers, setCompanyDrivers] = useState<any[]>([]);
 
   const [simulator, setSimulator] = useState("Todos os simuladores");
   const [rankingType, setRankingType] = useState<"entre" | "interno">("entre");
@@ -54,6 +55,7 @@ export default function RankingGlobal() {
     const unsubCompanies = onSnapshot(collection(db, "frotas"), (snap) => {
       setCompanies(snap.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
     });
+
     const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
       setUsers(snap.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
     });
@@ -63,6 +65,22 @@ export default function RankingGlobal() {
       unsubUsers();
     };
   }, []);
+
+  useEffect(() => {
+    if (rankingType === "interno" && selectedCompanyId) {
+      const q = query(
+        collection(db, "companyMembers"),
+        where("companyId", "==", selectedCompanyId),
+        where("status", "==", "active")
+      );
+      const unsub = onSnapshot(q, (snap) => {
+        setCompanyDrivers(snap.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
+      });
+      return () => unsub();
+    } else {
+      setCompanyDrivers([]);
+    }
+  }, [rankingType, selectedCompanyId]);
 
   // When opening, if it's internal ranking, auto-select active company
   useEffect(() => {
@@ -117,9 +135,9 @@ export default function RankingGlobal() {
     if (rankingType === "entre") {
       return groupMetricsByCompany(trips, sDate, eDate, simulator, companies);
     } else {
-      return groupMetricsByDriver(trips, sDate, eDate, selectedCompanyId, users, simulator, companies);
+      return groupMetricsByDriver(trips, sDate, eDate, selectedCompanyId, users, simulator, companies, companyDrivers);
     }
-  }, [periodPreset, rankingType, trips, companies, simulator, selectedCompanyId, users, startDateStr, endDateStr]);
+  }, [periodPreset, rankingType, trips, companies, simulator, selectedCompanyId, users, startDateStr, endDateStr, companyDrivers]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(val);

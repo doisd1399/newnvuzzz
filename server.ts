@@ -8,17 +8,23 @@ import fs from "fs";
 // Initialize Firebase Admin SDK
 import admin from "firebase-admin";
 
-if (!admin.apps.length) {
-  admin.initializeApp();
+let firestoreDb: FirebaseFirestore.Firestore | null = null;
+function getDb() {
+  if (!firestoreDb) {
+    if (!admin.apps.length) {
+      admin.initializeApp();
+    }
+    firestoreDb = admin.firestore();
+  }
+  return firestoreDb;
 }
-const db = admin.firestore();
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   // Use a temporary folder for uploads
-  const upload = multer({ dest: "uploads/" });
+  const upload = multer({ dest: "/tmp/" });
 
   // Google OAuth Client
   const getGoogleOAuthClient = () => {
@@ -83,6 +89,8 @@ async function startServer() {
       console.log("[Google Drive Upload] - companyId:", req.body.companyId);
       console.log("[Google Drive Upload] - arquivo recebido:", !!req.file);
 
+      const db = getDb();
+
       // Fetch refresh token from Firestore using admin SDK
       const sysDocSnap = await db.collection("settings").doc("system").get();
       const refreshToken = sysDocSnap.data()?.driveRefreshToken;
@@ -101,7 +109,6 @@ async function startServer() {
 
       const oauth2Client = getGoogleOAuthClient();
       oauth2Client.setCredentials({ refresh_token: refreshToken });
-
       const drive = google.drive({ version: "v3", auth: oauth2Client });
 
       const file = req.file;
@@ -163,7 +170,6 @@ async function startServer() {
         name: file.originalname,
         parents: [targetFolderId],
       };
-
       const media = {
         mimeType: file.mimetype,
         body: fs.createReadStream(file.path),
@@ -206,6 +212,7 @@ async function startServer() {
         webViewLink: driveRes.data.webViewLink,
         webContentLink: driveRes.data.webContentLink,
       });
+
     } catch (err: any) {
       console.error("Error uploading to drive:", err);
       // Cleanup local temp file if it exists
