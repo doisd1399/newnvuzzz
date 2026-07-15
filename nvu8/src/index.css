@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-blue-50: #f0f6fc;
+  --color-blue-100: #e2ecf8;
+  --color-blue-500: #1b6ec2;
+  --color-blue-600: #13559b;
+  --color-blue-700: #0d3c6d;
+  
+  --color-green-500: #10b981;
+  --color-green-600: #059669;
+  
+  --color-red-500: #e11d48;
+  --color-red-600: #be123c;
+
+  --color-orange-500: #d97706;
+  --color-orange-600: #b45309;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 dark:bg-[#09090b] dark:text-[#fafafa] antialiased text-[15px];
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply tracking-tight font-semibold text-gray-900 dark:text-[#fafafa];
+  }
+
+  p, span, div {
+    @apply leading-relaxed;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
