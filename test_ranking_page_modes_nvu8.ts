@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { normalizeTrip } from "./nvu8/src/lib/tripNormalizer";
-import { buildDriverRankingPageData } from "./nvu8/src/lib/rankingPageEngine";
-import { buildDriverRankingContext } from "./nvu8/src/lib/performanceEngine";
+import { normalizeTrip } from "./src/lib/tripNormalizer";
+import { buildDriverRankingPageData } from "./src/lib/rankingPageEngine";
+import { buildDriverRankingContext } from "./src/lib/performanceEngine";
 
 const startDate = new Date("2026-07-01T00:00:00");
 const endDate = new Date("2026-07-31T23:59:59");
@@ -19,9 +19,9 @@ const companies = [
   { id: "c3", name: "X", simulatorName: "OUTRO" },
 ];
 const users = [
-  { id: "a", name: "Ana Silva", photoURL: "ana.jpg" },
-  { id: "b", name: "Bruno Lima", photoURL: "bruno.jpg" },
-  { id: "c", name: "Carla Souza", photoURL: "carla.jpg" },
+  { id: "a", name: "Ana Silva", profilePhotoURL: "ana.jpg" },
+  { id: "b", name: "Bruno Lima", profilePhotoURL: "bruno.jpg" },
+  { id: "c", name: "Carla Souza", profilePhotoURL: "carla.jpg" },
 ];
 
 const internal = buildDriverRankingPageData({
