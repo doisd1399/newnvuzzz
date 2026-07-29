@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { useSessionStore } from "../context/AppContext";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
 import {
   ChevronRight,
@@ -15,6 +15,28 @@ import {
 } from "lucide-react";
 import { auth } from "../lib/firebase";
 import { ProfileModal } from "../components/ProfileModal";
+import { StableImage } from "../components/common/StableImage";
+import { preloadRoute } from "../lib/routePreload";
+import { prepareAndCommitNavigation } from "../lib/navigationTransition";
+import { resolveMembershipRoles } from "../lib/membershipRoles";
+
+const ProfileSelectionTransition = () => (
+  <div
+    className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex items-center justify-center"
+    role="status"
+    aria-live="polite"
+  >
+    <div className="flex flex-col items-center gap-2 opacity-70">
+      <span className="text-lg font-bold tracking-[0.22em] text-slate-800 dark:text-white">
+        NVU
+      </span>
+      <span className="h-0.5 w-10 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+        <span className="block h-full w-1/2 rounded-full bg-blue-500 motion-safe:animate-[nvu-progress_900ms_ease-in-out_infinite]" />
+      </span>
+    </div>
+    <span className="sr-only">Preparando seus perfis</span>
+  </div>
+);
 
 export default function SelectProfile() {
   const {
@@ -22,32 +44,32 @@ export default function SelectProfile() {
     switchRole,
     authInitialized,
     membershipsLoaded,
+    sessionReady,
     companies,
-    setActiveCompanyId,
     activeCompanyId,
     activeRole,
     memberships,
     logOutApp,
     setSeniorCompanyId,
-  } = useAppStore();
+  } = useSessionStore();
   const navigate = useNavigate();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
     null,
   );
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
-  const [switchingRole, setSwitchingRole] = useState<"admin" | "driver" | null>(null);
+  const switchingRoleRef = useRef(false);
 
   useEffect(() => {
-    if (authInitialized && !currentUser) {
+    if (sessionReady && !currentUser) {
       navigate("/", { replace: true });
-    } else if (authInitialized && currentUser && membershipsLoaded) {
+    } else if (sessionReady && currentUser && membershipsLoaded) {
       const hasActiveMembership = memberships.some((m) => m.status === "active");
       if (!hasActiveMembership) {
         navigate("/status", { replace: true });
       }
     }
-  }, [authInitialized, currentUser, membershipsLoaded, memberships, navigate]);
+  }, [sessionReady, currentUser, membershipsLoaded, memberships, navigate]);
 
   const availableCompanies = useMemo(() => {
     const list: { companyId: string; companyName: string; roles: string[] }[] =
@@ -58,7 +80,12 @@ export default function SelectProfile() {
           const comp = companies.find((c) => c.id === membership.companyId);
           if (companies.length > 0 && !comp) return; // Ghost company
           const cName = comp ? comp.companyName : "Carregando...";
-          const roles = new Set(membership.roles || ["driver"]);
+          let simName = comp?.simulatorName || "";
+          if (simName.length > 0 && simName.length <= 4) {
+            simName = simName.charAt(0).toUpperCase() + simName.slice(1).toLowerCase();
+          }
+          const displayName = simName ? `${cName} - ${simName}` : cName;
+          const roles = new Set(resolveMembershipRoles(membership, currentUser));
           const isOwner = Boolean(
             comp &&
               (comp.ownerId === currentUser?.id ||
@@ -67,7 +94,7 @@ export default function SelectProfile() {
           if (isOwner) roles.add("admin");
           list.push({
             companyId: membership.companyId,
-            companyName: cName,
+            companyName: displayName,
             roles: Array.from(roles),
           });
         }
@@ -75,6 +102,17 @@ export default function SelectProfile() {
     }
     return list;
   }, [memberships, companies, currentUser?.id]);
+
+  useEffect(() => {
+    if (!membershipsLoaded || availableCompanies.length === 0) return;
+
+    const availableRoles = new Set(
+      availableCompanies.flatMap((company) => company.roles || []),
+    );
+    if (availableRoles.has("admin")) void preloadRoute("/admin/fleet");
+    if (availableRoles.has("driver")) void preloadRoute("/driver/profile");
+    void preloadRoute("/ranking");
+  }, [availableCompanies, membershipsLoaded]);
 
   // Handle default company selection
   useEffect(() => {
@@ -97,33 +135,30 @@ export default function SelectProfile() {
     0,
   );
 
-  const handleSelect = async (role: "admin" | "driver", companyId: string) => {
-    if (switchingRole) return;
+  const handleSelect = (role: "admin" | "driver", companyId: string) => {
+    if (switchingRoleRef.current) return;
+    switchingRoleRef.current = true;
 
-    setSwitchingRole(role);
     const target = role === "admin" ? "/admin/fleet" : "/driver/profile";
-
-    // Persist the intended context before navigation. This prevents the route
-    // guard from briefly reading the previous profile while React commits the
-    // role/company state, especially inside the AI Studio preview iframe.
-    localStorage.setItem("activeCompanyId", companyId);
-    localStorage.setItem("activeRole", role);
-
-    // Leaving an inspected Senior company must not keep that company as the
-    // data source of the user's own corporate panel. Authentication remains
-    // available, but the temporary company override is cleared.
-    sessionStorage.removeItem("seniorAccess");
-    sessionStorage.removeItem("seniorCompanyId");
+    // Commit the authenticated role/company context first. The action is
+    // synchronous up to its background Firestore write, so ProtectedRoute
+    // can authorize the destination in the same render as the navigation.
+    // Keeping storage cleanup after this commit avoids an extra context update
+    // before the visible route change.
+    void switchRole(role, companyId);
+    navigate(target, { replace: true });
+    try {
+      sessionStorage.removeItem("seniorAccess");
+      sessionStorage.removeItem("seniorCompanyId");
+    } catch {
+      // O estado React continua sendo a fonte ativa em previews restritos.
+    }
     setSeniorCompanyId(null);
 
-    try {
-      setActiveCompanyId(companyId);
-      await switchRole(role, companyId);
-      navigate(target, { replace: true });
-    } catch (error) {
-      console.error("Failed to switch profile:", error);
-      setSwitchingRole(null);
-    }
+    switchingRoleRef.current = false;
+    // Warm after the visible acknowledgement; a cold module cannot hold the
+    // previous screen during the click.
+    void preloadRoute(target).catch(() => undefined);
   };
 
   const handleLogout = async () => {
@@ -142,7 +177,11 @@ export default function SelectProfile() {
       if (comp && comp.roles && comp.roles.length === 1) {
         const role = comp.roles[0] as "admin" | "driver";
         if (activeRole === role && activeCompanyId === comp.companyId) {
-          navigate(role === "admin" ? "/admin" : "/driver", { replace: true });
+          const target = role === "admin" ? "/admin/fleet" : "/driver/profile";
+          void prepareAndCommitNavigation(
+            () => preloadRoute(target),
+            () => navigate(target, { replace: true }),
+          );
         } else {
           handleSelect(role, comp.companyId);
         }
@@ -156,14 +195,8 @@ export default function SelectProfile() {
     navigate,
   ]);
 
-  if (!currentUser) return null;
-
-  if (!authInitialized || !currentUser || !membershipsLoaded || totalProfilesCount === 1) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-white dark:bg-[#09090b]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-300 dark:border-[#2A2F3A]"></div>
-      </div>
-    );
+  if (!sessionReady || !currentUser || !membershipsLoaded) {
+    return <ProfileSelectionTransition />;
   }
 
   // Handle empty state (no companies/memberships)
@@ -237,7 +270,7 @@ export default function SelectProfile() {
                 size={16}
                 className="text-slate-400 text-opacity-80 dark:text-[#71717a]"
               />
-              <span className="text-[14px] font-medium text-slate-700 dark:text-[#e4e4e7] truncate max-w-[180px]">
+              <span className="text-[14px] font-medium text-slate-700 dark:text-[#e4e4e7] truncate max-w-[240px] sm:max-w-[280px]">
                 {activeCompany?.companyName}
               </span>
               <ChevronDown
@@ -284,22 +317,24 @@ export default function SelectProfile() {
           {profilesToSelect.includes("admin") && (
             <button
               onClick={() => handleSelect("admin", activeCompany!.companyId)}
-              disabled={switchingRole !== null}
-              aria-busy={switchingRole === "admin"}
-              className="group relative disabled:opacity-60 disabled:cursor-wait flex items-center justify-between bg-white dark:bg-[#121214] border border-slate-200 dark:border-[#27272A] hover:border-slate-300 dark:hover:border-[#3F3F46] rounded-[20px] p-4 sm:p-5 hover:shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] dark:hover:shadow-none transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-[#3F3F46]"
+              className="group relative flex items-center justify-between bg-white dark:bg-[#121214] border border-slate-200 dark:border-[#27272A] hover:border-slate-300 dark:hover:border-[#3F3F46] rounded-[20px] p-4 sm:p-5 hover:shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] dark:hover:shadow-none transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-[#3F3F46]"
             >
               <div className="flex items-center gap-4">
                 <div className="w-[46px] h-[46px] rounded-[14px] bg-slate-50 dark:bg-[#18181B] border border-slate-100 dark:border-[#27272A] flex items-center justify-center text-slate-500 dark:text-[#A1A1AA] group-hover:bg-indigo-50 group-hover:text-indigo-600 dark:group-hover:bg-indigo-500/10 dark:group-hover:text-indigo-400 group-hover:border-indigo-100 dark:group-hover:border-indigo-500/20 transition-all duration-300 overflow-hidden">
                   {companies.find((c) => c.id === activeCompany?.companyId)
                     ?.logoUrl ? (
-                    <img
+                    <StableImage
                       src={
                         companies.find(
                           (c) => c.id === activeCompany?.companyId,
                         )!.logoUrl
                       }
                       alt="Empresa"
-                      className="w-full h-full object-cover"
+                      loading="eager"
+                      decoding="async"
+                      wrapperClassName="w-full h-full"
+                      className="object-cover"
+                      fallback={<Briefcase size={22} strokeWidth={1.8} />}
                     />
                   ) : (
                     <Briefcase size={22} strokeWidth={1.8} />
@@ -332,18 +367,20 @@ export default function SelectProfile() {
           {profilesToSelect.includes("driver") && (
             <button
               onClick={() => handleSelect("driver", activeCompany!.companyId)}
-              disabled={switchingRole !== null}
-              aria-busy={switchingRole === "driver"}
-              className="group relative disabled:opacity-60 disabled:cursor-wait flex items-center justify-between bg-white dark:bg-[#121214] border border-slate-200 dark:border-[#27272A] hover:border-slate-300 dark:hover:border-[#3F3F46] rounded-[20px] p-4 sm:p-5 hover:shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] dark:hover:shadow-none transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-[#3F3F46]"
+              className="group relative flex items-center justify-between bg-white dark:bg-[#121214] border border-slate-200 dark:border-[#27272A] hover:border-slate-300 dark:hover:border-[#3F3F46] rounded-[20px] p-4 sm:p-5 hover:shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] dark:hover:shadow-none transition-all duration-200 text-left outline-none focus-visible:ring-2 focus-visible:ring-slate-300 dark:focus-visible:ring-[#3F3F46]"
             >
               <div className="flex items-center gap-4">
                 <div className="w-[46px] h-[46px] rounded-[14px] bg-slate-50 dark:bg-[#18181B] border border-slate-100 dark:border-[#27272A] flex items-center justify-center text-slate-500 dark:text-[#A1A1AA] group-hover:bg-blue-50 group-hover:text-blue-600 dark:group-hover:bg-blue-500/10 dark:group-hover:text-blue-400 group-hover:border-blue-100 dark:group-hover:border-blue-500/20 transition-all duration-300 overflow-hidden">
                   {resolveProfilePhoto(currentUser) || null ? (
-                    <img
+                    <StableImage
                       src={resolveProfilePhoto(currentUser) || null}
                       alt="Motorista"
-                      className="w-full h-full object-cover"
+                      loading="eager"
+                      decoding="async"
+                      wrapperClassName="w-full h-full"
+                      className="object-cover"
                       referrerPolicy="no-referrer"
+                      fallback={<Truck size={22} strokeWidth={1.8} />}
                     />
                   ) : (
                     <Truck size={22} strokeWidth={1.8} />

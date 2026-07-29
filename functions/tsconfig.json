@@ -5,8 +5,12 @@
     "noUnusedLocals": true,
     "outDir": "lib",
     "sourceMap": true,
-    "strict": true, "skipLibCheck": true,
-    "target": "es2017"
+    "strict": true,
+    "skipLibCheck": true,
+    "target": "es2017",
+    "types": [
+      "node"
+    ]
   },
   "compileOnSave": true,
   "include": [

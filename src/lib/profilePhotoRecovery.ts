@@ -1,3 +1,5 @@
+import { isCompanyRegistration } from "./registrationImages";
+
 export type UserPhotoRecord = unknown;
 
 const normalizePhotoSource = (value: unknown): string => {
@@ -26,16 +28,21 @@ export const resolvePersistedUserProfilePhoto = (
     const source = record as Record<string, unknown>;
     const candidates = [
       source.profilePhotoURL,
+      source.profilePhotoUrl,
       source.ownerPhotoUrl,
       source.ownerPhotoURL,
       source.applicationPhotoURL,
-      source.photoURL,
-      source.photoUrl,
       source.avatar,
       source.profileImage,
       source.imageUrl,
       source.photo,
     ];
+
+    // Company registrations used `photoURL` for the company logo in the
+    // legacy schema. Never copy that field into a person's profile photo.
+    if (!isCompanyRegistration(source)) {
+      candidates.push(source.photoURL, source.photoUrl);
+    }
 
     for (const candidate of candidates) {
       const photo = normalizePhotoSource(candidate);
@@ -54,8 +61,8 @@ export const resolveApprovedCompanyOwnerPhoto = (
       if (!registration || typeof registration !== "object") return false;
       const source = registration as Record<string, unknown>;
       return (
-        source.type === "company_registration" &&
-        source.status === "approved"
+        isCompanyRegistration(source) &&
+        String(source.status || "").toLowerCase() === "approved"
       );
     })
     .sort((left, right) => {

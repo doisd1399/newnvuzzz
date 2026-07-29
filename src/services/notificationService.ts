@@ -6,6 +6,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
@@ -68,10 +69,17 @@ export function buildNotificationPayload(notification: AppNotification) {
     lida: isRead,
     actorUserId: auth.currentUser?.uid ?? null,
     read: isRead,
+    dedupeKey: notification.dedupeKey ?? null,
     schemaVersion: 3,
     createdAt: serverTimestamp(),
     createdAtIso: new Date().toISOString(),
   };
+}
+
+export function shouldFallbackToLegacyNotification(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = String((error as { code?: unknown }).code ?? "").toLowerCase();
+  return code === "permission-denied" || code === "firestore/permission-denied";
 }
 
 export async function persistNotificationWithFallback<T>(params: {
@@ -82,6 +90,11 @@ export async function persistNotificationWithFallback<T>(params: {
   try {
     return await params.writeModern();
   } catch (error) {
+    // Um timeout ou erro de rede pode ocorrer depois que o Firestore já
+    // confirmou a escrita no servidor. Gravar também no legado nesse cenário
+    // criaria dois documentos e dois gatilhos para o mesmo evento. O fallback
+    // só é seguro quando a coleção moderna foi explicitamente bloqueada.
+    if (!shouldFallbackToLegacyNotification(error)) throw error;
     params.onModernError?.(error);
     return params.writeLegacy();
   }
@@ -175,4 +188,57 @@ export async function createCorporateNotifications(
   );
 
   return recipientIds;
+}
+
+
+export async function resolveNotifications(params: {
+  companyId?: string | null;
+  type: NotificationType;
+  metadata?: Record<string, unknown>;
+}) {
+  const collections = ["notifications", "notificacoes"] as const;
+  const resolvedAtIso = new Date().toISOString();
+
+  await Promise.all(
+    collections.map(async (collectionName) => {
+      try {
+        const constraints = [where("type", "==", params.type)];
+        if (params.companyId) {
+          constraints.push(where("companyId", "==", params.companyId));
+        }
+        const snapshot = await getDocs(
+          query(collection(db, collectionName), ...constraints),
+        );
+
+        const matchingDocuments = snapshot.docs.filter((notificationDocument) => {
+          if (!params.metadata) return true;
+          const notificationMetadata = notificationDocument.data().metadata;
+          if (!notificationMetadata || typeof notificationMetadata !== "object") {
+            return false;
+          }
+          return Object.entries(params.metadata).every(
+            ([key, value]) =>
+              value === undefined ||
+              (notificationMetadata as Record<string, unknown>)[key] === value,
+          );
+        });
+
+        await Promise.all(
+          matchingDocuments.map((notificationDocument) =>
+            updateDoc(notificationDocument.ref, {
+              read: true,
+              lida: true,
+              resolvedAt: serverTimestamp(),
+              resolvedAtIso,
+            }),
+          ),
+        );
+      } catch (error) {
+        console.warn(
+          `[NVU Notifications] Não foi possível resolver avisos em ${collectionName}.`,
+          error,
+        );
+      }
+    }),
+  );
 }

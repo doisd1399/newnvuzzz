@@ -1,7 +1,8 @@
 import { resolveDriverPhoto } from '../../lib/resolveDriverPhoto';
 import React, { useState, useEffect } from "react";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
+import { StableImage } from "../../components/common/StableImage";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   PackageOpen,
@@ -28,16 +29,15 @@ export default function AssignJob() {
     preselectedContractId,
   } = state;
 
+  const { activeCompanyId, currentUser } = useSessionStore();
   const {
     contracts,
     users,
     vehicles,
     trailers,
     assignJob,
-    activeCompanyId,
-    currentUser,
     allCompanyMembers,
-  } = useAppStore();
+  } = useOperationalStore();
 
   const [selectedContract, setSelectedContract] = useState(preselectedContractId || "");
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>(
@@ -307,11 +307,19 @@ export default function AssignJob() {
                             </div>
                             <div className="flex-1 flex items-center gap-3 min-w-0">
                               {resolveDriverPhoto(d) ? (
-                                <img
+                                <StableImage
                                   src={resolveDriverPhoto(d)}
-                                  alt=""
-                                  className="w-7 h-7 rounded-full bg-white object-cover shrink-0"
+                                  alt={d.name}
+                                  loading="lazy"
+                                  decoding="async"
+                                  wrapperClassName="w-7 h-7 rounded-full bg-white shrink-0"
+                                  className="object-cover"
                                   referrerPolicy="no-referrer"
+                                  fallback={
+                                    <span className="h-full w-full bg-gray-100 dark:bg-[#1A1F26] flex items-center justify-center text-[11px] font-bold">
+                                      {d.name.substring(0, 2).toUpperCase()}
+                                    </span>
+                                  }
                                 />
                               ) : (
                                 <div className="w-7 h-7 rounded-full bg-gray-100 dark:bg-[#1A1F26] flex items-center justify-center text-[11px] font-bold shrink-0">

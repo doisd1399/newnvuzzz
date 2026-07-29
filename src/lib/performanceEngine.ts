@@ -1,5 +1,10 @@
 import { calculateScopeAwareOperationalScores } from "./operationalRhythm";
 import { getTripMetricDate, normalizeTrip, parseTripValue } from "./tripNormalizer";
+import {
+  getCanonicalTripCompanyId,
+  getCanonicalTripDriverId,
+  getCanonicalTripDriverName,
+} from "./tripIdentity";
 
 export type RankingScope = "internal" | "global";
 
@@ -40,16 +45,15 @@ function tripDate(trip: any): Date {
 }
 
 function driverIdOf(trip: any): string | undefined {
-  return trip?.motoristaId || trip?.driverId;
+  return getCanonicalTripDriverId(trip);
 }
 
 function companyIdOf(trip: any): string | undefined {
-  return trip?.empresaId || trip?.companyId || trip?.company_id;
+  return getCanonicalTripCompanyId(trip);
 }
 
 function driverNameOf(trip: any): string | undefined {
-  const raw = trip?.motoristaNome || trip?.driverName || trip?.nomeMotorista;
-  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  return getCanonicalTripDriverName(trip);
 }
 
 function tripValue(trip: any): number {

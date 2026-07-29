@@ -3,7 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { doc, getDoc } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef } from "firebase/storage";
 import {
-  useAppStore,
+  useActivityStore,
+  useOperationalStore,
+  useSessionStore,
   RecruitmentApplication,
 } from "../../../context/AppContext";
 import {
@@ -36,6 +38,8 @@ import {
   getRecruitmentPhotoStorageCandidates,
   resolveRecruitmentPhoto,
 } from "../../../lib/recruitmentPhoto";
+import { isCompanyRegistration } from "../../../lib/registrationImages";
+import { resolveNotifications } from "../../../services/notificationService";
 
 type CandidateProfile = object | null;
 
@@ -89,18 +93,17 @@ function CandidateAvatar({
   );
 }
 
-export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => void }) {
+function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => void }) {
   const navigate = useNavigate();
+  const { activeCompanyId, companies } = useSessionStore();
+  const { recruitmentApplications } = useActivityStore();
   const {
-    recruitmentApplications,
-    activeCompanyId,
-    companies,
     updateRecruitmentSettings,
     approveRecruitmentApplication,
     rejectRecruitmentApplication,
     deleteRecruitmentApplication,
     users,
-  } = useAppStore();
+  } = useOperationalStore();
 
   const [activeTab, setActiveTab] = useState<"candidates" | "page">(
     "candidates",
@@ -147,6 +150,13 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
 
   const handleSetSelectedHistoryApp = (app: RecruitmentApplication | null) => {
     setSelectedHistoryApp(app);
+    if (app) {
+      void resolveNotifications({
+        companyId: app.companyId,
+        type: "RH_APPLICATION",
+        metadata: { applicationId: app.id },
+      });
+    }
     if (onFormOpen) {
       onFormOpen(app !== null);
     }
@@ -197,6 +207,8 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
   };
 
   const applications = recruitmentApplications.filter((a) => {
+    if (activeCompanyId && a.companyId !== activeCompanyId) return false;
+    if (isCompanyRegistration(a)) return false;
     if (search) {
       return (
         a.fullName.toLowerCase().includes(search.toLowerCase()) ||
@@ -1008,3 +1020,5 @@ export default function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen:
     </div>
   );
 }
+
+export default React.memo(AdminRecruitment);

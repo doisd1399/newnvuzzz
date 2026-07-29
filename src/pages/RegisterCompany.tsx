@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../context/AppContext";
 import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { SafeSelect } from "../components/ui/SafeSelect";
@@ -9,6 +9,7 @@ import { collection, addDoc } from "firebase/firestore";
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
 import { toast } from "sonner";
 import { Upload, ImageIcon, X, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { generateCnpj } from "../lib/cnpj";
 
 const REGISTRATION_IMAGE_MAX_BYTES = 280_000;
 const REGISTRATION_UPLOAD_TIMEOUT_MS = 25_000;
@@ -85,6 +86,7 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<
 type PersistedRegistrationImage = {
   value: string;
   transport: "none" | "storage" | "firestore-data-url";
+  storagePath: string;
 };
 
 const persistRegistrationImage = async (
@@ -92,24 +94,31 @@ const persistRegistrationImage = async (
   suffix: "logo" | "owner",
 ): Promise<PersistedRegistrationImage> => {
   if (!dataUrl || !dataUrl.startsWith("data:image/")) {
-    return { value: "", transport: "none" };
+    return { value: "", transport: "none", storagePath: "" };
   }
 
+  const storagePath =
+    `empresas/company_registrations/recruitment_photos/${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 10)}_${suffix}.jpg`;
   const imageRef = ref(
     storage,
-    `empresas/company_registrations/recruitment_photos/${Date.now()}_${suffix}.jpg`,
+    storagePath,
   );
 
   try {
     await withTimeout(
-      uploadString(imageRef, dataUrl, "data_url"),
+      uploadString(imageRef, dataUrl, "data_url", {
+        contentType: "image/jpeg",
+        cacheControl: "public,max-age=31536000,immutable",
+      }),
       REGISTRATION_UPLOAD_TIMEOUT_MS,
     );
     const downloadUrl = await withTimeout(
       getDownloadURL(imageRef),
       REGISTRATION_UPLOAD_TIMEOUT_MS,
     );
-    return { value: downloadUrl, transport: "storage" };
+    return { value: downloadUrl, transport: "storage", storagePath };
   } catch (error) {
     // The registration must not silently lose an image when Storage is slow,
     // unavailable or rejects the public registration flow. The compressed
@@ -118,32 +127,32 @@ const persistRegistrationImage = async (
       `[RegisterCompany] Firebase Storage unavailable for ${suffix}; using Firestore fallback.`,
       error,
     );
-    return { value: dataUrl, transport: "firestore-data-url" };
+    return { value: dataUrl, transport: "firestore-data-url", storagePath };
   }
-};
-
-const generateCNPJ = () => {
-  const randomNum = (min: number, max: number) =>
-    Math.floor(Math.random() * (max - min + 1)) + min;
-  return `${randomNum(10, 99)}.${randomNum(100, 999)}.${randomNum(100, 999)}/0001-${randomNum(10, 99)}`;
 };
 
 export default function RegisterCompany() {
   const navigate = useNavigate();
   const {
     currentUser,
+    authInitialized,
+    sessionReady,
     logOutApp,
-    simulators = [],
-    simulatorsLoading,
-    simulatorsError,
-  } = useAppStore();
+  } = useSessionStore();
+  const { simulators = [], simulatorsLoading, simulatorsError } = useOperationalStore();
+  const verifiedCurrentUser =
+    authInitialized &&
+    sessionReady &&
+    auth.currentUser?.uid === currentUser?.id
+      ? currentUser
+      : null;
 
   const [formData, setFormData] = useState({
     companyName: "",
     ownerName: "",
     email: "",
     whatsapp: "",
-    cnpj: "",
+    cnpj: generateCnpj(),
     simulatorName: "",
     simulatorId: "",
     companyLogoURL: "",
@@ -159,23 +168,30 @@ export default function RegisterCompany() {
     null,
   );
   const [uploadingImage, setUploadingImage] = useState(false);
+  const imageSelectionVersion = useRef(0);
+  const formIdentityUidRef = useRef<string | null>(null);
+  const activeIdentityUid =
+    verifiedCurrentUser?.id || auth.currentUser?.uid || null;
 
   useEffect(() => {
-    if (currentUser) {
-      setFormData((prev) => ({
-        ...prev,
-        ownerName: prev.ownerName || currentUser.name || "",
-        email: prev.email || currentUser.email || "",
-        whatsapp: prev.whatsapp || currentUser.whatsapp || "",
-        cnpj: prev.cnpj || generateCNPJ(),
-        ownerPhotoUrl:
-          prev.ownerPhotoUrl || null,
-      }));
-      setOwnerPhotoPreview(null);
-    } else {
-      setFormData((prev) => ({ ...prev, cnpj: prev.cnpj || generateCNPJ() }));
-    }
-  }, [currentUser]);
+    if (activeIdentityUid === formIdentityUidRef.current) return;
+
+    formIdentityUidRef.current = activeIdentityUid;
+    setFormData((prev) => ({
+      ...prev,
+      ownerName: activeIdentityUid ? verifiedCurrentUser?.name || "" : "",
+      email: activeIdentityUid ? verifiedCurrentUser?.email || "" : "",
+      whatsapp: activeIdentityUid ? verifiedCurrentUser?.whatsapp || "" : "",
+      cnpj: prev.cnpj || generateCnpj(),
+      ownerPhotoUrl: "",
+    }));
+    setOwnerPhotoPreview(null);
+  }, [
+    activeIdentityUid,
+    verifiedCurrentUser?.name,
+    verifiedCurrentUser?.email,
+    verifiedCurrentUser?.whatsapp,
+  ]);
 
   const handleImageSelect = async (
     e: React.ChangeEvent<HTMLInputElement>,
@@ -186,8 +202,11 @@ export default function RegisterCompany() {
     input.value = "";
     if (!file) return;
 
+    const selectionVersion = ++imageSelectionVersion.current;
+    setUploadingImage(true);
     try {
       const dataUrl = await compressRegistrationImage(file);
+      if (selectionVersion !== imageSelectionVersion.current) return;
       if (isOwnerPhoto) {
         setOwnerPhotoPreview(dataUrl);
       } else {
@@ -195,6 +214,10 @@ export default function RegisterCompany() {
       }
     } catch (error: any) {
       toast.error(error?.message || "Não foi possível processar a imagem.");
+    } finally {
+      if (selectionVersion === imageSelectionVersion.current) {
+        setUploadingImage(false);
+      }
     }
   };
 
@@ -203,6 +226,21 @@ export default function RegisterCompany() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (uploadingImage) {
+      toast.info("Aguarde o processamento da imagem terminar.");
+      return;
+    }
+    const authenticatedUid = auth.currentUser?.uid || null;
+    if (
+      authenticatedUid &&
+      formIdentityUidRef.current &&
+      formIdentityUidRef.current !== authenticatedUid
+    ) {
+      toast.error(
+        "Sua sessão mudou durante o cadastro. Confirme novamente a conta Google.",
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       setUploadingImage(Boolean(photoPreview || ownerPhotoPreview));
@@ -214,10 +252,16 @@ export default function RegisterCompany() {
 
       await addDoc(collection(db, "recruitment_applications"), {
         ...formData,
-        userId: currentUser?.id || auth.currentUser?.uid || "",
+        email: String(auth.currentUser?.email || formData.email)
+          .trim()
+          .toLowerCase(),
+        userId: authenticatedUid || "",
         type: "company_registration",
+        registrationType: "company_registration",
         companyLogoURL: companyLogo.value,
         ownerPhotoUrl: ownerPhoto.value,
+        companyLogoStoragePath: companyLogo.storagePath,
+        ownerPhotoStoragePath: ownerPhoto.storagePath,
         imageTransport: {
           companyLogo: companyLogo.transport,
           ownerPhoto: ownerPhoto.transport,
@@ -343,6 +387,7 @@ export default function RegisterCompany() {
                       <button
                         type="button"
                         onClick={() => {
+                          imageSelectionVersion.current += 1;
                           setPhotoPreview(null);
                           setFormData((f) => ({ ...f, companyLogoURL: "" }));
                         }}
@@ -403,6 +448,7 @@ export default function RegisterCompany() {
                       <button
                         type="button"
                         onClick={() => {
+                          imageSelectionVersion.current += 1;
                           setOwnerPhotoPreview(null);
                           setFormData((f) => ({ ...f, ownerPhotoUrl: "" }));
                         }}
@@ -549,11 +595,15 @@ export default function RegisterCompany() {
                     Cancelar
                   </Button>
                   <Button
-                    disabled={submitting || !formData.simulatorId}
+                    disabled={submitting || uploadingImage || !formData.simulatorId}
                     type="submit"
                     className="w-full sm:w-2/3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl h-12 text-[15px] font-bold shadow-sm transition-all disabled:opacity-50"
                   >
-                    {submitting ? "Enviando..." : "Enviar Solicitação"}
+                    {uploadingImage
+                      ? "Processando imagem..."
+                      : submitting
+                        ? "Enviando..."
+                        : "Enviar Solicitação"}
                   </Button>
                 </div>
               </form>

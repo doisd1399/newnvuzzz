@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useAppStore } from "../../context/AppContext";
+import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
 import {
   Card,
   CardContent,
@@ -39,8 +39,11 @@ import {
   TrendingUp,
   ChevronRight,
   CalendarDays,
+  ChevronsUpDown,
+  ChevronsDownUp,
 } from "lucide-react";
 import { format, differenceInDays } from "date-fns";
+import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import { ptBR } from "date-fns/locale";
 
 import { db } from "../../lib/firebase";
@@ -58,13 +61,14 @@ import {
 
 function DashboardComponent({
   isIntegrated = false,
+  tripHistoryOverride,
 }: {
   isIntegrated?: boolean;
+  tripHistoryOverride?: any[];
 }) {
+  const { currentUser, companies, activeCompanyId } = useSessionStore();
   const {
-    currentUser,
     jobs,
-    jobDemands,
     requestNewJobDemand,
     cancelJobDemand,
     contracts,
@@ -72,16 +76,22 @@ function DashboardComponent({
     trailers,
     startJob,
     finishJob,
-    companies,
     requestJoinCompany,
     cancelRequestJoinCompany,
     users,
-    driverRequests,
     updateUserOnlineStatus,
-    activeCompanyId,
     allCompanyMembers,
-  } = useAppStore();
-  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
+  } = useOperationalStore();
+  const { jobDemands, driverRequests } = useActivityStore();
+  // The integrated profile already owns the company-trip cache. Reusing that
+  // snapshot avoids mounting a second listener and a second state update while
+  // the operational header is opening.
+  const tripHistoryState = useTripHistory(
+    isIntegrated ? null : activeCompanyId,
+  );
+  const historicoTrips = isIntegrated
+    ? tripHistoryOverride || []
+    : tripHistoryState.historicoTrips;
   const normalizedCompanyTrips = useMemo(
     () => historicoTrips.map((trip: any) => normalizeTrip(trip)).filter((trip) => trip.isValid),
     [historicoTrips],
@@ -111,6 +121,7 @@ function DashboardComponent({
   const navigate = useNavigate();
   const location = useLocation();
   const [isPageSelectorOpen, setIsPageSelectorOpen] = useState(false);
+  const [operationTripsExpanded, setOperationTripsExpanded] = useState(false);
 
   // --- MOVED HOOKS TO TOP ---
   const myJob = useMemo(() => {
@@ -219,15 +230,9 @@ function DashboardComponent({
           const contractB = getNomeContratoHistorico(b, contractsMap.get(b.contractId));
 
           if (dateB !== dateA) {
-            console.log(
-              `[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | ${new Date(dateA).toLocaleString()} vs ${new Date(dateB).toLocaleString()} | sort: ${dateB - dateA}`,
-            );
             return dateB - dateA;
           }
 
-          console.log(
-            `[SORT DEBUG DASHBOARD] ${contractA} vs ${contractB} | Fallback string comparison`,
-          );
           return contractA.localeCompare(contractB);
         });
     },
@@ -245,19 +250,6 @@ function DashboardComponent({
   const activePageDetails =
     pageOptions.find((p) => p.id === location.pathname) || pageOptions[0];
   const ActiveIcon = activePageDetails.icon;
-
-  // --- LOGS TEMPORÁRIOS CONFORME SOLICITADO ---
-  console.log("================== DASHBOARD CARREGADO ==================");
-  console.log("- Empresa Ativa ID:", activeCompanyId);
-  console.log(
-    "- Empresa Nome:",
-    companies.find((c) => c.id === activeCompanyId)?.companyName,
-  );
-  console.log(
-    "- Simulador:",
-    companies.find((c) => c.id === activeCompanyId)?.simulatorName,
-  );
-  console.log("- Componente quebra?: validando renderização do Dashboard");
 
   const renderTopControls = (showLaunchTrip = false) => {
     if (isIntegrated) return null;
@@ -352,7 +344,10 @@ function DashboardComponent({
                   key={opt.id}
                   onClick={() => {
                     setIsPageSelectorOpen(false);
-                    navigate(opt.id);
+                    void prepareAndCommitNavigation(
+                      () => {},
+                      () => navigate(opt.id)
+                    );
                   }}
                   className={cn(
                     "w-full flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-3 border-b border-slate-100 dark:border-[#2A2F3A] last:border-0 hover:bg-slate-50 dark:hover:bg-[#2A2F3A] transition-colors text-left",
@@ -1090,8 +1085,11 @@ function DashboardComponent({
             <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
               <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
                 <div
-                  className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
-                  style={{ width: `${Math.max(3, progressPercent)}%` }}
+                  className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
+                  style={{
+                    transform: `scaleX(${Math.min(100, Math.max(3, progressPercent)) / 100})`,
+                    willChange: "transform",
+                  }}
                 ></div>
               </div>
               <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
@@ -1214,16 +1212,39 @@ function DashboardComponent({
           </Card>
         )}
 
-      {/* Contract Trips Section */}
-      <div className="w-full flex flex-col pt-2">
-        <div className="flex items-center gap-2 mb-3 px-1">
-          <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>
-          <h3 className="text-[15px] sm:text-[16px] font-bold text-gray-900 dark:text-[#fafafa] tracking-wide uppercase">
-            Viagens do Contrato
-          </h3>
+      {/* Operation Trips Section */}
+      <div className="w-full flex flex-col pt-1">
+        <div className="w-full px-1 pb-3 border-b border-gray-200/80 dark:border-[#2A2F3A]">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 flex items-center justify-center shrink-0">
+                <History size={18} className="text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-[15px] sm:text-base font-semibold text-gray-900 dark:text-[#fafafa] leading-tight whitespace-nowrap">
+                  Viagens da operação
+                </h3>
+                <p className="mt-0.5 text-[12px] text-gray-500 dark:text-[#a1a1aa] truncate">
+                  Histórico das execuções
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOperationTripsExpanded((prev) => !prev)}
+              title={operationTripsExpanded ? "Recolher detalhes das viagens" : "Expandir detalhes das viagens"}
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:text-gray-600 dark:text-[#a1a1aa] transition-colors"
+            >
+              {operationTripsExpanded ? (
+                <ChevronsDownUp size={16} className="stroke-[2.2]" />
+              ) : (
+                <ChevronsUpDown size={16} className="stroke-[2.2]" />
+              )}
+            </button>
+          </div>
         </div>
-        <div className="w-full">
-          <TripHistory embeddedJob={myJob} hideHeader={true} />
+        <div className="w-full mt-3">
+          <TripHistory embeddedJob={myJob} hideHeader={true} hideHeaderActions={true} externalExpandAllState={operationTripsExpanded} />
         </div>
       </div>
 
@@ -1337,7 +1358,10 @@ function DashboardComponent({
   );
 }
 
-export default function Dashboard(props: { isIntegrated?: boolean }) {
+export default function Dashboard(props: {
+  isIntegrated?: boolean;
+  tripHistoryOverride?: any[];
+}) {
   return (
     <ErrorBoundary>
       <DashboardComponent {...props} />

@@ -13,7 +13,7 @@ import {
   Info 
 } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { normalizeTrip, getFilteredTrips } from "../../lib/metricsEngine";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -29,7 +29,8 @@ export default function Reports({
   isInsideAdminTab?: boolean;
 } = {}) {
   const navigate = useNavigate();
-  const { activeCompanyId, users = [], activeRole, currentUser } = useAppStore();
+  const { activeCompanyId, activeRole, currentUser } = useSessionStore();
+  const { users = [] } = useOperationalStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [period, setPeriod] = useState<"semanal" | "mensal">("semanal");
   const [mode, setMode] = useState<"empresa" | "funcionarios">("funcionarios"); // Default to funcionarios if we pass driverId

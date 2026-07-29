@@ -1,23 +1,53 @@
+import { onAuthTeardown } from "./authLifecycle";
+
 type ImageCacheEntry = {
-  image: HTMLImageElement;
+  image: HTMLImageElement | null;
   promise: Promise<void>;
   ready: boolean;
 };
 
-const MAX_PRELOADED_IMAGES = 200;
+// Keep enough decoded entries for a ranking switch plus the active workspace.
+// A smaller limit caused critical avatars to be evicted between the background
+// warm-up and the first paint on large fleets.
+const MAX_PRELOADED_IMAGES = 512;
 
-// Keep the Image element alive after the request finishes. Besides avoiding a
-// second request, this gives the browser a much better chance of reusing the
-// already-decoded bitmap when the same URL is mounted in the interface. The
-// bounded LRU prevents a long session with many users from growing memory
-// without limit; the browser's own HTTP cache remains available after eviction.
-const preloadedImages = new Map<string, ImageCacheEntry>();
+type NvuImageCacheGlobal = typeof globalThis & {
+  __nvuPreloadedImages?: Map<string, ImageCacheEntry>;
+  __nvuImageReadySubscribers?: Map<string, Set<() => void>>;
+};
+
+// Store the registry on globalThis so AI Studio/Vite hot updates do not throw
+// away decoded avatars and trigger a visible initials -> photo cycle again.
+// The browser/WebView HTTP cache remains the durable layer across full reloads.
+const imageCacheGlobal = globalThis as NvuImageCacheGlobal;
+const preloadedImages =
+  imageCacheGlobal.__nvuPreloadedImages ?? new Map<string, ImageCacheEntry>();
+const readySubscribers =
+  imageCacheGlobal.__nvuImageReadySubscribers ?? new Map<string, Set<() => void>>();
+imageCacheGlobal.__nvuPreloadedImages = preloadedImages;
+imageCacheGlobal.__nvuImageReadySubscribers = readySubscribers;
+
+// A WebView can keep this module alive across a sign-out/sign-in cycle. Drop
+// the in-memory decoded registry at the auth boundary so a new account never
+// reuses another account's URL -> bitmap association.
+let authTeardownAttached = false;
+if (typeof window !== "undefined" && !authTeardownAttached) {
+  authTeardownAttached = true;
+  onAuthTeardown(() => {
+    preloadedImages.clear();
+    readySubscribers.clear();
+  });
+}
 
 const normalizeImageUrl = (url?: string | null) => url?.trim() || "";
 
 const touchEntry = (url: string, entry: ImageCacheEntry) => {
   preloadedImages.delete(url);
   preloadedImages.set(url, entry);
+};
+
+const notifyImageReady = (url: string) => {
+  readySubscribers.get(url)?.forEach((subscriber) => subscriber());
 };
 
 const evictReadyEntries = () => {
@@ -58,14 +88,70 @@ export function isImageReady(url?: string | null): boolean {
 
   const entry = preloadedImages.get(normalizedUrl);
   if (!entry) return false;
+  if (
+    !entry.ready &&
+    entry.image?.complete &&
+    entry.image.naturalWidth > 0
+  ) {
+    entry.ready = true;
+    // `isImageReady` is also called during React render. Defer the subscriber
+    // notification so a completed background preload cannot call setState
+    // synchronously while another component is rendering.
+    Promise.resolve().then(() => notifyImageReady(normalizedUrl));
+  }
   touchEntry(normalizedUrl, entry);
   return entry.ready;
 }
 
+/** Subscribe to readiness without forcing every avatar to poll or remount. */
+export function subscribeImageReady(
+  url: string | null | undefined,
+  subscriber: () => void,
+): () => void {
+  const normalizedUrl = normalizeImageUrl(url);
+  if (!normalizedUrl) return () => {};
+
+  const subscribers = readySubscribers.get(normalizedUrl) ?? new Set();
+  subscribers.add(subscriber);
+  readySubscribers.set(normalizedUrl, subscribers);
+
+  return () => {
+    const current = readySubscribers.get(normalizedUrl);
+    current?.delete(subscriber);
+    if (current?.size === 0) readySubscribers.delete(normalizedUrl);
+  };
+}
+
 /**
- * Starts one browser-native preload per URL. The browser keeps the decoded
- * response in its normal cache, so route changes can reuse it without creating
- * Blob/ObjectURL copies or downloading the same image repeatedly.
+ * Marks an image that the native <img> element has already rendered. This is
+ * useful when the visible image wins the race against the background preloader.
+ */
+export function rememberImageReady(url?: string | null): void {
+  const normalizedUrl = normalizeImageUrl(url);
+  if (!normalizedUrl || typeof window === "undefined") return;
+
+  const existing = preloadedImages.get(normalizedUrl);
+  if (existing) {
+    const becameReady = !existing.ready;
+    existing.ready = true;
+    touchEntry(normalizedUrl, existing);
+    if (becameReady) notifyImageReady(normalizedUrl);
+    return;
+  }
+
+  preloadedImages.set(normalizedUrl, {
+    image: null,
+    ready: true,
+    promise: Promise.resolve(),
+  });
+  evictReadyEntries();
+  notifyImageReady(normalizedUrl);
+}
+
+/**
+ * Starts one browser-native preload per URL. Keeping the Image element alive
+ * gives Android WebView a better chance of reusing the decoded bitmap during
+ * route changes. The browser's own HTTP cache remains available after eviction.
  */
 export function preloadImage(url?: string | null): Promise<void> {
   const normalizedUrl = normalizeImageUrl(url);
@@ -80,6 +166,9 @@ export function preloadImage(url?: string | null): Promise<void> {
   }
 
   const image = new Image();
+  image.loading = "eager";
+  (image as HTMLImageElement & { fetchPriority?: string }).fetchPriority =
+    "high";
   image.decoding = "async";
 
   const entry: ImageCacheEntry = {
@@ -100,6 +189,7 @@ export function preloadImage(url?: string | null): Promise<void> {
         await decodeWithTimeout(image);
         entry.ready = true;
         evictReadyEntries();
+        notifyImageReady(normalizedUrl);
       } else if (preloadedImages.get(normalizedUrl) === entry) {
         // Do not permanently cache a transient network failure. A later mount
         // or connectivity recovery must be allowed to retry the same URL.
@@ -142,4 +232,10 @@ export function preloadImages(
   return Promise.all(
     Array.from({ length: workerCount }, () => worker()),
   ).then(() => undefined);
+}
+
+/** Clears only the in-memory decoded registry; browser HTTP cache is untouched. */
+export function clearImageCache(): void {
+  preloadedImages.clear();
+  readySubscribers.clear();
 }

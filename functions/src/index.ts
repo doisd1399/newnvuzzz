@@ -1,122 +1,403 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
+import { createHash } from "node:crypto";
 
 admin.initializeApp();
 
-export const sendPushNotification = functions.https.onCall(async (data, context) => {
-  // Opcional: Validar se o usuário está autenticado
+const db = admin.firestore();
+
+type NotificationRecord = {
+  userId?: unknown;
+  title?: unknown;
+  message?: unknown;
+  titulo?: unknown;
+  mensagem?: unknown;
+  type?: unknown;
+  tipo?: unknown;
+  companyId?: unknown;
+  targetProfile?: unknown;
+  dedupeKey?: unknown;
+  metadata?: unknown;
+};
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+function safeDocumentId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 1400);
+}
+
+function pushDispatchId(
+  userId: string,
+  notificationId: string,
+  dedupeKey: string | null,
+) {
+  // createNotification usa exatamente userId + dedupeKey como ID. Repetir a
+  // regra aqui mantém compatibilidade com registros já processados e também
+  // une documentos moderno/legado que tenham IDs diferentes.
+  return dedupeKey
+    ? safeDocumentId(`${userId}_${dedupeKey}`)
+    : notificationId;
+}
+
+function androidNotificationKey(dispatchId: string) {
+  return `nvu_${createHash("sha256").update(dispatchId).digest("hex").slice(0, 40)}`;
+}
+
+function stringifyPushData(data: NotificationRecord, notificationId: string) {
+  const payload: Record<string, string> = {
+    notificationId,
+  };
+
+  const type = asNonEmptyString(data.type) || asNonEmptyString(data.tipo);
+  const companyId = asNonEmptyString(data.companyId);
+  const targetProfile = asNonEmptyString(data.targetProfile);
+  const dedupeKey = asNonEmptyString(data.dedupeKey);
+
+  if (type) payload.type = type;
+  if (companyId) payload.companyId = companyId;
+  if (targetProfile) payload.targetProfile = targetProfile;
+  if (dedupeKey) payload.dedupeKey = dedupeKey;
+
+  if (data.metadata && typeof data.metadata === "object") {
+    Object.entries(data.metadata as Record<string, unknown>).forEach(([key, value]) => {
+      if (value == null) return;
+      if (["string", "number", "boolean"].includes(typeof value)) {
+        payload[key] = String(value);
+      }
+    });
+  }
+
+  return payload;
+}
+
+async function deleteInvalidTokens(tokens: string[], response: admin.messaging.BatchResponse) {
+  const invalidTokens = new Set<string>();
+
+  response.responses.forEach((result, index) => {
+    if (result.success) return;
+    const code = result.error?.code;
+    if (
+      code === "messaging/invalid-registration-token" ||
+      code === "messaging/registration-token-not-registered"
+    ) {
+      invalidTokens.add(tokens[index]);
+    }
+  });
+
+  for (const token of invalidTokens) {
+    const snapshot = await db.collection("userDevices").where("token", "==", token).get();
+    const batch = db.batch();
+    snapshot.docs.forEach((document) => batch.delete(document.ref));
+    if (!snapshot.empty) await batch.commit();
+  }
+}
+
+async function sendNotificationDocumentPush(
+  collectionName: "notifications" | "notificacoes",
+  notificationId: string,
+  data: NotificationRecord,
+) {
+  const userId = asNonEmptyString(data.userId);
+  const title = asNonEmptyString(data.title) || asNonEmptyString(data.titulo);
+  const body = asNonEmptyString(data.message) || asNonEmptyString(data.mensagem);
+  const dedupeKey = asNonEmptyString(data.dedupeKey);
+
+  if (!userId || !title || !body) {
+    console.warn("[NVU PUSH] Notificação sem userId, título ou mensagem.", {
+      collectionName,
+      notificationId,
+    });
+    return;
+  }
+
+  // A mesma notificação pode existir no esquema moderno ou legado. A chave sem
+  // o nome da coleção impede que os dois gatilhos enviem o mesmo evento.
+  const dispatchId = pushDispatchId(userId, notificationId, dedupeKey);
+  const dispatchRef = db.collection("pushDispatches").doc(dispatchId);
+  const claimed = await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(dispatchRef);
+    if (snapshot.exists) return false;
+    transaction.create(dispatchRef, {
+      notificationId,
+      dedupeKey,
+      sourceCollection: collectionName,
+      userId,
+      status: "processing",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return true;
+  });
+
+  if (!claimed) {
+    console.log(`[NVU PUSH] Evento ${notificationId} já processado ou em processamento.`);
+    return;
+  }
+
+  try {
+    const devices = await db.collection("userDevices").where("userId", "==", userId).get();
+    const tokens = Array.from(
+      new Set(
+        devices.docs
+          .map((document) => asNonEmptyString(document.data().token))
+          .filter((token): token is string => Boolean(token)),
+      ),
+    );
+
+    if (tokens.length === 0) {
+      await dispatchRef.set(
+        {
+          status: "completed_no_tokens",
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      return;
+    }
+
+    const androidKey = androidNotificationKey(dispatchId);
+    const response = await admin.messaging().sendEachForMulticast({
+      notification: { title, body },
+      data: stringifyPushData(data, notificationId),
+      tokens,
+      android: {
+        collapseKey: androidKey,
+        notification: {
+          channelId: "nvu_notifications",
+          tag: androidKey,
+        },
+      },
+    });
+
+    await deleteInvalidTokens(tokens, response);
+    await dispatchRef.set(
+      {
+        status: "completed",
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+  } catch (error) {
+    // Libera a chave para que uma repetição automática do gatilho possa tentar novamente.
+    await dispatchRef.delete().catch(() => undefined);
+    console.error("[NVU PUSH] Falha ao processar notificação:", error);
+    throw error;
+  }
+}
+
+export const pushOnNotificationCreated = functions.firestore
+  .document("notifications/{notificationId}")
+  .onCreate(async (snapshot, context) => {
+    await sendNotificationDocumentPush(
+      "notifications",
+      context.params.notificationId,
+      snapshot.data() as NotificationRecord,
+    );
+  });
+
+export const pushOnLegacyNotificationCreated = functions.firestore
+  .document("notificacoes/{notificationId}")
+  .onCreate(async (snapshot, context) => {
+    await sendNotificationDocumentPush(
+      "notificacoes",
+      context.params.notificationId,
+      snapshot.data() as NotificationRecord,
+    );
+  });
+
+/**
+ * Registra um token FCM de forma canônica. Antes de salvar, remove qualquer
+ * associação anterior do mesmo token, evitando que um aparelho continue
+ * vinculado a contas antigas.
+ */
+export const registerPushDevice = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "Autenticação obrigatória.");
+  }
+
+  const token = asNonEmptyString(data?.token);
+  if (!token) {
+    throw new functions.https.HttpsError("invalid-argument", "Token FCM obrigatório.");
+  }
+
+  const uid = context.auth.uid;
+  const existing = await db.collection("userDevices").where("token", "==", token).get();
+  const batch = db.batch();
+  existing.docs.forEach((document) => batch.delete(document.ref));
+
+  const deviceRef = db.collection("userDevices").doc(`${uid}_${token}`);
+  batch.set(
+    deviceRef,
+    {
+      userId: uid,
+      token,
+      platform: asNonEmptyString(data?.platform) || "unknown",
+      companyId: asNonEmptyString(data?.companyId),
+      activeProfile: asNonEmptyString(data?.activeProfile),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+  await batch.commit();
+
+  return { success: true };
+});
+
+export const sendPushNotification = functions.https.onCall(async (_data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError(
       "unauthenticated",
-      "O usuário precisa estar autenticado para enviar notificações."
+      "O usuário precisa estar autenticado para enviar notificações.",
     );
   }
 
-  const { companyId, title, body, data: payloadData } = data;
+  // Compatibilidade com versões antigas do cliente: a função continua
+  // existente, mas não dispara FCM. Toda notificação deve nascer em
+  // notifications/notificacoes e passar pelo gatilho idempotente acima.
+  console.warn(
+    "[NVU PUSH] sendPushNotification é legado; envio direto ignorado para evitar duplicação.",
+  );
+  return {
+    success: true,
+    skipped: true,
+    reason: "notification_documents_are_canonical",
+  };
+});
 
-  if (!companyId || !title || !body) {
+/**
+ * Repara de forma idempotente o vínculo de uma inscrição já aprovada.
+ */
+export const repairApprovedMembership = functions.https.onCall(async (_data, context) => {
+  if (!context.auth) {
     throw new functions.https.HttpsError(
-      "invalid-argument",
-      "companyId, title e body são obrigatórios."
+      "unauthenticated",
+      "O usuário precisa estar autenticado para reparar o acesso.",
     );
   }
 
-  const db = admin.firestore();
-  const adminIds = new Set<string>();
+  const uid = context.auth.uid;
+  const email = String(context.auth.token.email || "").trim().toLowerCase();
+  const candidates = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
 
-  try {
-    // 1. Localizar proprietário e administradores
-    const companySnapshot = await db.collection("frotas").doc(companyId).get();
-    if (companySnapshot.exists) {
-      const company = companySnapshot.data();
-      if (company?.ownerId) adminIds.add(company.ownerId);
-      if (company?.userId) adminIds.add(company.userId);
-    }
+  const byUid = await db.collection("recruitment_applications").where("userId", "==", uid).get();
+  byUid.forEach((document) => candidates.set(document.id, document));
 
-    const membersSnapshot = await db.collection("companyMembers")
-      .where("companyId", "==", companyId)
-      .get();
-      
-    membersSnapshot.forEach((doc) => {
-      const member = doc.data();
-      const roles = Array.isArray(member.roles) ? member.roles : [];
-      if (roles.includes("admin")) {
-        adminIds.add(member.userId);
-      }
-    });
-
-    if (adminIds.size === 0) {
-      console.log(`[NVU PUSH] Nenhum administrador encontrado para a empresa: ${companyId}`);
-      return { success: false, reason: "no_admins_found" };
-    }
-
-    // 2. Buscar os tokens FCM dos administradores
-    const tokens: string[] = [];
-    const devicesSnapshot = await db.collection("userDevices").get();
-    
-    devicesSnapshot.forEach((deviceDoc) => {
-      const device = deviceDoc.data();
-      if (device.token && adminIds.has(device.userId)) {
-        tokens.push(device.token);
-      }
-    });
-
-    if (tokens.length === 0) {
-      console.log("[NVU PUSH] Nenhum token FCM encontrado para os administradores.");
-      return { success: false, reason: "no_tokens_found" };
-    }
-
-    const message: admin.messaging.MulticastMessage = {
-      notification: {
-        title,
-        body,
-      },
-      data: payloadData || {},
-      tokens,
-    };
-
-    const response = await admin.messaging().sendEachForMulticast(message);
-    
-    let successCount = response.successCount;
-    let failureCount = response.failureCount;
-
-    // Remover tokens inválidos do Firestore
-    if (failureCount > 0) {
-      const failedTokens: string[] = [];
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success) {
-          const errorCode = resp.error?.code;
-          if (
-            errorCode === "messaging/invalid-registration-token" ||
-            errorCode === "messaging/registration-token-not-registered"
-          ) {
-            failedTokens.push(tokens[idx]);
-          }
-        }
-      });
-
-      if (failedTokens.length > 0) {
-        console.log(`Removendo ${failedTokens.length} tokens inválidos.`);
-        for (const token of failedTokens) {
-          const snapshot = await db
-            .collection("userDevices")
-            .where("token", "==", token)
-            .get();
-            
-          snapshot.forEach((doc) => {
-            doc.ref.delete();
-          });
-        }
-      }
-    }
-
-    return {
-      success: true,
-      successCount,
-      failureCount,
-    };
-  } catch (error) {
-    console.error("Erro ao processar push notification:", error);
-    throw new functions.https.HttpsError("internal", "Erro interno ao enviar push.");
+  if (email) {
+    const byEmail = await db.collection("recruitment_applications").where("email", "==", email).get();
+    byEmail.forEach((document) => candidates.set(document.id, document));
   }
+
+  const approved = Array.from(candidates.values())
+    .filter((document) => document.data().status === "approved")
+    .sort((a, b) => {
+      const toMillis = (value: unknown): number => {
+        if (value instanceof admin.firestore.Timestamp) return value.toMillis();
+        if (typeof value === "string") {
+          const parsed = Date.parse(value);
+          return Number.isNaN(parsed) ? 0 : parsed;
+        }
+        return 0;
+      };
+      const aData = a.data();
+      const bData = b.data();
+      return toMillis(bData.updatedAt || bData.createdAt) - toMillis(aData.updatedAt || aData.createdAt);
+    });
+
+  if (approved.length === 0) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Nenhuma inscrição aprovada foi encontrada para esta conta.",
+    );
+  }
+
+  const applicationDoc = approved[0];
+  const application = applicationDoc.data();
+  const companyId = String(application.companyId || "").trim();
+
+  if (!companyId) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "A inscrição aprovada não possui empresa vinculada.",
+    );
+  }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const userRef = db.collection("users").doc(uid);
+  const membershipQuery = await db.collection("companyMembers")
+    .where("userId", "==", uid)
+    .where("companyId", "==", companyId)
+    .get();
+
+  await db.runTransaction(async (transaction) => {
+    const userSnapshot = await transaction.get(userRef);
+    const existingUser = userSnapshot.exists ? userSnapshot.data() || {} : {};
+    const existingRoles = Array.isArray(existingUser.roles) ? existingUser.roles : [];
+    const roles = Array.from(new Set([...existingRoles, "driver"]));
+
+    transaction.set(
+      userRef,
+      {
+        id: uid,
+        email: email || String(application.email || existingUser.email || "").trim().toLowerCase(),
+        name: application.fullName || existingUser.name || context.auth?.token.name || "Usuário",
+        whatsapp: application.whatsapp || existingUser.whatsapp || "",
+        profilePhotoURL: application.applicationPhotoURL || existingUser.profilePhotoURL || "",
+        companyId,
+        status: "active",
+        role: existingUser.role === "admin" ? "admin" : "driver",
+        roles,
+        updatedAt: now,
+        ...(!userSnapshot.exists ? { createdAt: now } : {}),
+      },
+      { merge: true },
+    );
+
+    if (membershipQuery.empty) {
+      transaction.set(db.collection("companyMembers").doc(), {
+        userId: uid,
+        companyId,
+        roles: ["driver"],
+        status: "active",
+        permissions: [],
+        joinedAt: now,
+        updatedAt: now,
+      });
+    } else {
+      membershipQuery.docs.forEach((membershipDoc) => {
+        const membership = membershipDoc.data();
+        const currentRoles = Array.isArray(membership.roles) ? membership.roles : [];
+        transaction.set(
+          membershipDoc.ref,
+          {
+            userId: uid,
+            companyId,
+            roles: Array.from(new Set([...currentRoles, "driver"])),
+            status: "active",
+            permissions: Array.isArray(membership.permissions) ? membership.permissions : [],
+            updatedAt: now,
+          },
+          { merge: true },
+        );
+      });
+    }
+
+    transaction.set(
+      applicationDoc.ref,
+      {
+        userId: uid,
+        email: email || String(application.email || "").trim().toLowerCase(),
+        status: "approved",
+        accessRepairedAt: now,
+        updatedAt: now,
+      },
+      { merge: true },
+    );
+  });
+
+  return { success: true, userId: uid, companyId, applicationId: applicationDoc.id };
 });

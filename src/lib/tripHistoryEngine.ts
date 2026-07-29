@@ -4,6 +4,10 @@ import {
   getWeeklyRange,
 } from "./metricsEngine";
 import { normalizeTrip, NormalizedTrip } from "./tripNormalizer";
+import {
+  getCanonicalTripDriverId,
+  getCanonicalTripDriverName,
+} from "./tripIdentity";
 
 export type TripHistoryPeriodPreset =
   | "todos"
@@ -62,25 +66,6 @@ function resolveRange(input: TripHistoryFilterInput): {
   return {};
 }
 
-function getCanonicalTripDriverId(trip: NormalizedTrip | any): string {
-  return String(
-    trip?.motoristaId ||
-      trip?.driverId ||
-      trip?.motorista_id ||
-      trip?.userId ||
-      "",
-  ).trim();
-}
-
-function getCanonicalTripDriverName(trip: NormalizedTrip | any): string {
-  return String(
-    trip?.motoristaNome ||
-      trip?.driverName ||
-      trip?.motorista_nome ||
-      "",
-  ).trim();
-}
-
 function belongsToEmbeddedJob(trip: NormalizedTrip, embeddedJob: any): boolean {
   if (!embeddedJob) return true;
 
@@ -131,7 +116,8 @@ export function filterAndSortTripHistory(
       if (
         !input.driverId &&
         normalizedDriverName &&
-        getCanonicalTripDriverName(trip).toLowerCase() !== normalizedDriverName
+        (getCanonicalTripDriverName(trip) || "").toLowerCase() !==
+          normalizedDriverName
       ) {
         return false;
       }

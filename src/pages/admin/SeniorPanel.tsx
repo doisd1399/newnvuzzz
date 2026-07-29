@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Card, CardContent } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import {
@@ -21,13 +21,14 @@ import {
   Activity,
   Gamepad2,
   Navigation,
-  ShieldCheck,
-  Clock,
-  Award,
+
+
+
   Filter,
-  BarChart3,
   Search,
+  ChevronDown,
 } from "lucide-react";
+import { useTripsRealtime } from "../../hooks/useTripsRealtime";
 import { db, auth } from "../../lib/firebase";
 import {
   collection,
@@ -40,15 +41,24 @@ import {
   deleteDoc,
   setDoc,
   writeBatch,
+  runTransaction,
+  serverTimestamp,
+  deleteField,
   onSnapshot,
 } from "firebase/firestore";
 import { toast } from "sonner";
 import { syncSingleSimulatorMember, removeSimulatorMember } from "../../lib/syncSimulatorMembers";
 import { cn } from "../../lib/utils";
 import SimulatorManager from "../../components/admin/SimulatorManager";
-import { normalizeRegistrationImages } from "../../lib/registrationImages";
+import {
+  isCompanyRegistration,
+  normalizeRegistrationImages,
+} from "../../lib/registrationImages";
+import { hydrateRegistrationImages } from "../../lib/registrationImageStorage";
+import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { createNotification } from "../../services/notificationService";
 import { isAuthTeardownActive, onAuthTeardown } from "../../lib/authLifecycle";
+import { getFilteredTrips, getMonthlyRange } from "../../lib/metricsEngine";
 
 type SeniorTab = "requests" | "approved" | "profile" | "settings";
 
@@ -56,6 +66,13 @@ type SeniorNavigation = {
   activeTab: SeniorTab;
   selectedCompanyId: string | null;
 };
+
+// Transitional access mode kept for the existing NVU operation. Replace this
+// shared password with a server-side role/custom-claim flow when the security
+// hardening phase is scheduled.
+const LEGACY_SENIOR_PASSWORD = "9173";
+const SENIOR_PASSWORD_SESSION_KEY = "seniorPanelPasswordUnlocked";
+const SENIOR_PASSWORD_UID_KEY = "seniorPanelPasswordUid";
 
 const getSeniorNavigation = (state: unknown): SeniorNavigation => {
   const routeState =
@@ -69,7 +86,7 @@ const getSeniorNavigation = (state: unknown): SeniorNavigation => {
     requestedTab === "settings" ||
     requestedTab === "requests"
       ? requestedTab
-      : "requests";
+      : "approved";
   const selectedCompanyId =
     typeof routeState.selectedCompanyId === "string"
       ? routeState.selectedCompanyId
@@ -81,12 +98,42 @@ const getSeniorNavigation = (state: unknown): SeniorNavigation => {
 export default function SeniorPanel() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isSeniorAuthenticated, setIsSeniorAuthenticated, setActiveCompanyId, switchRole, setSeniorCompanyId } = useAppStore();
-  const [password, setPassword] = useState("");
+  const {
+    currentUser,
+    setIsSeniorAuthenticated,
+    setActiveCompanyId,
+    switchRole,
+    setSeniorCompanyId,
+  } = useSessionStore();
+  const { simulators } = useOperationalStore();
   const [loadingAction, setLoadingAction] = useState(false);
-  const [unlocked, setUnlocked] = useState(
-    sessionStorage.getItem("seniorPanelUnlocked") === "true"
+  const [password, setPassword] = useState("");
+  const hasSeniorRole = Boolean(
+    (currentUser as any)?.role === "senior" ||
+      (Array.isArray((currentUser as any)?.roles) &&
+        (currentUser as any).roles.includes("senior")),
   );
+  const currentUid = auth.currentUser?.uid || currentUser?.id || "";
+  const [unlocked, setUnlocked] = useState(false);
+
+  useEffect(() => {
+    const roleSession =
+      hasSeniorRole && sessionStorage.getItem("seniorPanelUnlocked") === "true";
+    const passwordSession =
+      Boolean(currentUid) &&
+      sessionStorage.getItem(SENIOR_PASSWORD_SESSION_KEY) === "true" &&
+      sessionStorage.getItem(SENIOR_PASSWORD_UID_KEY) === currentUid;
+
+    if (hasSeniorRole || roleSession || passwordSession) {
+      setUnlocked(true);
+      setIsSeniorAuthenticated(true);
+      return;
+    }
+
+    setUnlocked(false);
+    setIsSeniorAuthenticated(false);
+    if (!hasSeniorRole) sessionStorage.removeItem("seniorPanelUnlocked");
+  }, [currentUid, hasSeniorRole, setIsSeniorAuthenticated]);
 
   // Global Data States
   const [registrations, setRegistrations] = useState<any[]>([]);
@@ -115,6 +162,9 @@ export default function SeniorPanel() {
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmDeleteRegId, setConfirmDeleteRegId] = useState<string | null>(null);
+  const [companySearch, setCompanySearch] = useState("");
+  const [selectedSimulator, setSelectedSimulator] = useState("all");
+  const [simulatorMenuOpen, setSimulatorMenuOpen] = useState(false);
 
   // The senior panel contains multiple views inside one route. Mirror the
   // selected view into React Router so browser/WebView Back can restore the
@@ -150,6 +200,7 @@ export default function SeniorPanel() {
     if (unlocked) {
       const unsubs: any[] = [];
       let stopped = false;
+      let registrationHydrationVersion = 0;
       const stop = () => {
         if (stopped) return;
         stopped = true;
@@ -168,20 +219,36 @@ export default function SeniorPanel() {
         }
       };
 
-      const qRegs = query(
-        collection(db, "recruitment_applications"),
-        where("type", "==", "company_registration"),
-      );
+      // Do not rely only on the current `type` field: older submissions can
+      // lack it while still carrying the company identity and legacy logo.
+      const qRegs = query(collection(db, "recruitment_applications"));
       unsubs.push(
         onSnapshot(
           qRegs,
           (snap) => {
             if (stopped || isAuthTeardownActive()) return;
-            setRegistrations(
-              snap.docs.map((d) =>
-                normalizeRegistrationImages({ id: d.id, ...d.data() }),
+            const version = ++registrationHydrationVersion;
+            const normalized = snap.docs
+              .map((d) => normalizeRegistrationImages({ id: d.id, ...d.data() }))
+              .filter((registration) => isCompanyRegistration(registration));
+            setRegistrations(normalized);
+            void Promise.all(
+              normalized.map((registration) =>
+                hydrateRegistrationImages(registration),
               ),
-            );
+            ).then((hydrated) => {
+              if (
+                !stopped &&
+                !isAuthTeardownActive() &&
+                version === registrationHydrationVersion
+              ) {
+                setRegistrations(hydrated);
+              }
+            }).catch((error) => {
+              if (!stopped && !isAuthTeardownActive()) {
+                console.warn("[NVU Senior] Falha ao resolver imagem legada:", error);
+              }
+            });
           },
           snapshotError("Falha ao ler inscrições"),
         ),
@@ -275,12 +342,40 @@ export default function SeniorPanel() {
     }
   }, [unlocked]);
 
+  const toDate = (value: any): Date | null => {
+    if (!value) return null;
+    if (typeof value?.toDate === "function") return value.toDate();
+    if (typeof value?.seconds === "number") return new Date(value.seconds * 1000);
+    const parsed = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const monthlyRange = useMemo(() => getMonthlyRange(), []);
+  
+  const { trips: currentMonthTrips } = useTripsRealtime({
+    startDate: monthlyRange.start,
+    endDate: monthlyRange.end,
+    enabled: unlocked
+  });
+
   const companyStats = useMemo(() => {
     return allCompanies.map((c) => {
       const members = allMembers.filter(
         (m) => m.companyId === c.id && m.status === "active",
       );
       const jobs = allJobs.filter((j) => j.companyId === c.id);
+      
+      const monthlyTrips = getFilteredTrips(
+        currentMonthTrips,
+        undefined, // startDate
+        undefined, // endDate
+        c.id, // empresaId
+        undefined, // simulatorId
+        allCompanies, // companies
+        undefined, // motorista
+        simulators as Record<string, unknown>[]
+      ).length;
+      
       const owner = allUsers.find((u) => u.id === c.userId);
 
       return {
@@ -292,6 +387,7 @@ export default function SeniorPanel() {
         totalContracts: allContracts.filter((ct) => ct.companyId === c.id)
           .length,
         totalTrips: jobs.length,
+        monthlyTrips,
         totalDeliveries: jobs.reduce((acc, j) => acc + (j.progress || 0), 0),
         totalVehicles: allVehicles.filter((v) => v.companyId === c.id).length,
         totalTrailers: allTrailers.filter((t) => t.companyId === c.id).length,
@@ -304,50 +400,145 @@ export default function SeniorPanel() {
     allJobs,
     allVehicles,
     allTrailers,
+    allUsers,
+    currentMonthTrips,
   ]);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === "9173") {
+    const passwordAccepted = password === LEGACY_SENIOR_PASSWORD;
+    if (hasSeniorRole || passwordAccepted) {
       setIsSeniorAuthenticated(true);
       setUnlocked(true);
       sessionStorage.setItem("seniorPanelUnlocked", "true");
+      if (passwordAccepted && currentUid) {
+        sessionStorage.setItem(SENIOR_PASSWORD_SESSION_KEY, "true");
+        sessionStorage.setItem(SENIOR_PASSWORD_UID_KEY, currentUid);
+      }
+      setPassword("");
     } else {
-      toast.error("Senha incorreta.");
+      toast.error("Senha de acesso inválida.");
     }
   };
 
   const handleApprove = async (reg: any) => {
+    const regRef = doc(db, "recruitment_applications", reg.id);
+    const actorId = auth.currentUser?.uid || "senior-panel";
+    let claimOwned = false;
+    let batchCommitted = false;
     try {
       setLoadingAction(true);
       if (auth.currentUser) await auth.currentUser.getIdToken(true);
 
-      const normalizedRegistration = normalizeRegistrationImages(reg);
+      const claim = await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(regRef);
+        if (!snapshot.exists()) throw new Error("Solicitação não encontrada.");
+        const current = snapshot.data() as Record<string, any>;
+        if (current.status === "approved") return { alreadyApproved: true, data: current };
+        if (current.status !== "pending") {
+          throw new Error("Esta solicitação não está mais pendente.");
+        }
+        const lockOwner = String(current.approvalInProgressBy || "");
+        const lockValue = current.approvalStartedAt;
+        const lockMillis =
+          typeof lockValue?.toMillis === "function"
+            ? lockValue.toMillis()
+            : Date.parse(String(lockValue || "")) || 0;
+        if (
+          lockOwner &&
+          lockOwner !== actorId &&
+          lockMillis > 0 &&
+          Date.now() - lockMillis < 10 * 60 * 1000
+        ) {
+          throw new Error("Esta solicitação já está sendo processada por outro administrador.");
+        }
+        transaction.update(regRef, {
+          approvalInProgressBy: actorId,
+          approvalStartedAt: serverTimestamp(),
+        });
+        return { alreadyApproved: false, data: current };
+      });
+
+      if (claim.alreadyApproved) {
+        toast.info("Esta empresa já foi aprovada anteriormente.");
+        setShowApproveConfirm(null);
+        setSelectedRegistrationId(null);
+        return;
+      }
+      claimOwned = true;
+      const normalizedRegistration: any = normalizeRegistrationImages(
+        await hydrateRegistrationImages({ ...claim.data, id: reg.id }),
+      );
       const approvedCompanyLogo = normalizedRegistration.companyLogoURL;
       const approvedOwnerPhoto = normalizedRegistration.ownerPhotoUrl;
+      const rawSimulatorValue = String(
+        normalizedRegistration.simulatorId ||
+          normalizedRegistration.simulatorName ||
+          "",
+      ).trim();
+      const matchingSimulator = (Array.isArray(simulators) ? simulators : []).find(
+        (simulator: any) =>
+          String(simulator.id || "").toLowerCase() === rawSimulatorValue.toLowerCase() ||
+          String(simulator.name || "").toLowerCase() === rawSimulatorValue.toLowerCase(),
+      );
+      const canonicalSimulatorId =
+        matchingSimulator?.id || resolveSimulatorId(normalizedRegistration, simulators);
+      const companyCreatedAt = new Date().toISOString();
 
       const batch = writeBatch(db);
       const newCompanyRef = doc(collection(db, "frotas"));
 
       const companyPayload = {
-        companyName: reg.companyName,
-        ownerName: reg.ownerName,
-        simulatorName: reg.simulatorName || "Euro Truck Simulator 2",
-        cnpj: reg.cnpj,
-        whatsapp: reg.whatsapp || "",
+        companyName: normalizedRegistration.companyName,
+        ownerName: normalizedRegistration.ownerName,
+        simulatorId: canonicalSimulatorId,
+        simulatorName: normalizedRegistration.simulatorName || "Euro Truck Simulator 2",
+        cnpj: normalizedRegistration.cnpj,
+        whatsapp: normalizedRegistration.whatsapp || "",
         userId: "",
         logoUrl: approvedCompanyLogo || "",
+        ...(normalizedRegistration.companyLogoStoragePath && {
+          logoStoragePath: normalizedRegistration.companyLogoStoragePath,
+        }),
+        ...(normalizedRegistration.ownerPhotoStoragePath && {
+          ownerPhotoStoragePath: normalizedRegistration.ownerPhotoStoragePath,
+        }),
         ownerPhotoUrl: approvedOwnerPhoto || "",
         status: "active",
-        createdAt: new Date().toISOString(),
+        sourceRegistrationId: reg.id,
+        createdAt: companyCreatedAt,
       };
 
       let finalUserId = "";
+      const registrationEmail = String(normalizedRegistration.email || "")
+        .trim()
+        .toLowerCase();
 
-      // 1. Try reg.userId first if available on application
-      if (reg.userId) {
-        finalUserId = reg.userId;
-        const userRef = doc(db, "users", reg.userId);
+      // 1. Use the submitted UID only when it belongs to the same e-mail.
+      // Older forms could retain another account's UID while the visible
+      // company data belonged to the new applicant; never bind approval to
+      // that stale identity.
+      const submittedUserId = String(normalizedRegistration.userId || "").trim();
+      if (submittedUserId) {
+        const submittedUserSnapshot = await getDoc(
+          doc(db, "users", submittedUserId),
+        );
+        const submittedUserEmail = String(
+          submittedUserSnapshot.data()?.email || "",
+        )
+          .trim()
+          .toLowerCase();
+        if (
+          submittedUserSnapshot.exists() &&
+          registrationEmail &&
+          submittedUserEmail === registrationEmail
+        ) {
+          finalUserId = submittedUserId;
+        }
+      }
+
+      if (finalUserId) {
+        const userRef = doc(db, "users", finalUserId);
 
         batch.set(
           userRef,
@@ -355,6 +546,8 @@ export default function SeniorPanel() {
             companyId: newCompanyRef.id,
             role: "admin",
             roles: ["admin", "driver"],
+            authProvisioningRequired:
+              finalUserId !== auth.currentUser?.uid,
             ...(approvedOwnerPhoto && {
               profilePhotoURL: approvedOwnerPhoto,
             }),
@@ -375,10 +568,10 @@ export default function SeniorPanel() {
       }
 
       // 2. Fallback search by email if reg.userId was not set or didn't exist
-      if (!finalUserId && reg.email) {
+      if (!finalUserId && registrationEmail) {
         const userQ = query(
           collection(db, "users"),
-          where("email", "==", reg.email.trim().toLowerCase()),
+          where("email", "==", registrationEmail),
         );
         const userQs = await getDocs(userQ);
 
@@ -410,13 +603,17 @@ export default function SeniorPanel() {
           finalUserId = newUserRef.id;
 
           batch.set(newUserRef, {
-            email: reg.email.trim().toLowerCase(),
-            name: reg.ownerName,
+            email: registrationEmail,
+            name: normalizedRegistration.ownerName,
             status: "active",
             companyId: newCompanyRef.id,
             role: "admin",
             roles: ["admin", "driver"],
             profilePhotoURL: approvedOwnerPhoto || "",
+            // A Firestore user document is not a Firebase Auth account. Keep
+            // this explicit so the provisioning flow can create/send access
+            // credentials instead of silently leaving an unreachable user.
+            authProvisioningRequired: true,
             createdAt: new Date().toISOString(),
           });
 
@@ -438,13 +635,14 @@ export default function SeniorPanel() {
         finalUserId = newUserRef.id;
 
         batch.set(newUserRef, {
-          email: (reg.email || "").trim().toLowerCase(),
-          name: reg.ownerName || "Proprietário",
+          email: registrationEmail,
+          name: normalizedRegistration.ownerName || "Proprietário",
           status: "active",
           companyId: newCompanyRef.id,
           role: "admin",
           roles: ["admin", "driver"],
           profilePhotoURL: approvedOwnerPhoto || "",
+          authProvisioningRequired: true,
           createdAt: new Date().toISOString(),
         });
 
@@ -467,15 +665,26 @@ export default function SeniorPanel() {
       };
       batch.set(newCompanyRef, finalCompanyPayload);
 
-      const regRef = doc(db, "recruitment_applications", reg.id);
       batch.update(regRef, {
         status: "approved",
         approvedCompanyId: newCompanyRef.id,
         approvedUserId: finalUserId,
+        approvedAt: serverTimestamp(),
+        approvedBy: actorId,
+        companyLogoURL: approvedCompanyLogo || "",
+        ownerPhotoUrl: approvedOwnerPhoto || "",
+        companyLogoStoragePath:
+          normalizedRegistration.companyLogoStoragePath || "",
+        ownerPhotoStoragePath:
+          normalizedRegistration.ownerPhotoStoragePath || "",
         ownerPhotoPropagated: Boolean(approvedOwnerPhoto),
+        logoPropagated: Boolean(approvedCompanyLogo),
+        approvalInProgressBy: deleteField(),
+        approvalStartedAt: deleteField(),
       });
 
       await batch.commit();
+      batchCommitted = true;
 
       if (finalUserId) {
         try {
@@ -502,7 +711,7 @@ export default function SeniorPanel() {
           newCompanyRef.id, 
           "active", 
           ["admin", "driver"], 
-          reg.simulatorName
+          canonicalSimulatorId
         );
       }
 
@@ -510,6 +719,16 @@ export default function SeniorPanel() {
       setShowApproveConfirm(null);
       setSelectedRegistrationId(null);
     } catch (e: any) {
+      if (claimOwned && !batchCommitted) {
+        try {
+          await updateDoc(regRef, {
+            approvalInProgressBy: deleteField(),
+            approvalStartedAt: deleteField(),
+          });
+        } catch (unlockError) {
+          console.warn("Não foi possível liberar o bloqueio da aprovação:", unlockError);
+        }
+      }
       console.error(e);
       toast.error("Erro ao aprovar: " + e.message);
     } finally {
@@ -639,21 +858,22 @@ export default function SeniorPanel() {
               Painel Senior
             </h2>
             <p className="text-[13px] text-gray-500 dark:text-[#a1a1aa] mb-6 text-center">
-              Acesso restrito
+              Informe a senha de acesso do painel.
             </p>
             <form onSubmit={handleLogin} className="space-y-4">
               <input
                 type="password"
-                placeholder="Senha de acesso"
                 value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-gray-50 dark:bg-[#09090b] border border-gray-200 dark:border-[#2A2F3A] rounded-xl px-4 py-2.5 text-sm outline-none focus:border-blue-500 dark:text-[#fafafa] text-center"
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Senha de acesso"
+                autoComplete="current-password"
+                className="w-full h-11 rounded-xl border border-slate-200 dark:border-[#2A2F3A] bg-white dark:bg-[#09090b] px-3 text-center text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
               />
               <Button
                 type="submit"
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-11"
               >
-                Acessar
+                Entrar no painel
               </Button>
             </form>
           </CardContent>
@@ -668,7 +888,49 @@ export default function SeniorPanel() {
 
   const pendingRequests = registrations.filter((r) => r.status === "pending");
   const rejectedRequests = registrations.filter((r) => r.status === "rejected");
-  const activeCompaniesCount = companyStats.length;
+  const activeCompanies = companyStats.filter((company) => {
+    const status = String(company.status || "active").toLowerCase();
+    return status === "active" || status === "approved";
+  });
+  const activeCompaniesCount = activeCompanies.length;
+
+  const activeSimulatorOptions: Array<{ id: string; name: string }> = Array.from(
+    new Map<string, { id: string; name: string }>(
+      activeCompanies.map((company) => {
+        const id = String(company.simulatorId || company.simulatorName || "").trim();
+        const catalogEntry = (Array.isArray(simulators) ? simulators : []).find(
+          (simulator: any) =>
+            String(simulator.id || "").toLowerCase() === id.toLowerCase() ||
+            String(simulator.name || "").toLowerCase() ===
+              String(company.simulatorName || "").toLowerCase(),
+        );
+        const name = String(
+          catalogEntry?.name || company.simulatorName || company.simulatorId || "Não informado",
+        );
+        return [id || name, { id: id || name, name }];
+      }),
+    ).values(),
+  ).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+
+  const selectedSimulatorLabel =
+    selectedSimulator === "all"
+      ? "Todos os simuladores"
+      : activeSimulatorOptions.find((option) => option.id === selectedSimulator)?.name ||
+        "Todos os simuladores";
+
+  const filteredCompanies = activeCompanies.filter((company) => {
+    const queryValue = companySearch.trim().toLocaleLowerCase("pt-BR");
+    const matchesSearch =
+      !queryValue ||
+      [company.companyName, company.ownerName, company.ownerEmail, company.simulatorName]
+        .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(queryValue));
+    const companySimulator = String(
+      company.simulatorId || company.simulatorName || "",
+    ).trim();
+    const matchesSimulator =
+      selectedSimulator === "all" || companySimulator === selectedSimulator;
+    return matchesSearch && matchesSimulator;
+  });
 
   const getRegistrationStatusInfo = (status: string) => {
     switch(status) {
@@ -679,137 +941,102 @@ export default function SeniorPanel() {
   };
 
   return (
-    <div className="max-w-[1000px] mx-auto p-4 sm:p-6 lg:p-8 space-y-5">
+    <div className="max-w-[1000px] mx-auto px-3 sm:px-5 lg:px-6 pt-1 sm:pt-2 pb-6 space-y-2.5 sm:space-y-4">
       {/* Corporate Banner Header */}
-      <div className="bg-[#0f141e] w-full rounded-[24px] relative overflow-hidden flex flex-col p-6 sm:p-8 sm:pb-6 shadow-sm">
-        {/* Decorative background graphics */}
-        <div className="absolute right-0 top-0 bottom-0 w-1/2 opacity-20 pointer-events-none hidden md:flex items-center justify-end pr-8">
-          <div className="relative w-48 h-48">
-            <BarChart3 size={160} strokeWidth={1} className="absolute right-0 bottom-0 text-white" />
-            <Search size={100} strokeWidth={1} className="absolute right-10 top-4 text-white" />
-            <CheckCircle2 size={40} strokeWidth={2} className="absolute right-16 top-12 text-white bg-slate-900 rounded-full" />
-          </div>
-        </div>
+      <img
+        src="/assets/nvu-banner-painel-senior-referencia.png"
+        alt="Banner Painel Sênior NVU"
+        loading="eager"
+        decoding="async"
+        className="w-full h-auto block object-contain rounded-[17px] sm:rounded-[22px] shadow-none"
+      />
 
-        <div className="flex items-center gap-5 sm:gap-6 relative z-10 w-full mb-8">
-          <div className="w-[72px] h-[72px] sm:w-[96px] sm:h-[96px] bg-gradient-to-br from-slate-700 to-slate-900 rounded-[20px] flex items-center justify-center shrink-0 shadow-inner overflow-hidden relative">
-            <div className="absolute inset-x-0 top-0 h-px bg-white/20"></div>
-            <div className="absolute inset-y-0 left-0 w-px bg-white/10"></div>
-            <Building2 size={40} className="text-slate-200 sm:w-[48px] sm:h-[48px]" strokeWidth={1.5} />
-          </div>
-          <div className="flex flex-col justify-center flex-1">
-            <h1 className="text-[24px] sm:text-[32px] font-bold text-white tracking-tight leading-tight">
-              Painel Sênior NVU
-            </h1>
-            <p className="text-[14px] sm:text-[16px] text-slate-400 mt-1 sm:mt-2 font-medium leading-snug">
-              Gestão e homologação de <br className="sm:hidden" />empresas parceiras
-            </p>
-          </div>
-        </div>
+      {/* Resumo real da plataforma */}
+      <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
+        <button
+          type="button"
+          onClick={() => selectSeniorTab("requests")}
+          className="min-w-0 min-h-[104px] sm:min-h-[132px] bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] sm:rounded-[22px] px-3 py-3.5 sm:p-5 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)] flex items-center gap-2.5 sm:gap-5 text-left overflow-hidden"
+        >
+          <span className="w-11 h-11 sm:w-16 sm:h-16 rounded-[14px] sm:rounded-[16px] bg-slate-100 dark:bg-slate-900 flex items-center justify-center shrink-0">
+            <Activity size={24} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={1.5} />
+            <Activity size={28} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={1.5} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[12px] sm:text-[15px] font-bold text-slate-600 dark:text-slate-300 leading-tight">Pendentes</span>
+            <span className="block text-[27px] sm:text-[36px] font-bold text-slate-950 dark:text-white leading-none mt-1">{pendingRequests.length}</span>
+            <span className="block text-[10px] sm:text-[13px] text-slate-400 mt-1.5 leading-tight line-clamp-2">Aguardando análise</span>
+          </span>
+        </button>
 
-        <div className="flex flex-col sm:flex-row flex-wrap sm:flex-nowrap items-start sm:items-center gap-5 sm:gap-8 mt-2 border-t border-white/10 pt-6 relative z-10 w-full">
-          <div className="flex items-center gap-3.5">
-            <ShieldCheck size={22} className="text-slate-400 shrink-0" strokeWidth={1.5} />
-            <div className="leading-tight">
-              <div className="text-[14px] font-bold text-white">Análise segura</div>
-              <div className="text-[12px] text-slate-400 mt-0.5">Valide com confiança</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3.5">
-            <Clock size={22} className="text-slate-400 shrink-0" strokeWidth={1.5} />
-            <div className="leading-tight">
-              <div className="text-[14px] font-bold text-white">Processos eficientes</div>
-              <div className="text-[12px] text-slate-400 mt-0.5">Decisões mais rápidas</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3.5">
-            <Award size={22} className="text-slate-400 shrink-0" strokeWidth={1.5} />
-            <div className="leading-tight">
-              <div className="text-[14px] font-bold text-white">Plataforma confiável</div>
-              <div className="text-[12px] text-slate-400 mt-0.5">Qualidade em cada etapa</div>
-            </div>
-          </div>
-        </div>
+        <button
+          type="button"
+          onClick={() => selectSeniorTab("approved")}
+          className="min-w-0 min-h-[104px] sm:min-h-[132px] bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] sm:rounded-[22px] px-3 py-3.5 sm:p-5 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)] flex items-center gap-2.5 sm:gap-5 text-left overflow-hidden"
+        >
+          <span className="w-11 h-11 sm:w-16 sm:h-16 rounded-[14px] sm:rounded-[16px] bg-slate-100 dark:bg-slate-900 flex items-center justify-center shrink-0">
+            <Building2 size={24} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={1.5} />
+            <Building2 size={28} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={1.5} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[12px] sm:text-[15px] font-bold text-slate-600 dark:text-slate-300 leading-tight">Empresas Ativas</span>
+            <span className="block text-[27px] sm:text-[36px] font-bold text-slate-950 dark:text-white leading-none mt-1">{activeCompaniesCount}</span>
+            <span className="block text-[10px] sm:text-[13px] text-slate-400 mt-1.5 leading-tight line-clamp-2">Homologadas na plataforma</span>
+          </span>
+        </button>
       </div>
 
-      {/* Stats Cards */}
-      <div className="flex flex-col sm:flex-row gap-4">
-        <div className="bg-white dark:bg-[#121212] border border-slate-100 dark:border-slate-800 rounded-[20px] p-5 lg:p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.04)] flex-1 flex items-center gap-5">
-           <div className="w-[64px] h-[64px] bg-[#0f141e] dark:bg-slate-900 rounded-[16px] flex items-center justify-center shrink-0">
-             <Activity size={32} className="text-white" strokeWidth={1.5} />
-           </div>
-           <div className="flex flex-col justify-center min-w-0">
-             <h3 className="text-[14px] font-bold text-slate-500 dark:text-slate-400">Pendentes</h3>
-             <div className="flex items-baseline gap-3 mt-1">
-               <div className="text-[32px] sm:text-[36px] font-bold text-slate-900 dark:text-white leading-none">{pendingRequests.length}</div>
-               <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 self-center"></div>
-               <p className="text-[13px] font-medium text-slate-400 dark:text-slate-500 truncate">Aguardando análise</p>
-             </div>
-           </div>
-        </div>
-        <div className="bg-white dark:bg-[#121212] border border-slate-100 dark:border-slate-800 rounded-[20px] p-5 lg:p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.04)] flex-1 flex items-center gap-5">
-           <div className="w-[64px] h-[64px] bg-[#0f141e] dark:bg-slate-900 rounded-[16px] flex items-center justify-center shrink-0">
-             <Building2 size={32} className="text-white" strokeWidth={1.5} />
-           </div>
-           <div className="flex flex-col justify-center min-w-0">
-             <h3 className="text-[14px] font-bold text-slate-500 dark:text-slate-400">Ativas</h3>
-             <div className="flex items-baseline gap-3 mt-1">
-               <div className="text-[32px] sm:text-[36px] font-bold text-slate-900 dark:text-white leading-none">{activeCompaniesCount}</div>
-               <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 self-center"></div>
-               <p className="text-[13px] font-medium text-slate-400 dark:text-slate-500 truncate">Empresas homologadas</p>
-             </div>
-           </div>
-        </div>
-      </div>
-
-      {/* Compact Tabs */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-[#121212] rounded-[20px] p-2 sm:p-3 sm:px-4 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.04)] border border-slate-100 dark:border-slate-800">
-        <div className="flex bg-[#f8f9fa] dark:bg-slate-800/40 p-1.5 rounded-[16px] w-full sm:w-auto overflow-x-auto no-scrollbar items-center">
+      {/* Busca e filtro por simulador */}
+      <div className="relative bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] p-2 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)]">
+        <div className="flex items-center gap-2">
+          <label className="flex-1 min-w-0 h-11 sm:h-12 rounded-[14px] sm:rounded-[15px] bg-slate-50/80 dark:bg-slate-900/70 flex items-center gap-2.5 px-3.5 sm:px-4">
+            <Search size={20} className="text-slate-400 shrink-0" />
+            <input
+              value={companySearch}
+              onChange={(event) => setCompanySearch(event.target.value)}
+              placeholder="Buscar empresas..."
+              className="w-full min-w-0 bg-transparent outline-none text-[15px] text-slate-900 dark:text-white placeholder:text-slate-400"
+            />
+          </label>
           <button
-            onClick={() => selectSeniorTab("requests")}
-            className={cn(
-              "px-5 py-2.5 text-[15px] font-bold rounded-[12px] transition-all whitespace-nowrap flex items-center gap-2",
-              activeTab === "requests"
-                ? "bg-white dark:bg-[#121212] text-slate-900 dark:text-white shadow-[0_1px_8px_-2px_rgba(0,0,0,0.08)]"
-                : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white",
-            )}
+            type="button"
+            onClick={() => setSimulatorMenuOpen((open) => !open)}
+            aria-label="Selecionar simulador"
+            aria-expanded={simulatorMenuOpen}
+            className="h-11 sm:h-12 px-3 sm:px-4 rounded-[14px] sm:rounded-[15px] bg-slate-50/80 dark:bg-slate-900/70 text-slate-600 dark:text-slate-300 flex items-center gap-1.5 sm:gap-2 font-semibold shrink-0"
           >
-            Solicitações
-            {pendingRequests.length > 0 && (
-              <span className={cn("py-0.5 px-2.5 rounded-full text-[12px] font-bold", 
-                activeTab === "requests" ? "bg-[#0f141e] text-white" : "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300")}>
-                {pendingRequests.length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => selectSeniorTab("approved")}
-            className={cn(
-              "px-6 py-2.5 text-[15px] font-bold rounded-[12px] transition-all whitespace-nowrap",
-              activeTab === "approved"
-                ? "bg-white dark:bg-[#121212] text-slate-900 dark:text-white shadow-[0_1px_8px_-2px_rgba(0,0,0,0.08)]"
-                : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white",
-            )}
-          >
-            Aprovadas
+            <Gamepad2 size={21} />
+            <span className="hidden sm:inline text-sm max-w-[180px] truncate">{selectedSimulatorLabel}</span>
+            <ChevronDown size={16} className={cn("transition-transform", simulatorMenuOpen && "rotate-180")} />
           </button>
         </div>
+        <p className="px-2.5 pt-1.5 pb-0.5 text-[11px] sm:text-[12px] font-medium leading-tight text-slate-500 dark:text-slate-400">
+          Simulador selecionado: <span className="text-slate-900 dark:text-white">{selectedSimulatorLabel}</span>
+        </p>
 
-        <div className="flex items-center gap-5 w-full sm:w-auto justify-between sm:justify-end px-2 sm:px-0">
-          <button className="flex items-center gap-2 text-[15px] font-bold text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors">
-            <Filter size={18} strokeWidth={2} /> Filtrar
-          </button>
-          <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 hidden sm:block"></div>
-          <button 
-            onClick={() => selectSeniorTab("settings")}
-            className={cn(
-              "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors",
-              activeTab === "settings" && "text-slate-900 dark:text-white"
-            )}
-          >
-            <Settings size={22} className="stroke-[1.5]" />
-          </button>
-        </div>
+        {simulatorMenuOpen && (
+          <div className="absolute right-2 top-[62px] z-30 w-[min(320px,calc(100%-16px))] rounded-[18px] border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-[#171717]/95 backdrop-blur-xl p-2 shadow-xl">
+            {[{ id: "all", name: "Todos os simuladores" }, ...activeSimulatorOptions].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => {
+                  setSelectedSimulator(option.id);
+                  setSimulatorMenuOpen(false);
+                }}
+                className={cn(
+                  "w-full rounded-xl px-3 py-2.5 text-left text-sm flex items-center justify-between gap-3",
+                  selectedSimulator === option.id
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800",
+                )}
+              >
+                <span className="flex items-center gap-2 min-w-0"><Gamepad2 size={16} /><span className="truncate">{option.name}</span></span>
+                {selectedSimulator === option.id && <CheckCircle2 size={16} />}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {activeTab === "settings" && (
@@ -1101,122 +1328,72 @@ export default function SeniorPanel() {
       )}
 
       {activeTab === "approved" && (
-        <div className="space-y-4 animate-in fade-in duration-300">
-          {companyStats.length === 0 ? (
-            <div className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-[24px] p-12 text-center shadow-sm dark:shadow-none">
-              <Building2
-                size={48}
-                className="mx-auto text-gray-300 dark:text-gray-700 mb-4"
-              />
-              <p className="text-gray-500 font-medium">
-                Nenhuma empresa registrada.
-              </p>
+        <div className="space-y-3 animate-in fade-in duration-300">
+          {filteredCompanies.length === 0 ? (
+            <div className="bg-white dark:bg-[#1A1F26] border border-slate-100 dark:border-[#2A2F3A] rounded-[24px] p-10 text-center shadow-sm">
+              <Building2 size={44} className="mx-auto text-slate-300 dark:text-slate-700 mb-3" />
+              <p className="text-slate-500 font-medium">Nenhuma empresa encontrada para este filtro.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {companyStats.map((c) => (
-                <div
-                  key={c.id}
-                  className="bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] rounded-[24px] p-6 shadow-sm dark:shadow-none transition-all hover:shadow-md hover:border-gray-200 dark:hover:border-gray-700 group flex flex-col"
-                >
-                  <div className="flex items-center gap-4 mb-3">
-                    <div className="w-12 h-12 rounded-xl bg-gray-50 dark:bg-[#2A2F3A] border border-gray-100 dark:border-gray-700 flex items-center justify-center shrink-0 overflow-hidden">
-                      {c.logoUrl ? (
-                        <img
-                          src={c.logoUrl}
-                          alt=""
-                          className="w-full h-full object-cover"
-                        />
+            filteredCompanies.map((company) => (
+              <article
+                key={company.id}
+                className="bg-white/95 dark:bg-[#1A1F26]/95 border border-slate-100 dark:border-[#2A2F3A] rounded-[20px] sm:rounded-[22px] px-3 py-3 sm:p-5 shadow-[0_10px_35px_-26px_rgba(15,23,42,0.55)] overflow-hidden"
+              >
+                <div className="grid grid-cols-[minmax(0,1.28fr)_minmax(128px,.72fr)] sm:grid-cols-[minmax(0,1fr)_300px] gap-2.5 sm:gap-5 items-stretch">
+                  <div className="flex gap-2.5 sm:gap-4 min-w-0">
+                    <div className="w-12 h-12 sm:w-[76px] sm:h-[76px] rounded-[14px] sm:rounded-[18px] bg-slate-100 dark:bg-slate-800 overflow-hidden flex items-center justify-center shrink-0 border border-slate-100 dark:border-slate-700">
+                      {company.logoUrl ? (
+                        <img src={company.logoUrl} alt={`Logo de ${company.companyName}`} className="w-full h-full object-cover" />
                       ) : (
-                        <Building2
-                          className="text-blue-500 shadow-none border-0"
-                          size={24}
-                        />
+                        <Building2 size={22} className="text-slate-400" />
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-bold text-[16px] text-gray-900 dark:text-[#fafafa] truncate">
-                        {c.companyName}
-                      </h3>
-                      <span className="text-[10px] font-bold bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400 px-2 py-0.5 rounded-full inline-flex mt-1 uppercase tracking-wider">
-                        Ativa & Operante
-                      </span>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-bold text-[14px] sm:text-[19px] text-slate-950 dark:text-white leading-[1.15] truncate">{company.companyName}</h3>
+                      <div className="mt-1.5 sm:mt-2 space-y-1 sm:space-y-2 text-[10.5px] sm:text-[13px] leading-tight text-slate-500 dark:text-slate-400">
+                        <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Gamepad2 size={13} className="shrink-0" /><span className="truncate">{company.simulatorName || company.simulatorId || "Não informado"}</span></p>
+                        <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Users size={13} className="shrink-0" /><span className="truncate">{company.ownerName || "Proprietário não informado"}</span></p>
+                        <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><FileText size={13} className="shrink-0" /><span className="truncate">{company.ownerEmail || "E-mail não informado"}</span></p>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400 mb-5 pb-4 border-b border-gray-100 dark:border-gray-800">
-                    <span className="flex items-center gap-1">
-                      <Gamepad2 size={12} /> {c.simulatorName || "ETS2"}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Users size={12} /> {c.ownerName}
-                    </span>
-                    <span className="flex items-center gap-1 w-full mt-1 border-t border-gray-50 dark:border-gray-800 pt-2 text-gray-400">
-                      {c.ownerEmail || "N/A"}
-                    </span>
-                  </div>
+                  <div className="min-w-0 flex flex-col justify-between border-l border-slate-100 dark:border-slate-800 pl-2.5 sm:pl-5">
+                    <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-slate-800">
+                      <div className="pr-2 sm:pr-4 min-w-0">
+                        <p className="text-[8px] sm:text-[11px] font-bold uppercase tracking-[0.02em] sm:tracking-wide text-slate-500 dark:text-slate-400 whitespace-nowrap">Equipe</p>
+                        <p className="text-[22px] sm:text-[28px] font-bold text-slate-950 dark:text-white leading-none mt-1.5 sm:mt-2">{company.totalEmployees}</p>
+                        <p className="text-[9px] sm:text-[12px] text-slate-400 mt-1 truncate">membros</p>
+                      </div>
+                      <div className="pl-2 sm:pl-4 min-w-0">
+                        <p className="text-[8px] sm:text-[11px] font-bold uppercase tracking-[0.01em] sm:tracking-wide text-slate-500 dark:text-slate-400 whitespace-nowrap">Viagens (mês)</p>
+                        <p className="text-[22px] sm:text-[28px] font-bold text-slate-950 dark:text-white leading-none mt-1.5 sm:mt-2">{company.monthlyTrips}</p>
+                        <p className="text-[9px] sm:text-[12px] text-slate-400 mt-1 truncate">realizadas</p>
+                      </div>
+                    </div>
 
-                  <div className="grid grid-cols-2 gap-4 mt-auto">
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-bold uppercase mb-1 flex items-center gap-1.5">
-                        <Users size={12} /> Equipe
-                      </p>
-                      <p className="font-semibold text-gray-900 dark:text-white text-[15px]">
-                        {c.totalEmployees}{" "}
-                        <span className="text-gray-400 text-xs font-normal">
-                          membros
-                        </span>
-                      </p>
+                    <div className="grid grid-cols-[34px_minmax(0,1fr)] sm:grid-cols-[auto_minmax(0,1fr)] gap-1.5 sm:gap-2 mt-2.5 sm:mt-3">
+                      <Button
+                        onClick={() => setConfirmDeleteId(company.id)}
+                        disabled={loadingAction}
+                        variant="ghost"
+                        aria-label={`Excluir ${company.companyName}`}
+                        className="h-8 w-8 sm:h-9 sm:w-auto sm:px-3 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 text-red-600 rounded-[11px] sm:rounded-[12px] font-semibold p-0 sm:p-3"
+                      >
+                        <Trash2 size={14} /> <span className="hidden sm:inline ml-2">Excluir</span>
+                      </Button>
+                      <Button
+                        onClick={() => viewCompanyProfile(company.id)}
+                        className="h-8 sm:h-9 min-w-0 px-2 sm:px-4 bg-slate-50 hover:bg-slate-100 text-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 dark:text-white rounded-[11px] sm:rounded-[12px] shadow-none font-semibold text-[10px] sm:text-sm whitespace-nowrap"
+                      >
+                        <span className="truncate">Acessar Painel</span><ArrowRight size={14} className="ml-1 shrink-0" />
+                      </Button>
                     </div>
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-bold uppercase mb-1 flex items-center gap-1.5">
-                        <Truck size={12} /> Motoristas
-                      </p>
-                      <p className="font-semibold text-gray-900 dark:text-white text-[15px]">
-                        {c.totalDrivers}{" "}
-                        <span className="text-gray-400 text-xs font-normal">
-                          ativos
-                        </span>
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-bold uppercase mb-1 flex items-center gap-1.5">
-                        <FileText size={12} /> Contratos
-                      </p>
-                      <p className="font-semibold text-gray-900 dark:text-white text-[15px]">
-                        {c.totalContracts}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-bold uppercase mb-1 flex items-center gap-1.5">
-                        <Navigation size={12} /> Viagens
-                      </p>
-                      <p className="font-semibold text-gray-900 dark:text-white text-[15px]">
-                        {c.totalTrips}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 mt-6">
-                    <Button
-                      onClick={() => setConfirmDeleteId(c.id)}
-                      disabled={loadingAction}
-                      variant="ghost"
-                      className="w-12 px-0 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 text-red-600 rounded-xl transition-colors shrink-0"
-                      title="Remover empresa"
-                    >
-                      <XCircle size={18} />
-                    </Button>
-                    <Button
-                      onClick={() => viewCompanyProfile(c.id)}
-                      className="flex-1 bg-gray-50 hover:bg-gray-100 text-gray-700 dark:bg-[#09090b] dark:hover:bg-gray-800 dark:text-white rounded-xl shadow-none font-semibold transition-colors group-hover:bg-blue-50 group-hover:text-blue-600 dark:group-hover:text-blue-400"
-                    >
-                      Acessar Painel <ArrowRight size={16} className="ml-2" />
-                    </Button>
                   </div>
                 </div>
-              ))}
-            </div>
+              </article>
+            ))
           )}
         </div>
       )}

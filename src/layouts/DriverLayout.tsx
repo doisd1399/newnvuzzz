@@ -1,7 +1,10 @@
 import { resolveDriverPhoto } from '../lib/resolveDriverPhoto';
 import React, { useState } from "react";
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
+import {
+  useNotificationStore,
+  useSessionStore,
+} from "../context/AppContext";
 import {
   Package,
   LayoutDashboard,
@@ -22,6 +25,23 @@ import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 import { auth } from "../lib/firebase";
 import { ProfileModal } from "../components/ProfileModal";
+import { StableImage } from "../components/common/StableImage";
+import { NotificationCenter } from "../components/NotificationCenter";
+import { preloadRoute } from "../lib/routePreload";
+import {
+  commitRoleVisualTransition,
+  finishRoleVisualTransition,
+} from "../lib/roleVisualTransition";
+import {
+  prepareAndCommitNavigation,
+  isPlainPrimaryNavigation,
+} from "../lib/navigationTransition";
+import { membershipHasRole, resolveMembershipRoles } from "../lib/membershipRoles";
+import {
+  beginRankingWarmupSession,
+  waitForRankingWarmup,
+  warmRegisteredRankingPhotos,
+} from "../lib/rankingPhotoWarmup";
 
 export default function DriverLayout() {
   const {
@@ -29,21 +49,35 @@ export default function DriverLayout() {
     activeCompanyId,
     setActiveCompanyId,
     currentUser,
-    setCurrentUser,
     switchRole,
-    notifications,
-    markNotificationAsRead,
     memberships,
     activeRole,
     logOutApp,
-  } = useAppStore();
+  } = useSessionStore();
+  const { notifications, markNotificationAsRead } = useNotificationStore();
   const navigate = useNavigate();
+  const location = useLocation();
   const { theme, toggleTheme } = useTheme();
   const [isProfileMenuOpen, setIsProfileMenuOpen] = React.useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = React.useState(false);
   const [showCompanySwitch, setShowCompanySwitch] = React.useState(false);
+
+  const warmRankingAssets = React.useCallback(() => {
+    beginRankingWarmupSession(currentUser?.id || "");
+    return Promise.all([
+      warmRegisteredRankingPhotos(12),
+      waitForRankingWarmup(currentUser?.id),
+    ]).then(() => undefined);
+  }, [currentUser?.id]);
+
+  React.useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      finishRoleVisualTransition();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   React.useEffect(() => {
     const handleOpenNotification = (event: Event) => {
@@ -81,7 +115,11 @@ export default function DriverLayout() {
         (currentActiveCompany.ownerId === currentUser?.id ||
           currentActiveCompany.userId === currentUser?.id),
     );
-    const hasMembershipAdminRole = currentMembership?.roles?.includes("admin");
+    const hasMembershipAdminRole = membershipHasRole(
+      currentMembership,
+      "admin",
+      currentUser,
+    );
     const hasLegacyAdminRole =
       currentUser?.roles?.includes("admin") &&
       (!activeCompanyId || currentUser.companyId === activeCompanyId);
@@ -111,7 +149,21 @@ export default function DriverLayout() {
     if (!isProfileMenuOpen) setShowCompanySwitch(false);
   }, [isProfileMenuOpen]);
 
-  if (!currentUser) return null;
+  React.useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    void preloadRoute("/driver/profile");
+    void preloadRoute("/ranking");
+    void preloadRoute("/driver/reports");
+    void preloadRoute("/driver/history");
+  }, [isMobileMenuOpen]);
+
+
+  React.useEffect(() => {
+    // Keep the most common route chunks ready without opening ranking data
+    // listeners during the first authenticated render.
+    void preloadRoute("/ranking");
+    if (canUseAdminProfile) void preloadRoute("/admin/fleet");
+  }, [canUseAdminProfile, currentUser?.id]);
 
   // availableCompanies
   const availableCompanies = React.useMemo(() => {
@@ -123,7 +175,7 @@ export default function DriverLayout() {
           const comp = companies.find((c) => c.id === membership.companyId);
           if (companies.length > 0 && !comp) return; // Ghost company ignore
           const cName = comp ? comp.companyName : "Carregando...";
-          const roles = new Set(membership.roles || []);
+          const roles = new Set(resolveMembershipRoles(membership, currentUser));
           if (
             comp &&
             (comp.ownerId === currentUser?.id || comp.userId === currentUser?.id)
@@ -155,27 +207,87 @@ export default function DriverLayout() {
       newRole === "admin"
         ? canUseAdminProfile
         : Boolean(
-            (currentMember?.roles.includes("driver") &&
-              currentMember.status === "active") ||
-              currentUser?.roles?.includes("driver"),
+            (membershipHasRole(currentMember, "driver", currentUser) &&
+              currentMember?.status === "active") ||
+              (currentUser?.companyId === activeCompanyId &&
+                currentUser?.roles?.includes("driver")),
           );
 
-    if (hasRole) {
-      switchRole(newRole, activeCompanyId || undefined);
-      navigate(newRole === "admin" ? "/admin" : "/driver");
-    } else {
+    if (!hasRole) {
       alert(
         newRole === "admin"
           ? "Você não possui permissão de administrador."
           : "Perfil de motorista não disponível.",
       );
+      return;
     }
+
+    const target = newRole === "admin" ? "/admin/fleet" : "/driver/profile";
+    commitRoleVisualTransition(newRole, () => {
+      void switchRole(newRole, activeCompanyId || undefined);
+      navigate(target, { replace: true });
+    });
+    void preloadRoute(target).catch(() => undefined);
+  };
+
+  const handleCompanySwitch = (companyId: string, roles: string[]) => {
+    const nextRole: "admin" | "driver" = roles.includes("admin")
+      ? "admin"
+      : "driver";
+    const target =
+      nextRole === "admin" ? "/admin/fleet" : "/driver/profile";
+    const commitCompanySwitch = () => {
+      setActiveCompanyId(companyId);
+      void switchRole(nextRole, companyId);
+      setIsProfileMenuOpen(false);
+      if (nextRole !== activeRole) {
+        navigate(target, { replace: true });
+      }
+    };
+
+    if (nextRole === activeRole) {
+      commitCompanySwitch();
+      return;
+    }
+
+    commitRoleVisualTransition(nextRole, commitCompanySwitch);
+    void preloadRoute(target).catch(() => undefined);
   };
 
   const handleLogout = async () => {
     await logOutApp();
     navigate("/login");
   };
+
+  const handleSidebarNavigation = React.useCallback(
+    (event: React.MouseEvent<HTMLAnchorElement>, path: string) => {
+      setIsMobileMenuOpen(false);
+      if (!isPlainPrimaryNavigation(event.nativeEvent)) return;
+      event.preventDefault();
+      const commit = () => {
+        if (path === "/ranking") {
+          navigate(path, { state: { backgroundLocation: location } });
+          return;
+        }
+        navigate(path);
+      };
+      if (path === "/ranking") {
+        // Commit first; the ranking warm-up is best-effort and never gates
+        // the visible route transition.
+        commit();
+        void preloadRoute(path).catch(() => undefined);
+        void warmRankingAssets().catch(() => undefined);
+      } else {
+        void prepareAndCommitNavigation(() => preloadRoute(path), commit);
+      }
+    },
+    [location, navigate, warmRankingAssets],
+  );
+
+  // All hooks must run before the session guard. The authenticated user can be
+  // briefly unavailable during resume/logout and React must still see the same
+  // hook order on every render.
+  if (!currentUser) return null;
 
   const isApproved =
     activeRole === "admin" ||
@@ -235,65 +347,37 @@ export default function DriverLayout() {
                   <line x1="4" x2="20" y1="18" y2="18" />
                 </svg>
               </button>
-              <div className="hidden md:flex items-center gap-2">
+              <div
+                data-nvu-background-brand
+                data-nvu-layout-brand
+                className="hidden md:flex items-center gap-2"
+              >
                 <h1 className="font-bold text-lg text-gray-900 dark:text-[#fafafa] tracking-tight">
                   NVU
                 </h1>
               </div>
-              <div className="md:hidden font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none">
+              <div
+                data-nvu-background-brand
+                data-nvu-layout-brand
+                className="md:hidden font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none"
+              >
                 NVU
               </div>
             </div>
 
             <div className="flex items-center gap-2 sm:gap-4">
-              <div className="relative">
-                <button
-                  onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
-                  className="relative p-2 text-gray-500 dark:text-[#a1a1aa] hover:text-gray-700 dark:hover:text-[#d4d4d8] hover:bg-gray-100 dark:bg-[#27272a] dark:hover:bg-[#3f3f46]/50/80 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                >
-                  <Bell size={20} />
-                  {pendingCount > 0 && (
-                    <span className="absolute top-1.5 right-2 w-2 h-2 bg-rose-500 rounded-full border border-white"></span>
-                  )}
-                </button>
-
-                {isNotificationsOpen && (
-                  <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-[#09090b] rounded-xl shadow-lg dark:shadow-none border border-gray-100 dark:border-[#2A2F3A] py-2 z-50 animate-in fade-in slide-in-from-top-2">
-                    <div className="px-4 py-2 border-b border-gray-50 dark:border-[#2A2F3A]">
-                      <h3 className="text-sm font-bold text-gray-900 dark:text-[#fafafa]">
-                        Notificações
-                      </h3>
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                      {unreadNotifications.length > 0 ? (
-                        unreadNotifications.map((notification) => (
-                          <div
-                            key={`${notification.sourceCollection ?? "notifications"}:${notification.id}`}
-                            className="px-4 py-3 hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] cursor-pointer transition-colors border-b border-gray-50 dark:border-[#2A2F3A] last:border-0"
-                            onClick={() => {
-                              if (notification.id) {
-                                markNotificationAsRead(notification.id);
-                              }
-                              setIsNotificationsOpen(false);
-                            }}
-                          >
-                            <p className="text-sm font-bold text-gray-900 dark:text-[#fafafa]">
-                              {notification.titulo}
-                            </p>
-                            <p className="text-xs text-gray-600 dark:text-[#d4d4d8] mt-1">
-                              {notification.mensagem}
-                            </p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="px-4 py-6 text-center text-gray-500 dark:text-[#a1a1aa] text-sm">
-                          Nenhuma notificação não lida.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <NotificationCenter
+                notifications={notifications}
+                onRead={markNotificationAsRead}
+                isOpen={isNotificationsOpen}
+                onToggle={() => setIsNotificationsOpen((open) => !open)}
+                onClose={() => setIsNotificationsOpen(false)}
+                buttonClassName="relative p-2 text-gray-500 dark:text-[#a1a1aa] hover:text-gray-700 dark:hover:text-[#d4d4d8] hover:bg-gray-100 dark:hover:bg-[#3f3f46]/50 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                onOpen={(notification) => {
+                  const type = notification.type ?? notification.tipo;
+                  navigate(type === "NEW_OPERATION" ? "/driver" : "/driver/profile");
+                }}
+              />
 
               <div className="hidden sm:block h-6 w-px bg-gray-200 dark:bg-[#2A2F3A] mx-1"></div>
 
@@ -302,14 +386,20 @@ export default function DriverLayout() {
                 className="flex items-center gap-2 focus:outline-none hover:opacity-80 transition-opacity"
               >
                 {currentActiveCompany?.logoUrl ? (
-                  <img
+                  <StableImage
                     src={currentActiveCompany.logoUrl}
                     alt="Perfil"
                     loading="eager"
                     decoding="async"
                     fetchPriority="high"
-                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-full border border-gray-200 dark:border-[#2A2F3A] bg-gray-100 dark:bg-[#18181b] object-cover shrink-0"
+                    wrapperClassName="w-8 h-8 sm:w-9 sm:h-9 rounded-full border border-gray-200 dark:border-[#2A2F3A] bg-gray-100 dark:bg-[#18181b] shrink-0"
+                    className="object-cover"
                     referrerPolicy="no-referrer"
+                    fallback={
+                      <span className="h-full w-full bg-slate-900 dark:bg-[#18181b] flex items-center justify-center text-white text-xs sm:text-sm font-bold">
+                        {currentActiveCompany.companyName?.substring(0, 2).toUpperCase() || "NV"}
+                      </span>
+                    }
                   />
                 ) : currentActiveCompany ? (
                   <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-900 dark:bg-[#18181b] border border-transparent dark:border-[#2A2F3A] flex items-center justify-center text-white text-xs sm:text-sm font-bold shrink-0">
@@ -318,14 +408,20 @@ export default function DriverLayout() {
                       .toUpperCase()}
                   </div>
                 ) : resolveDriverPhoto(currentUser) ? (
-                  <img
+                  <StableImage
                     src={resolveDriverPhoto(currentUser)}
                     alt="Perfil"
                     loading="eager"
                     decoding="async"
                     fetchPriority="high"
-                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-full border border-gray-200 dark:border-[#2A2F3A] bg-gray-100 dark:bg-[#18181b] object-cover shrink-0"
+                    wrapperClassName="w-8 h-8 sm:w-9 sm:h-9 rounded-full border border-gray-200 dark:border-[#2A2F3A] bg-gray-100 dark:bg-[#18181b] shrink-0"
+                    className="object-cover"
                     referrerPolicy="no-referrer"
+                    fallback={
+                      <span className="h-full w-full bg-slate-900 dark:bg-[#18181b] flex items-center justify-center text-white text-xs sm:text-sm font-bold">
+                        {currentUser?.name?.substring(0, 2).toUpperCase() || "MO"}
+                      </span>
+                    }
                   />
                 ) : (
                   <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-900 dark:bg-[#18181b] border border-transparent dark:border-[#2A2F3A] flex items-center justify-center text-white text-xs sm:text-sm font-bold shrink-0">
@@ -376,16 +472,9 @@ export default function DriverLayout() {
                           {availableCompanies.map((comp) => (
                             <button
                               key={comp.companyId}
-                              onClick={() => {
-                                setActiveCompanyId(comp.companyId);
-                                if (comp.roles.includes("admin")) {
-                                  switchRole("admin", comp.companyId);
-                                  navigate("/admin");
-                                } else {
-                                  switchRole("driver", comp.companyId);
-                                }
-                                setIsProfileMenuOpen(false);
-                              }}
+                              onClick={() =>
+                                handleCompanySwitch(comp.companyId, comp.roles)
+                              }
                               className={cn(
                                 "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-left",
                                 activeCompanyId === comp.companyId
@@ -540,14 +629,20 @@ export default function DriverLayout() {
                 >
                   <div className="flex items-center gap-3">
                     {resolveDriverPhoto(currentUser) ? (
-                      <img
+                      <StableImage
                         src={resolveDriverPhoto(currentUser)}
                         alt="driver"
                         loading="eager"
                         decoding="async"
                         fetchPriority="high"
-                        className="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 object-cover shrink-0"
+                        wrapperClassName="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 shrink-0"
+                        className="object-cover"
                         referrerPolicy="no-referrer"
+                        fallback={
+                          <span className="h-full w-full bg-slate-900 dark:bg-[#18181b] flex items-center justify-center text-white text-sm font-bold">
+                            {currentUser?.name?.substring(0, 2).toUpperCase() || "MO"}
+                          </span>
+                        }
                       />
                     ) : (
                       <div className="w-9 h-9 rounded-full bg-slate-900 dark:bg-[#18181b] flex items-center justify-center text-white text-sm font-bold shrink-0">
@@ -591,7 +686,7 @@ export default function DriverLayout() {
                     key={item.path}
                     to={item.path}
                     end={item.exact}
-                    onClick={() => setIsMobileMenuOpen(false)}
+                    onClick={(event) => handleSidebarNavigation(event, item.path)}
                     className={({ isActive }) =>
                       cn(
                         "flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-medium transition-colors",

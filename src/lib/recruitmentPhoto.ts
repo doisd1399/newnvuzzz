@@ -6,6 +6,8 @@
  * The application record is always preferred; a user's canonical
  * `profilePhotoURL` is used only as a compatibility fallback.
  */
+import { isCompanyRegistration } from "./registrationImages";
+
 export type RecruitmentPhotoRecord =
   | object
   | null
@@ -83,13 +85,17 @@ const readFields = (
 export const getRecruitmentPhotoCandidates = (
   application: RecruitmentPhotoRecord,
   profile?: RecruitmentPhotoRecord,
-): string[] =>
-  Array.from(
+): string[] => {
+  // A company registration may contain a legacy `photoURL` logo and an owner
+  // photo, but it is not a driver candidate. Never surface either image in RH.
+  if (isCompanyRegistration(application)) return [];
+  return Array.from(
     new Set([
       ...readFields(application, APPLICATION_PHOTO_FIELDS),
       ...readFields(profile, PROFILE_PHOTO_FIELDS),
     ]),
   );
+};
 
 /** Returns the first direct image URL appropriate for the application. */
 export const resolveRecruitmentPhoto = (
@@ -102,6 +108,7 @@ export const getRecruitmentPhotoStorageCandidates = (
   application: RecruitmentPhotoRecord,
   profile?: RecruitmentPhotoRecord,
 ): string[] => {
+  if (isCompanyRegistration(application)) return [];
   const source = [
     ...APPLICATION_PHOTO_FIELDS.map((field) => asRecord(application)[field]),
     ...PROFILE_PHOTO_FIELDS.map((field) => asRecord(profile)[field]),

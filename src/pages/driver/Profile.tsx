@@ -2,8 +2,9 @@ import { resolveDriverPhoto } from '../../lib/resolveDriverPhoto';
 import React, { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./Dashboard";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore, type User } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
+import { StableImage } from "../../components/common/StableImage";
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
@@ -59,8 +60,9 @@ import { createPortal } from "react-dom";
 import { ProfileModal } from "../../components/ProfileModal";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
 import { useTripHistory } from "../../hooks/useTripHistory";
-import { useTripsRealtime } from "../../hooks/useTripsRealtime";
-import { mergeCompanyTripsForRanking } from "../../lib/companyScope";
+import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
+import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
+import { preloadRoute } from "../../lib/routePreload";
 
 type DriverProfileTab = "dashboard" | "profile" | "operations";
 
@@ -79,32 +81,26 @@ const getDriverProfileTab = (state: unknown): DriverProfileTab => {
   return "dashboard";
 };
 
-export default function Profile() {
+function DriverProfileContent({ currentUser }: { currentUser: User }) {
   const {
-    currentUser,
-    jobs,
-    contracts,
     companies,
-    vehicles,
-    trailers,
-    updateUserOnlineStatus,
-    requestNewJobDemand,
+    allCompanies,
     activeCompanyId,
     setActiveCompanyId,
-    allCompanyMembers,
     memberships,
-  } = useAppStore();
+  } = useSessionStore();
+  const {
+    jobs,
+    contracts,
+    vehicles,
+    trailers,
+    users,
+    updateUserOnlineStatus,
+    requestNewJobDemand,
+    allCompanyMembers,
+    simulators,
+  } = useOperationalStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
-  const { trips: globalPerformanceTrips = [], loading: globalTripsLoading } = useTripsRealtime();
-  const rankingCompanyTrips = useMemo(
-    () =>
-      mergeCompanyTripsForRanking({
-        globalTrips: globalPerformanceTrips,
-        companyTrips: historicoTrips,
-        companyId: activeCompanyId,
-      }),
-    [activeCompanyId, globalPerformanceTrips, historicoTrips],
-  );
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
@@ -122,24 +118,47 @@ export default function Profile() {
   const [activeTab, setActiveTab] = useState<DriverProfileTab>(() =>
     getDriverProfileTab(location.state),
   );
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set([activeTab]));
+  // The operational panel is the first view of this route. Keep profile
+  // metrics/history out of that first render; they are only needed after the
+  // corresponding selector is opened.
+  const needsProfileMetrics = activeTab === "profile";
+  const needsOperationsHistory = activeTab === "operations";
+  // Render the active view in the first committed frame. A timer here made
+  // the page look unresponsive on slower WebViews.
+  const [showSecondary] = useState(true);
+
+  useEffect(() => {
+    setVisitedTabs(prev => prev.has(activeTab) ? prev : new Set(prev).add(activeTab));
+  }, [activeTab]);
 
   // Profile, dashboard and operations are views inside one route. Store the
   // selected view in React Router so browser/WebView Back restores the
   // previous view instead of leaving the profile or closing the APK.
   useEffect(() => {
-    setActiveTab(getDriverProfileTab(location.state));
+    const nextTab = getDriverProfileTab(location.state);
+    setVisitedTabs((previous) =>
+      previous.has(nextTab) ? previous : new Set(previous).add(nextTab),
+    );
+    setActiveTab(nextTab);
   }, [location.state]);
 
   const selectProfilePage = (pageId: string) => {
     setIsPageSelectorOpen(false);
 
     if (pageId === "history") {
-      navigate("/driver/history");
+      void prepareAndCommitNavigation(
+        () => preloadRoute("/driver/history"),
+        () => navigate("/driver/history")
+      );
       return;
     }
 
     if (pageId === "reports") {
-      navigate("/driver/reports");
+      void prepareAndCommitNavigation(
+        () => preloadRoute("/driver/reports"),
+        () => navigate("/driver/reports")
+      );
       return;
     }
 
@@ -151,117 +170,157 @@ export default function Profile() {
         ? (location.state as Record<string, unknown>)
         : {};
 
-    navigate(location.pathname, {
-      state: {
-        ...currentState,
-        profileTab: nextTab,
-      },
-    });
+    void prepareAndCommitNavigation(
+      () => {},
+      () => {
+        setVisitedTabs((previous) =>
+          previous.has(nextTab) ? previous : new Set(previous).add(nextTab),
+        );
+        setActiveTab(nextTab);
+        navigate(location.pathname, {
+          state: {
+            ...currentState,
+            profileTab: nextTab,
+          },
+          replace: true
+        });
+      }
+    );
   };
 
-  if (!currentUser) return null;
-
-  // Active job logic
-  const validActiveJobs = jobs.filter(
-    (j) =>
-      j.driverId === currentUser.id &&
-      ["pending", "active", "delayed"].includes(j.status) &&
-      contracts.some((c) => c.id === j.contractId),
+  const contractsMap = useMemo(
+    () => new Map(contracts.map((contract) => [contract.id, contract])),
+    [contracts],
+  );
+  const vehiclesMap = useMemo(
+    () => new Map(vehicles.map((vehicle) => [vehicle.id, vehicle])),
+    [vehicles],
+  );
+  const trailersMap = useMemo(
+    () => new Map(trailers.map((trailer) => [trailer.id, trailer])),
+    [trailers],
   );
 
-  validActiveJobs.sort((a, b) => {
-    if (a.status === "active" && b.status !== "active") return -1;
-    if (a.status !== "active" && b.status === "active") return 1;
-    const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-    const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-    return dateB - dateA;
-  });
+  // Active job logic. Memoized indexes keep selector clicks independent from
+  // the size of the operation history.
+  const validActiveJobs = useMemo(
+    () =>
+      jobs
+        .filter(
+          (job) =>
+            job.driverId === currentUser.id &&
+            ["pending", "active", "delayed"].includes(job.status) &&
+            contractsMap.has(job.contractId),
+        )
+        .sort((a, b) => {
+          if (a.status === "active" && b.status !== "active") return -1;
+          if (a.status !== "active" && b.status === "active") return 1;
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        }),
+    [contractsMap, currentUser.id, jobs],
+  );
 
   const activeJob = validActiveJobs[0];
   const activeContract = activeJob
-    ? contracts.find((c) => c.id === activeJob.contractId)
+    ? contractsMap.get(activeJob.contractId)
     : null;
   const activeVehicle =
     activeJob && activeJob.vehicleId
-      ? vehicles.find((v) => v.id === activeJob.vehicleId)
+      ? vehiclesMap.get(activeJob.vehicleId)
       : null;
   const activeTrailerId = activeJob?.trailerId || activeContract?.trailerId;
   const activeTrailer = activeTrailerId
-    ? trailers.find((t) => t.id === activeTrailerId)
+    ? trailersMap.get(activeTrailerId)
     : null;
 
   // Historical jobs logic (xp calculation only looks at completed)
-  const allDriverJobs = jobs.filter(
-    (j) => j.driverId === currentUser.id && j.id !== activeJob?.id,
+  const allDriverJobs = useMemo(
+    () => {
+      if (!needsOperationsHistory) return [];
+      return jobs.filter(
+        (job) =>
+          job.driverId === currentUser.id && job.id !== activeJob?.id,
+      );
+    },
+    [activeJob?.id, currentUser.id, jobs, needsOperationsHistory],
   );
-  const pastJobs = allDriverJobs.filter((j) => j.status === "completed");
+  const pastJobs = useMemo(
+    () => allDriverJobs.filter((job) => job.status === "completed"),
+    [allDriverJobs],
+  );
 
-  const filteredHistoryJobs = pastJobs
-    .filter((job) => {
-      if (periodFilter === "all") return true;
+  const filteredHistoryJobs = useMemo(() => {
+    if (!needsOperationsHistory) return [];
+    return pastJobs
+      .filter((job) => {
+        if (periodFilter === "all") return true;
 
-      const dateStr =
-        job.completedAt || job.createdAt || new Date().toISOString();
-      const jobDate = new Date(dateStr);
+        const dateStr =
+          job.completedAt || job.createdAt || new Date().toISOString();
+        const jobDate = new Date(dateStr);
 
-      if (periodFilter === "hoje") {
-        const { start, end } = getTodayRange();
-        return jobDate >= start && jobDate <= end;
-      }
-
-      if (periodFilter === "semana") {
-        const { start, end } = getWeeklyRange();
-        return jobDate >= start && jobDate <= end;
-      }
-
-      if (periodFilter === "mes") {
-        const { start, end } = getMonthlyRange();
-        return jobDate >= start && jobDate <= end;
-      }
-
-      if (periodFilter === "custom") {
-        if (customStartDate) {
-          const start = new Date(customStartDate);
-          const localStart = new Date(
-            start.getTime() + start.getTimezoneOffset() * 60000,
-          );
-          if (jobDate < localStart) return false;
+        if (periodFilter === "hoje") {
+          const { start, end } = getTodayRange();
+          return jobDate >= start && jobDate <= end;
         }
-        if (customEndDate) {
-          const end = new Date(customEndDate);
-          const localEnd = new Date(
-            end.getTime() + end.getTimezoneOffset() * 60000,
-          );
-          localEnd.setHours(23, 59, 59, 999);
-          if (jobDate > localEnd) return false;
+
+        if (periodFilter === "semana") {
+          const { start, end } = getWeeklyRange();
+          return jobDate >= start && jobDate <= end;
+        }
+
+        if (periodFilter === "mes") {
+          const { start, end } = getMonthlyRange();
+          return jobDate >= start && jobDate <= end;
+        }
+
+        if (periodFilter === "custom") {
+          if (customStartDate) {
+            const start = new Date(customStartDate);
+            const localStart = new Date(
+              start.getTime() + start.getTimezoneOffset() * 60000,
+            );
+            if (jobDate < localStart) return false;
+          }
+          if (customEndDate) {
+            const end = new Date(customEndDate);
+            const localEnd = new Date(
+              end.getTime() + end.getTimezoneOffset() * 60000,
+            );
+            localEnd.setHours(23, 59, 59, 999);
+            if (jobDate > localEnd) return false;
+          }
+          return true;
         }
         return true;
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      // 1. Logs de depuração temporários para validar a ordem no console
-      const tsA = getJobRealTimestamp(a, historicoTrips);
-      const tsB = getJobRealTimestamp(b, historicoTrips);
-      const dateA = new Date(tsA);
-      const dateB = new Date(tsB);
+      })
+      .sort((a, b) => {
+        const tsA = getJobRealTimestamp(a, historicoTrips);
+        const tsB = getJobRealTimestamp(b, historicoTrips);
 
-      const contractA = getNomeContratoHistorico(a, contracts.find((c) => c.id === a.contractId));
-      const contractB = getNomeContratoHistorico(b, contracts.find((c) => c.id === b.contractId));
-
-      // Fallback if they exactly match
-      if (tsB !== tsA) {
-        console.log(
-          `[SORT DEBUG] ${contractA} vs ${contractB} | ${dateA.toLocaleString()} vs ${dateB.toLocaleString()} | sort: ${tsB - tsA}`,
+        const contractA = getNomeContratoHistorico(
+          a,
+          contractsMap.get(a.contractId),
         );
-        return tsB - tsA;
-      }
+        const contractB = getNomeContratoHistorico(
+          b,
+          contractsMap.get(b.contractId),
+        );
 
-      console.log(
-        `[SORT DEBUG] ${contractA} vs ${contractB} | Fallback string comparison`,
-      );
-      return contractA.localeCompare(contractB);
-    });
+        if (tsB !== tsA) return tsB - tsA;
+        return contractA.localeCompare(contractB);
+      });
+  }, [
+    contractsMap,
+    customEndDate,
+    customStartDate,
+    historicoTrips,
+    needsOperationsHistory,
+    pastJobs,
+    periodFilter,
+  ]);
 
   const displayDeliveries =
     filteredHistoryJobs.reduce((acc, job) => acc + job.progress, 0) +
@@ -270,28 +329,53 @@ export default function Profile() {
     (j) => j.status === "completed",
   ).length;
 
-  const levelData = getDriverLevelData(
-    currentUser.id,
-    jobs,
-    contracts,
-    historicoTrips,
+  const levelData = useMemo(
+    () => {
+      if (!needsProfileMetrics) {
+        return { displayLevel: 1, currentLevelXp: 0, xpProgress: 0 };
+      }
+      return getDriverLevelData(
+        currentUser.id,
+        jobs,
+        contracts,
+        historicoTrips,
+      );
+    },
+    [contracts, currentUser.id, historicoTrips, jobs, needsProfileMetrics],
   );
   const displayLevel = levelData.displayLevel;
   const currentLevelXp = levelData.currentLevelXp;
   const xpProgress = levelData.xpProgress;
 
-  const normalizedAllTrips = useMemo(() => historicoTrips.map((t: any) => normalizeTrip(t)), [historicoTrips]);
+  const normalizedAllTrips = useMemo(
+    () => (needsProfileMetrics || needsOperationsHistory
+      ? historicoTrips.map((t: any) => normalizeTrip(t))
+      : []),
+    [historicoTrips, needsOperationsHistory, needsProfileMetrics],
+  );
   
   const filteredDriverTrips = useMemo(() => {
+    if (!needsProfileMetrics) return [];
     return getFilteredTrips(normalizedAllTrips, undefined, undefined, undefined, undefined, companies, currentUser.id);
-  }, [normalizedAllTrips, currentUser.id, companies]);
+  }, [normalizedAllTrips, currentUser.id, companies, needsProfileMetrics]);
 
-  const totalGanhos = filteredDriverTrips.reduce((acc, t) => acc + t.normalizedValor, 0);
+  const totalGanhos = useMemo(
+    () =>
+      filteredDriverTrips.reduce(
+        (total, trip) => total + trip.normalizedValor,
+        0,
+      ),
+    [filteredDriverTrips],
+  );
   const totalViagens = filteredDriverTrips.length;
 
-  const currentActiveCompany = activeCompanyId
-    ? companies.find((c) => c.id === activeCompanyId)
-    : null;
+  const currentActiveCompany = useMemo(
+    () =>
+      activeCompanyId
+        ? companies.find((company) => company.id === activeCompanyId)
+        : null,
+    [activeCompanyId, companies],
+  );
 
   const [globalRank, setGlobalRank] = useState<{
     position: number;
@@ -304,19 +388,20 @@ export default function Profile() {
     return companies.filter((c) => membershipCompanyIds.has(c.id));
   }, [companies, memberships]);
 
-  // Dictionary for quick lookups in history map
-  const contractsMap = useMemo(() => new Map(contracts.map(c => [c.id, c])), [contracts]);
-  const vehiclesMap = useMemo(() => new Map(vehicles.map(v => [v.id, v])), [vehicles]);
-  const trailersMap = useMemo(() => new Map(trailers.map(t => [t.id, t])), [trailers]);
-
-  const formatCurrency = (val?: number) => {
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    }).format(val);
-  };
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("pt-BR", {
+        style: "currency",
+        currency: "BRL",
+      }),
+    [],
+  );
 
   useEffect(() => {
+    if (!needsProfileMetrics) {
+      setGlobalRank(null);
+      return;
+    }
     if (!currentActiveCompany?.id || !currentUser?.id) {
       setGlobalRank(null);
       return;
@@ -373,6 +458,7 @@ export default function Profile() {
     currentUser?.id,
     historicoTrips,
     allCompanyMembers,
+    needsProfileMetrics,
   ]);
 
   const handleRequestWork = async () => {
@@ -571,11 +657,20 @@ export default function Profile() {
             <div className="flex items-center gap-3 min-w-0 flex-1">
               <div className="w-12 h-12 sm:w-14 sm:h-14 bg-slate-900 dark:bg-[#2A2F3A] rounded-lg overflow-hidden flex items-center justify-center shrink-0 border border-slate-200 dark:border-[#3A3F4A] shadow-sm relative">
                 {resolveDriverPhoto(currentUser) ? (
-                  <img
+                  <StableImage
                     src={resolveDriverPhoto(currentUser)}
                     alt={currentUser.name}
-                    className="w-full h-full object-cover"
+                    loading="eager"
+                    decoding="async"
+                    fetchPriority="high"
+                    wrapperClassName="w-full h-full"
+                    className="object-cover"
                     referrerPolicy="no-referrer"
+                    fallback={
+                      <span className="h-full w-full bg-slate-900 dark:bg-[#2A2F3A] flex items-center justify-center text-base sm:text-lg font-bold text-white tracking-tighter">
+                        {currentUser.name.substring(0, 2).toUpperCase()}
+                      </span>
+                    }
                   />
                 ) : (
                   <span className="text-base sm:text-lg font-bold text-white tracking-tighter">
@@ -683,8 +778,8 @@ export default function Profile() {
 
         {renderPageSelector()}
 
-        {activeTab === "profile" && (
-          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
+        {(visitedTabs.has("profile") || activeTab === "profile") && (
+          <div className={cn(activeTab !== "profile" && "hidden", "space-y-6 sm:space-y-8")}>
             {/* Driver Details Info Card */}
             {isInfoOpen && (
               <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[16px] p-4 sm:p-5 shadow-sm space-y-4 animate-in fade-in slide-in-from-top-2">
@@ -746,25 +841,31 @@ export default function Profile() {
               </div>
             )}
 
-            <DriverPerformanceCard
-              historicoTrips={rankingCompanyTrips}
-              globalHistoricoTrips={globalPerformanceTrips}
-              globalTripsLoading={globalTripsLoading}
-              driverId={currentUser?.id}
-              activeCompanyId={activeCompanyId}
-              allCompanyMembers={allCompanyMembers}
-              currentUser={currentUser}
-              simulatorName={currentActiveCompany?.simulatorName}
-              allCompanies={companies}
-              displayLevel={displayLevel}
-              currentLevelXp={currentLevelXp}
-              xpProgress={xpProgress}
-            />
+            {showSecondary && (
+              <DriverPerformanceCard
+                historicoTrips={historicoTrips}
+                driverId={currentUser?.id}
+                activeCompanyId={activeCompanyId}
+                allCompanyMembers={allCompanyMembers}
+                users={users}
+                currentUser={currentUser}
+                simulatorId={resolveCompanySimulatorFilterValue(
+                  currentActiveCompany,
+                  simulators as Record<string, unknown>[],
+                  allCompanies as Record<string, unknown>[],
+                )}
+                allCompanies={allCompanies}
+                simulators={simulators as Record<string, unknown>[]}
+                displayLevel={displayLevel}
+                currentLevelXp={currentLevelXp}
+                xpProgress={xpProgress}
+              />
+            )}
           </div>
         )}
 
-        {activeTab === "operations" && (
-          <div className="space-y-6 sm:space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
+        {(visitedTabs.has("operations") || activeTab === "operations") && (
+          <div className={cn(activeTab !== "operations" && "hidden", "space-y-6 sm:space-y-8")}>
             <div className="flex flex-col gap-3">
               {!activeJob && currentUser.isOnline && (
                 <Button
@@ -957,9 +1058,10 @@ export default function Profile() {
                     <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
                       <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
                         <div
-                          className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
+                          className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
                           style={{
-                            width: `${Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)}%`,
+                            transform: `scaleX(${Math.min(100, Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)) / 100})`,
+                            willChange: "transform",
                           }}
                         ></div>
                       </div>
@@ -1270,7 +1372,7 @@ export default function Profile() {
                                     Total de ganhos:
                                   </span>
                                   <span className="text-[11.5px] font-semibold text-green-600 dark:text-green-400 truncate">
-                                    {formatCurrency(totalGanhos)}
+                                    {currencyFormatter.format(totalGanhos)}
                                   </span>
                                 </div>
                               </div>
@@ -1411,9 +1513,14 @@ export default function Profile() {
           </div>
         )}
 
-        {activeTab === "dashboard" && (
-          <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-            <Dashboard isIntegrated={true} />
+        {(visitedTabs.has("dashboard") || activeTab === "dashboard") && (
+          <div className={cn(activeTab !== "dashboard" && "hidden", "")}>
+            {showSecondary && (
+              <Dashboard
+                isIntegrated={true}
+                tripHistoryOverride={historicoTrips}
+              />
+            )}
           </div>
         )}
 
@@ -1424,4 +1531,31 @@ export default function Profile() {
       </div>
     </div>
   );
+}
+
+/**
+ * Session gate kept outside the feature component.
+ *
+ * The previous implementation returned before several hooks when the cached
+ * session briefly had no user, then rendered those hooks after rehydration.
+ * React rejects that hook-order change and the Motorista workspace stops
+ * opening. Mounting the content only after a user exists keeps the hook graph
+ * stable through login, profile switching, resume and logout.
+ */
+export default function Profile() {
+  const { currentUser, authInitialized, sessionReady } = useSessionStore();
+
+  if (!authInitialized || !sessionReady || !currentUser) {
+    return (
+      <div
+        className="min-h-[45vh] bg-gray-50 dark:bg-[#09090b]"
+        role="status"
+        aria-live="polite"
+      >
+        <span className="sr-only">Preparando perfil do motorista</span>
+      </div>
+    );
+  }
+
+  return <DriverProfileContent key={currentUser.id} currentUser={currentUser} />;
 }

@@ -1,7 +1,7 @@
 import { resolveDriverPhoto } from '../../../lib/resolveDriverPhoto';
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../../context/AppContext";
+import { useActivityStore, useOperationalStore, useSessionStore } from "../../../context/AppContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -18,29 +18,29 @@ import {
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { toast } from "sonner";
+import { StableImage } from "../../../components/common/StableImage";
 
 import { UserPlus, X, Image as ImageIcon, Truck, Clock, Check, User, Briefcase } from "lucide-react";
 import { convertFileToBase64, compressImage, getNomeContratoHistorico } from "../../../lib/utils";
 import { getDriverLevelData } from "../../../lib/levelUtils";
 import { useTripHistory } from "../../../hooks/useTripHistory";
 
-export default function DriversTab() {
+function DriversTab() {
   const navigate = useNavigate();
+  const { activeCompanyId, currentUser } = useSessionStore();
   const {
     users,
     jobs,
     contracts,
-    activeCompanyId,
     approveDriver,
     rejectDriver,
-    driverRequests,
     promoteDriverToAdmin,
     demoteAdminToDriver,
     removeDriverFromFleet,
-    currentUser,
     createManualDriver,
     allCompanyMembers,
-  } = useAppStore();
+  } = useOperationalStore();
+  const { driverRequests } = useActivityStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [driverToRemove, setDriverToRemove] = useState<string | null>(null);
 
@@ -49,6 +49,7 @@ export default function DriversTab() {
   >(null);
 
   const [openDropdownId, setOpenDropdownId] = useState<string | null>(null);
+  const [dropdownPlacement, setDropdownPlacement] = useState<"above" | "below">("below");
 
   const getDriverRoles = React.useCallback((driver: any) => {
     const member = allCompanyMembers.find(
@@ -133,6 +134,33 @@ export default function DriversTab() {
     navigate("/admin/fleet", { state: { preselectedJobId: jobId } });
   };
 
+  /**
+   * The action menu used to be clipped by the driver's Card when the card was
+   * the last item in the list.  Keep the menu anchored to the trigger, but
+   * open it upward whenever there is not enough room below the trigger.
+   */
+  const handleToggleDropdown = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    driverId: string,
+  ) => {
+    if (openDropdownId === driverId) {
+      setOpenDropdownId(null);
+      return;
+    }
+
+    const triggerRect = event.currentTarget.getBoundingClientRect();
+    const estimatedMenuHeight = 190;
+    const viewportHeight =
+      typeof window !== "undefined" ? window.innerHeight : triggerRect.bottom + estimatedMenuHeight;
+    const spaceBelow = viewportHeight - triggerRect.bottom;
+    const spaceAbove = triggerRect.top;
+    const opensAbove =
+      spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
+
+    setDropdownPlacement(opensAbove ? "above" : "below");
+    setOpenDropdownId(driverId);
+  };
+
   return (
     <div className="space-y-8">
       {/* Pendências Section */}
@@ -154,13 +182,19 @@ export default function DriversTab() {
                     <div className="flex flex-col sm:flex-row">
                       <div className="p-6 flex-1 flex items-start gap-4">
                         {resolveDriverPhoto(driver) ? (
-                          <img
+                          <StableImage
                             src={resolveDriverPhoto(driver)}
                             alt={driver?.name}
                             loading="lazy"
                             decoding="async"
-                            className="w-14 h-14 rounded-full border-2 border-white shadow-sm dark:shadow-none bg-gray-50 dark:bg-[#1A1F26] object-cover"
+                            wrapperClassName="w-14 h-14 rounded-full border-2 border-white shadow-sm dark:shadow-none bg-gray-50 dark:bg-[#1A1F26]"
+                            className="object-cover"
                             referrerPolicy="no-referrer"
+                            fallback={
+                              <span className="h-full w-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-lg">
+                                {driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                              </span>
+                            }
                           />
                         ) : (
                           <div className="w-14 h-14 rounded-full border-2 border-white shadow-sm dark:shadow-none bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-lg">
@@ -288,19 +322,25 @@ export default function DriversTab() {
               return (
                 <Card
                   key={driver.id}
-                  className="rounded-[20px] border border-gray-200/60 dark:border-gray-800 shadow-sm hover:shadow-md dark:shadow-none relative bg-white dark:bg-[#1A1F26] group transition-all duration-200 w-full"
+                  className="rounded-[20px] border border-gray-200/60 dark:border-gray-800 shadow-sm hover:shadow-md dark:shadow-none relative bg-white dark:bg-[#1A1F26] group transition-all duration-200 w-full overflow-visible"
                 >
                   <CardContent className="p-3 md:p-4 flex flex-col w-full gap-2.5 md:gap-3">
                     {/* 1. Cabeçalho */}
                     <div className="flex items-start w-full gap-2.5 md:gap-3">
                       {resolveDriverPhoto(driver) ? (
-                        <img
+                        <StableImage
                           src={resolveDriverPhoto(driver)}
                           alt={driver.name}
                           loading="lazy"
                           decoding="async"
-                          className="w-[60px] h-[60px] md:w-[72px] md:h-[72px] rounded-[16px] border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1A1F26] object-cover shrink-0"
+                          wrapperClassName="w-[60px] h-[60px] md:w-[72px] md:h-[72px] rounded-[16px] border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1A1F26] shrink-0"
+                          className="object-cover"
                           referrerPolicy="no-referrer"
+                          fallback={
+                            <span className="h-full w-full text-gray-500 dark:text-gray-400 flex items-center justify-center font-bold text-xl">
+                              {driver.name.substring(0, 2).toUpperCase()}
+                            </span>
+                          }
                         />
                       ) : (
                         <div className="w-[60px] h-[60px] md:w-[72px] md:h-[72px] rounded-[16px] border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1A1F26] text-gray-500 dark:text-gray-400 flex items-center justify-center font-bold text-xl shrink-0">
@@ -319,17 +359,27 @@ export default function DriversTab() {
                             />
                           </h3>
                           
-                          {/* Menu de opções */}
+                            {/* Menu de opções */}
                           <div className="shrink-0 relative z-50">
                             <button 
-                              onClick={() => setOpenDropdownId(openDropdownId === driver.id ? null : driver.id)}
+                              onClick={(event) => handleToggleDropdown(event, driver.id)}
+                              aria-haspopup="menu"
+                              aria-expanded={openDropdownId === driver.id}
                               className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-[#2A2F3A] text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300 transition-colors -mt-1 -mr-1"
                             >
                               <MoreVertical size={18} />
                             </button>
                             
                             {openDropdownId === driver.id && (
-                               <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#1A1F26] border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg py-1.5 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                               <div
+                                 role="menu"
+                                 className={cn(
+                                   "absolute right-0 z-[60] w-52 bg-white dark:bg-[#1A1F26] border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg py-1.5 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100",
+                                   dropdownPlacement === "above"
+                                     ? "bottom-full mb-1 slide-in-from-bottom-1"
+                                     : "top-full mt-1 slide-in-from-top-1",
+                                 )}
+                               >
                                   <button 
                                     onClick={() => {
                                       setOpenDropdownId(null);
@@ -604,3 +654,5 @@ export default function DriversTab() {
     </div>
   );
 }
+
+export default React.memo(DriversTab);

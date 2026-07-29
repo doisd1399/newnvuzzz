@@ -1,15 +1,16 @@
 import { resolveDriverPhoto } from '../../lib/resolveDriverPhoto';
 import React, { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { collection, onSnapshot, query } from "firebase/firestore";
-import { db } from "../../lib/firebase";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
+import { StableImage } from "../../components/common/StableImage";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips } from "../../lib/metricsEngine";
-import { normalizeTrip, NormalizedTrip } from "../../lib/tripNormalizer";
+import { normalizeTrip } from "../../lib/tripNormalizer";
+import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
+import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import TripHistory from "../driver/TripHistory";
 import Reports from "./Reports";
 import {
@@ -47,21 +48,27 @@ import {
   Clock,
 } from "lucide-react";
 import { useTripHistory } from "../../hooks/useTripHistory";
-import { useTripsRealtime } from "../../hooks/useTripsRealtime";
-import { TripsRepository } from "../../repositories/TripsRepository";
+import { useDriverTrips } from "../../hooks/useDriverTrips";
 import {
   getTripCompanyId,
   getTripDriverId,
   getTripTimestamp,
-  mergeCompanyTripsForRanking,
   resolveViewedDriverCompanyId,
 } from "../../lib/companyScope";
-import { isAuthTeardownActive, onAuthTeardown } from "../../lib/authLifecycle";
 
 export default function DriverProfileIsolated() {
   const { id: driverId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const routeCompanyId = (
+    location.state as { companyId?: string } | null
+  )?.companyId;
+  const [secondaryReady, setSecondaryReady] = useState(false);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setSecondaryReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [driverId]);
 
   const handleBack = () => {
     if (location.state && location.state.returnUrl) {
@@ -71,25 +78,25 @@ export default function DriverProfileIsolated() {
     }
   };
 
+  const { companies, allCompanies, activeCompanyId } = useSessionStore();
   const {
     users,
     jobs,
     contracts,
     vehicles,
     trailers,
-    companies,
-    activeCompanyId,
     allCompanyMembers,
+    simulators,
     deleteJob,
-  } = useAppStore();
+  } = useOperationalStore();
 
-  const { trips: globalPerformanceTrips = [], loading: globalTripsLoading } =
-    useTripsRealtime();
+  // Fleet navigation already carries the viewed company. Avoid opening a
+  // second driver-wide listener before the profile header has painted.
+  const { trips: driverTrips = [] } = useDriverTrips(driverId, {
+    enabled: !routeCompanyId,
+  });
 
   const driverForContext = users.find((user) => user.id === driverId);
-  const routeCompanyId = (
-    location.state as { companyId?: string } | null
-  )?.companyId;
   const activeDriverMembershipForContext = allCompanyMembers?.find(
     (member) => member.userId === driverId && member.status === "active",
   );
@@ -109,11 +116,11 @@ export default function DriverProfileIsolated() {
   }, [driverId, jobs]);
 
   const latestTripCompanyIdForContext = useMemo(() => {
-    const latestTrip = globalPerformanceTrips
+    const latestTrip = driverTrips
       .filter((trip) => getTripDriverId(trip) === driverId)
       .sort((a, b) => getTripTimestamp(b) - getTripTimestamp(a))[0];
     return getTripCompanyId(latestTrip);
-  }, [driverId, globalPerformanceTrips]);
+  }, [driverId, driverTrips]);
 
   // The route/company being inspected is authoritative. Operational evidence
   // (job and latest trip) then protects profiles whose user.companyId or
@@ -130,21 +137,14 @@ export default function DriverProfileIsolated() {
     fallbackActiveCompanyId: activeCompanyId,
   });
 
-  const { historicoTrips = [] } = useTripHistory(viewedCompanyId);
+  const { historicoTrips = [] } = useTripHistory(viewedCompanyId, {
+    enabled: secondaryReady,
+  });
 
-  // Build the Internal universe from the same canonical all-trips stream used
-  // by Global, filtered by the viewed driver's company. Merge the company
-  // listener as a fallback for permission or propagation delays. This prevents
-  // a Senior profile from accidentally reusing the logged user's company.
-  const viewedCompanyTrips = useMemo(
-    () =>
-      mergeCompanyTripsForRanking({
-        globalTrips: globalPerformanceTrips,
-        companyTrips: historicoTrips,
-        companyId: viewedCompanyId,
-      }),
-    [globalPerformanceTrips, historicoTrips, viewedCompanyId],
-  );
+  // Company history remains the canonical source for totals and level data.
+  // Simulator-wide ranking periods are loaded directly inside the performance
+  // card, so this profile no longer subscribes to every trip in the system.
+  const viewedCompanyTrips = historicoTrips;
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [jobToDelete, setJobToDelete] = useState<string | null>(null);
@@ -152,6 +152,11 @@ export default function DriverProfileIsolated() {
   const [activeTab, setActiveTab] = useState<
     "profile" | "history" | "operations" | "reports"
   >("profile");
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set([activeTab]));
+
+  useEffect(() => {
+    setVisitedTabs(prev => prev.has(activeTab) ? prev : new Set(prev).add(activeTab));
+  }, [activeTab]);
 
   const driver = driverForContext;
   if (!driver) {
@@ -170,8 +175,9 @@ export default function DriverProfileIsolated() {
   const driverMembership = activeDriverMembershipForContext;
 
   const resolvedCompany =
-    (viewedCompanyId ? companies.find((company) => company.id === viewedCompanyId) : null) ||
-    (activeCompanyId ? companies.find((company) => company.id === activeCompanyId) : null);
+    (viewedCompanyId ? allCompanies.find((company) => company.id === viewedCompanyId) : null) ||
+    (activeCompanyId ? allCompanies.find((company) => company.id === activeCompanyId) : null) ||
+    (viewedCompanyId ? companies.find((company) => company.id === viewedCompanyId) : null);
 
   const pageOptions = [
     { id: "profile", label: "Meu Perfil", icon: UserIcon },
@@ -229,8 +235,13 @@ export default function DriverProfileIsolated() {
                 key={opt.id}
                 onClick={() => {
                   setIsPageSelectorOpen(false);
-                  setActiveTab(
-                    opt.id as "profile" | "history" | "operations" | "reports",
+                  void prepareAndCommitNavigation(
+                    () => {},
+                    () => {
+                      setActiveTab(
+                        opt.id as "profile" | "history" | "operations" | "reports",
+                      );
+                    }
                   );
                 }}
                 className={cn(
@@ -337,129 +348,6 @@ export default function DriverProfileIsolated() {
   const totalGanhos = filteredDriverTrips.reduce((acc, t) => acc + t.normalizedValor, 0);
   const totalViagens = filteredDriverTrips.length;
 
-  const [globalRank, setGlobalRank] = useState<{
-    position: number;
-    total: number;
-    diffToNext?: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!resolvedCompany?.simulatorName || !driverId) return;
-
-    const targetSimulator = resolvedCompany.simulatorName || "Global Truck";
-    const simulatorCompanies = new Set(
-      companies
-        .filter((c) => (c.simulatorName || "Global Truck") === targetSimulator)
-        .map((c) => c.id),
-    );
-
-    const membersQ = query(collection(db, "companyMembers"));
-    let latestTrips: any[] = [];
-    let latestMembers: any[] = [];
-    let tripsReady = false;
-    let membersReady = false;
-    let stopped = false;
-    let unsubTrips: () => void = () => {};
-    let unsubMembers: () => void = () => {};
-
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      try {
-        unsubTrips();
-      } catch {
-        // Listener cleanup is best-effort during logout.
-      }
-      try {
-        unsubMembers();
-      } catch {
-        // Listener cleanup is best-effort during logout.
-      }
-    };
-    const removeTeardownListener = onAuthTeardown(stop);
-
-    const updateGlobalRank = () => {
-      if (stopped || isAuthTeardownActive() || !tripsReady || !membersReady)
-        return;
-
-      const earningsByDriver: Record<string, number> = {};
-
-      latestTrips.forEach((data) => {
-        if (simulatorCompanies.has(data.empresaId)) {
-          const mId = data.motoristaId;
-          const valor = Number(data.valor) || 0;
-          earningsByDriver[mId] = (earningsByDriver[mId] || 0) + valor;
-        }
-      });
-
-      const driversInSimulator = new Set<string>();
-      latestMembers.forEach((member) => {
-        if (simulatorCompanies.has(member.companyId)) {
-          driversInSimulator.add(member.userId);
-        }
-      });
-
-      Object.keys(earningsByDriver).forEach((dId) =>
-        driversInSimulator.add(dId),
-      );
-      driversInSimulator.add(driverId!);
-
-      const leaderboard = Array.from(driversInSimulator).map((dId) => ({
-        id: dId,
-        ganhos: earningsByDriver[dId] || 0,
-      }));
-
-      leaderboard.sort((a, b) => b.ganhos - a.ganhos);
-
-      const pos = leaderboard.findIndex((item) => item.id === driverId);
-      if (pos !== -1) {
-        let diffToNext = 0;
-        if (pos > 0) {
-          const nextPerson = leaderboard[pos - 1];
-          const currentGanhos = leaderboard[pos].ganhos;
-          diffToNext = nextPerson.ganhos - currentGanhos;
-        }
-        setGlobalRank({
-          position: pos + 1,
-          total: leaderboard.length,
-          diffToNext,
-        });
-      } else {
-        setGlobalRank(null);
-      }
-    };
-
-    unsubTrips = TripsRepository.listenAllTrips((trips) => {
-      if (stopped || isAuthTeardownActive()) return;
-      latestTrips = trips;
-      tripsReady = true;
-      updateGlobalRank();
-    }, (error) => {
-      if (!stopped && !isAuthTeardownActive()) {
-        console.warn("Erro ao carregar viagens do ranking:", error);
-      }
-    });
-
-    unsubMembers = onSnapshot(
-      membersQ,
-      (memSnap) => {
-        if (stopped || isAuthTeardownActive()) return;
-        latestMembers = memSnap.docs.map((memberDoc) => memberDoc.data());
-        membersReady = true;
-        updateGlobalRank();
-      },
-      (error) => {
-        if (!stopped && !isAuthTeardownActive()) {
-          console.warn("Erro ao carregar membros do ranking:", error);
-        }
-      },
-    );
-
-    return () => {
-      removeTeardownListener();
-      stop();
-    };
-  }, [resolvedCompany, companies, driverId]);
 
   const formatCurrency = (val?: number) => {
     if (val === undefined || val === null || isNaN(val)) return "-";
@@ -486,17 +374,26 @@ export default function DriverProfileIsolated() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto flex flex-col gap-3 sm:gap-4 w-full animate-in fade-in duration-300 pb-8">
+    <div className="max-w-2xl mx-auto flex flex-col gap-3 sm:gap-4 w-full pb-8">
       <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[14px] sm:rounded-[16px] flex flex-col shadow-sm relative z-30 w-full box-border">
         <div className="p-3 sm:p-4 flex items-start sm:items-center justify-between gap-3 w-full">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <div className="w-12 h-12 sm:w-14 sm:h-14 bg-slate-900 dark:bg-[#2A2F3A] rounded-lg overflow-hidden flex items-center justify-center shrink-0 border border-slate-200 dark:border-[#3A3F4A] shadow-sm relative">
               {resolveDriverPhoto(driver) ? (
-                <img
+                <StableImage
                   src={resolveDriverPhoto(driver)}
                   alt={driver.name}
-                  className="w-full h-full object-cover"
+                  loading="eager"
+                  decoding="async"
+                  fetchPriority="high"
+                  wrapperClassName="w-full h-full"
+                  className="object-cover"
                   referrerPolicy="no-referrer"
+                  fallback={
+                    <span className="h-full w-full bg-slate-900 dark:bg-[#2A2F3A] flex items-center justify-center text-base sm:text-lg font-bold text-white tracking-tighter">
+                      {driver.name.substring(0, 2).toUpperCase()}
+                    </span>
+                  }
                 />
               ) : (
                 <span className="text-base sm:text-lg font-bold text-white tracking-tighter">
@@ -542,27 +439,38 @@ export default function DriverProfileIsolated() {
       {renderPageSelector()}
 
       <div className="space-y-3 sm:space-y-4">
-        {activeTab === "profile" && (
-          <div className="space-y-3 sm:space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-            <DriverPerformanceCard
-              historicoTrips={viewedCompanyTrips}
-              globalHistoricoTrips={globalPerformanceTrips}
-              globalTripsLoading={globalTripsLoading}
-              driverId={driverId as string}
-              activeCompanyId={viewedCompanyId}
-              allCompanyMembers={allCompanyMembers}
-              currentUser={driver}
-              simulatorName={resolvedCompany?.simulatorName}
-              allCompanies={companies}
-              displayLevel={displayLevel}
-              currentLevelXp={currentLevelXp}
-              xpProgress={xpProgress}
-            />
+        {visitedTabs.has("profile") && (
+          <div className={cn(activeTab !== "profile" && "hidden")}>
+            <div className="space-y-3 sm:space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+            {secondaryReady ? (
+              <DriverPerformanceCard
+                historicoTrips={viewedCompanyTrips}
+                driverId={driverId as string}
+                activeCompanyId={viewedCompanyId}
+                allCompanyMembers={allCompanyMembers}
+                users={users}
+                currentUser={driver}
+                simulatorId={resolveCompanySimulatorFilterValue(
+                  resolvedCompany,
+                  simulators as Record<string, unknown>[],
+                  allCompanies as Record<string, unknown>[],
+                )}
+                allCompanies={allCompanies}
+                simulators={simulators as Record<string, unknown>[]}
+                displayLevel={displayLevel}
+                currentLevelXp={currentLevelXp}
+                xpProgress={xpProgress}
+              />
+            ) : (
+              <div className="min-h-[220px]" aria-hidden="true" />
+            )}
+          </div>
           </div>
         )}
 
-        {activeTab === "operations" && (
-          <div className="space-y-6">
+        {visitedTabs.has("operations") && (
+          <div className={cn(activeTab !== "operations" && "hidden")}>
+            <div className="space-y-6">
             {/* Active Job Section */}
             <div>
               <h3 className="text-[15px] font-bold text-gray-900 dark:text-[#fafafa] mb-3 px-1">
@@ -690,9 +598,10 @@ export default function DriverProfileIsolated() {
                     <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
                       <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
                         <div
-                          className="h-full rounded-full transition-all duration-500 bg-slate-800 dark:bg-gray-300"
+                          className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
                           style={{
-                            width: `${Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)}%`,
+                            transform: `scaleX(${Math.min(100, Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)) / 100})`,
+                            willChange: "transform",
                           }}
                         ></div>
                       </div>
@@ -1159,10 +1068,12 @@ export default function DriverProfileIsolated() {
               )}
             </div>
           </div>
+          </div>
         )}
 
-        {activeTab === "history" && (
-          <TripHistory
+        {visitedTabs.has("history") && (
+          <div className={cn(activeTab !== "history" && "hidden")}>
+            <TripHistory
             hideHeader={true}
             hideDriverFilter={true}
             defaultDriverName={driver.name}
@@ -1170,14 +1081,17 @@ export default function DriverProfileIsolated() {
             isInsideAdminTab={true}
             companyId={viewedCompanyId || undefined}
           />
+          </div>
         )}
 
-        {activeTab === "reports" && (
-          <Reports
+        {visitedTabs.has("reports") && (
+          <div className={cn(activeTab !== "reports" && "hidden")}>
+            <Reports
             hideHeader={true}
             defaultDriverId={driver.id}
             isInsideAdminTab={true}
           />
+          </div>
         )}
       </div>
 

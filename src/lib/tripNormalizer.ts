@@ -88,7 +88,15 @@ export function getTripMetricDate(trip: RawTrip | any): Date {
   return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
 }
 
+const normalizationCache = new WeakMap<any, NormalizedTrip>();
+
 export function normalizeTrip(trip: RawTrip): NormalizedTrip {
+  if (typeof trip === 'object' && trip !== null) {
+    if (normalizationCache.has(trip)) {
+      return normalizationCache.get(trip);
+    }
+  }
+  
   const status = normalizeStatus(trip.status);
 
   const isCanceled =

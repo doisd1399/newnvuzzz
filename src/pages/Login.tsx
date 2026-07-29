@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import React, { useState, useEffect, useRef } from "react";
+import { Navigate, useNavigate, useLocation } from "react-router-dom";
+import { useSessionStore } from "../context/AppContext";
 import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { auth, db } from "../lib/firebase";
@@ -8,28 +8,33 @@ import { unifyUserDocument } from "../services/userIdentityService";
 import { GoogleAuthProvider, signInWithPopup, signInWithCredential } from "firebase/auth";
 import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
-import {
-  query,
-  collection,
-  where,
-  getDocs,
-} from "firebase/firestore";
+import { query, collection, where, getDocs, or } from "firebase/firestore";
+import { preloadRoute } from "../lib/routePreload";
 
 export default function Login() {
-  const { setCurrentUser, currentUser, authInitialized } = useAppStore();
+  const {
+    setCurrentUser,
+    currentUser,
+    authInitialized,
+    sessionReady,
+    membershipsLoaded,
+    memberships,
+  } = useSessionStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const accessCheckInFlightRef = useRef(false);
 
   useEffect(() => {
     let active = true;
 
     const checkAccess = async () => {
-      if (loading) return;
+      if (loading || accessCheckInFlightRef.current) return;
 
       try {
-        if (authInitialized && currentUser?.id) {
+        if (sessionReady && currentUser?.id) {
+          accessCheckInFlightRef.current = true;
           const dest = sessionStorage.getItem("loginRedirect");
           if (dest) {
             sessionStorage.removeItem("loginRedirect");
@@ -37,33 +42,48 @@ export default function Login() {
             return;
           }
 
-          // 1. Check companyMembers for active membership
-          const memQuery = query(
-            collection(db, "companyMembers"),
-            where("userId", "==", currentUser.id),
-            where("status", "==", "active")
-          );
-          const memSnap = await getDocs(memQuery);
+          const hasSeniorRole =
+            (currentUser as any).role === "senior" ||
+            (Array.isArray((currentUser as any).roles) &&
+              (currentUser as any).roles.includes("senior"));
+          if (hasSeniorRole) {
+            if (active) navigate("/admin/senior", { replace: true });
+            return;
+          }
 
-          if (!memSnap.empty) {
+          // Memberships are already hydrated by AppContext and cached across
+          // sessions. Re-querying the same collection here created the visible
+          // delay between clicking Login and opening the profile selector.
+          const hasActiveMembership =
+            membershipsLoaded && memberships.some((membership) => membership.status === "active");
+
+          if (hasActiveMembership) {
+            void preloadRoute("/select-profile");
             if (active) navigate("/select-profile", { replace: true });
             return;
           }
 
-          // 2. Sem vínculo ativo, somente uma inscrição realmente pendente
-          // deve bloquear o usuário na tela de status. Registros aprovados ou
-          // recusados antigos não podem redirecionar o login indefinidamente.
-          const reqQuery = query(
-            collection(db, "recruitment_applications"),
-            where("userId", "==", currentUser.id),
-          );
+          // 2. Include legacy applications that were saved by e-mail only.
+          const normalizedEmail = currentUser.email?.trim().toLowerCase();
+          const reqQuery = normalizedEmail
+            ? query(
+                collection(db, "recruitment_applications"),
+                or(
+                  where("userId", "==", currentUser.id),
+                  where("email", "==", normalizedEmail),
+                ),
+              )
+            : query(
+                collection(db, "recruitment_applications"),
+                where("userId", "==", currentUser.id),
+              );
           const reqSnap = await getDocs(reqQuery);
-          const hasPendingApplication = reqSnap.docs.some(
-            (applicationDocument) =>
-              applicationDocument.data().status === "pending",
-          );
+          const hasApplication = reqSnap.docs.some((applicationDocument) => {
+            const status = applicationDocument.data().status;
+            return status === "pending" || status === "approved";
+          });
 
-          if (hasPendingApplication) {
+          if (hasApplication) {
             if (active) navigate("/status", { replace: true });
             return;
           }
@@ -74,9 +94,11 @@ export default function Login() {
       } catch (err) {
         console.error("Error in checkAccess:", err);
         if (active) {
-           setError("Erro ao verificar acesso. Retornando ao portal inicial.");
-           setTimeout(() => navigate("/", { replace: true }), 2000);
+          setError("Erro ao verificar acesso. Retornando ao portal inicial.");
+          window.setTimeout(() => navigate("/", { replace: true }), 2000);
         }
+      } finally {
+        accessCheckInFlightRef.current = false;
       }
     };
 
@@ -85,15 +107,63 @@ export default function Login() {
     return () => {
       active = false;
     };
-  }, [authInitialized, currentUser, loading, navigate]);
+  }, [
+    sessionReady,
+    currentUser,
+    membershipsLoaded,
+    memberships,
+    loading,
+    navigate,
+  ]);
+
+  const currentUserHasSeniorRole = Boolean(
+    currentUser &&
+      ((currentUser as any).role === "senior" ||
+        (Array.isArray((currentUser as any).roles) &&
+          (currentUser as any).roles.includes("senior"))),
+  );
+  const currentUserHasActiveMembership = Boolean(
+    currentUser &&
+      membershipsLoaded &&
+      memberships.some((membership) => membership.status === "active"),
+  );
+
+  // For a session that is already hydrated, redirect during render instead of
+  // painting a progress page and waiting one effect cycle.
+  if (
+    sessionReady &&
+    currentUser &&
+    membershipsLoaded &&
+    !sessionStorage.getItem("loginRedirect") &&
+    (currentUserHasSeniorRole || currentUserHasActiveMembership)
+  ) {
+    return (
+      <Navigate
+        to={currentUserHasSeniorRole ? "/admin/senior" : "/select-profile"}
+        replace
+      />
+    );
+  }
 
   if (
     !authInitialized ||
+    !sessionReady ||
     (currentUser && !sessionStorage.getItem("loginRedirect"))
   ) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#18181b]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-800"></div>
+      <div
+        className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex items-center justify-center px-6"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="text-center">
+          <div className="mx-auto mb-3 h-1 w-28 overflow-hidden rounded-full bg-blue-100 dark:bg-blue-500/10">
+            <div className="h-full w-1/3 rounded-full bg-blue-500 motion-safe:animate-[nvu-progress_900ms_ease-in-out_infinite]" />
+          </div>
+          <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+            Abrindo seus perfis
+          </p>
+        </div>
       </div>
     );
   }
@@ -101,6 +171,7 @@ export default function Login() {
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError("");
+
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({
       prompt: 'select_account'
@@ -123,10 +194,35 @@ export default function Login() {
         user = result.user;
       }
       
-      const finalUserData = await unifyUserDocument(user);
-
-      setCurrentUser(finalUserData as any);
-      // Let useEffect handle navigation based on status or redirect
+      // Firebase Auth is authoritative for the click acknowledgement. Publish
+      // a minimal identity immediately so the session/profile route can start
+      // without waiting for the legacy identity merge and reference migration.
+      // The full reconciliation remains active in the background and replaces
+      // this fallback as soon as it completes.
+      setCurrentUser({
+        id: user.uid,
+        name: user.displayName?.trim() || user.email?.split("@")[0] || "Usuário",
+        email: user.email || "",
+        authPhotoURL: user.photoURL || undefined,
+        profilePhotoURL: user.photoURL || undefined,
+        status: "active",
+        role: "driver",
+        roles: ["driver"],
+      } as any);
+      void unifyUserDocument(user)
+        .then((finalUserData) => {
+          // Do not let a slow reconciliation from an older account overwrite
+          // a later login/logout session.
+          if (auth.currentUser?.uid === user.uid) {
+            setCurrentUser(finalUserData as any);
+          }
+        })
+        .catch((reconciliationError) => {
+          // AppContext's auth listener still hydrates the canonical document.
+          // A background reconciliation failure must not make the login look
+          // unsuccessful after Firebase has already authenticated the user.
+          console.warn("[NVU Login] Reconciliação de identidade pendente.", reconciliationError);
+        });
     } catch (err: any) {
       sessionStorage.removeItem("loginRedirect");
       
@@ -198,7 +294,7 @@ export default function Login() {
 
             <div className="space-y-4">
               <Button
-                onClick={() => handleGoogleLogin()}
+                onClick={handleGoogleLogin}
                 disabled={loading}
                 className="w-full h-12 bg-white dark:bg-[#27272a]/50 hover:bg-slate-50 dark:hover:bg-[#27272a] text-slate-700 dark:text-[#e4e4e7] border border-slate-200 dark:border-[#2A2F3A]/50 shadow-sm dark:shadow-none transition-all rounded-xl relative flex justify-center items-center"
               >

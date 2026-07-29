@@ -1,12 +1,12 @@
 import React, { useState } from "react";
-import { useAppStore } from "../../../context/AppContext";
+import { useOperationalStore } from "../../../context/AppContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import { Truck, Plus, X, Pencil, Trash2, Users } from "lucide-react";
 
-export default function VehiclesTab() {
+function VehiclesTab() {
   const { vehicles, addVehicle, updateVehicle, deleteVehicle, jobs } =
-    useAppStore();
+    useOperationalStore();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -208,3 +208,5 @@ export default function VehiclesTab() {
     </div>
   );
 }
+
+export default React.memo(VehiclesTab);

@@ -1,23 +1,37 @@
-import React, { lazy, Suspense, useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { App as CapacitorApp } from "@capacitor/app";
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import { Toaster } from "sonner";
 import NotificationToastListener from "./components/NotificationToastListener";
-import { AppProvider, useAppStore } from "./context/AppContext";
-import { registerDeviceForPush } from "./lib/capacitorPushService";
+import InitialBootOverlay from "./components/common/InitialBootOverlay";
+import RoleTransitionOverlay from "./components/common/RoleTransitionOverlay";
+import Login from "./pages/Login";
+import SelectProfile from "./pages/SelectProfile";
+import { AppProvider, useAppStore, useSessionStore } from "./context/AppContext";
 import { isAuthTeardownActive, onAuthTeardown } from "./lib/authLifecycle";
+import { preloadImages } from "./lib/imageCache";
+import { resolveProfilePhoto } from "./lib/resolveProfilePhoto";
+import { preloadRoleRoutes, preloadRoute } from "./lib/routePreload";
+import { membershipHasRole } from "./lib/membershipRoles";
+import { writeBatch, doc } from "firebase/firestore";
+import { db } from "./lib/firebase";
 
 // Placeholders for Pages
-import Portal from "./pages/Portal";
-import Login from "./pages/Login";
-import AdminLayout from "./layouts/AdminLayout";
-import DriverLayout from "./layouts/DriverLayout";
-import DriverProfile from "./pages/driver/Profile";
-import DriverProfileIsolated from "./pages/admin/DriverProfileIsolated";
+const Portal = lazy(() => import("./pages/Portal"));
+const AdminLayout = lazy(() => import("./layouts/AdminLayout"));
+const DriverLayout = lazy(() => import("./layouts/DriverLayout"));
 
 const AdminFleet = lazy(() => import("./pages/admin/Fleet"));
+const DriverProfile = lazy(() => import("./pages/driver/Profile"));
+const RankingGlobal = lazy(() => import("./pages/RankingGlobal"));
+// Keep the trip/ranking engines out of the first JavaScript bundle while still
+// requesting this warm-up chunk immediately when the app mounts.
+const RankingStartupWarmup = lazy(
+  () => import("./components/common/RankingStartupWarmup"),
+);
+
 const SeniorPanel = lazy(() => import("./pages/admin/SeniorPanel"));
+const DriverProfileIsolated = lazy(() => import("./pages/admin/DriverProfileIsolated"));
 
 const RecordTrip = lazy(() => import("./pages/driver/RecordTrip"));
 const RecruitmentApply = lazy(() => import("./pages/RecruitmentApply"));
@@ -27,7 +41,6 @@ const ApplicationStatus = lazy(() => import("./pages/ApplicationStatus"));
 const TripHistory = lazy(() => import("./pages/driver/TripHistory"));
 const JoinCompany = lazy(() => import("./pages/driver/JoinCompany"));
 
-const SelectProfile = lazy(() => import("./pages/SelectProfile"));
 
 const RegisterCompany = lazy(() => import("./pages/RegisterCompany"));
 
@@ -37,38 +50,221 @@ const ManageContract = lazy(() => import("./pages/admin/ManageContract"));
 const ContractDetailsPage = lazy(() => import("./pages/admin/ContractDetailsPage"));
 const Reports = lazy(() => import("./pages/admin/Reports"));
 
-const RankingGlobal = lazy(() => import("./pages/RankingGlobal"));
 
-const RouteLoading = () => (
-  <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-[#09090b]">
-    <div className="flex flex-col items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
-      <span>Carregando…</span>
+const ROUTE_LOADING_ROOT_CLASS = "nvu-route-loading-active";
+const ROUTE_LOADING_COUNT_ATTRIBUTE = "data-nvu-route-loading-count";
+
+const updateRouteLoadingRootClass = (delta: 1 | -1) => {
+  if (typeof document === "undefined") return;
+
+  const root = document.documentElement;
+  const currentCount = Number(
+    root.getAttribute(ROUTE_LOADING_COUNT_ATTRIBUTE) || "0",
+  );
+  const nextCount = Math.max(0, currentCount + delta);
+
+  if (nextCount > 0) {
+    root.setAttribute(ROUTE_LOADING_COUNT_ATTRIBUTE, String(nextCount));
+  } else {
+    root.removeAttribute(ROUTE_LOADING_COUNT_ATTRIBUTE);
+  }
+  root.classList.toggle(ROUTE_LOADING_ROOT_CLASS, nextCount > 0);
+};
+
+const RouteLoading = ({ fullPage = false }: { fullPage?: boolean }) => {
+  useLayoutEffect(() => {
+    updateRouteLoadingRootClass(1);
+    return () => updateRouteLoadingRootClass(-1);
+  }, []);
+
+  return (
+    <div
+      data-nvu-route-loading
+      className={`${fullPage ? "min-h-screen" : "min-h-[38vh]"} relative flex items-center justify-center bg-gray-50 dark:bg-[#09090b]`}
+      role="status"
+      aria-live="polite"
+    >
+      <div
+        data-nvu-background-brand
+        data-nvu-route-loading-brand
+        className="flex flex-col items-center gap-2 opacity-70"
+      >
+        <span className="text-lg font-bold tracking-[0.22em] text-slate-800 dark:text-white">
+          NVU
+        </span>
+        <span className="h-0.5 w-10 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+          <span className="block h-full w-1/2 rounded-full bg-blue-500 motion-safe:animate-[nvu-progress_900ms_ease-in-out_infinite]" />
+        </span>
+      </div>
+      <span className="sr-only">Abrindo conteúdo</span>
     </div>
-  </div>
+  );
+};
+
+const LazyRoute = ({
+  children,
+  fullPage = false,
+}: {
+  children: React.ReactNode;
+  fullPage?: boolean;
+}) => (
+  <Suspense fallback={<RouteLoading fullPage={fullPage} />}>
+    {children}
+  </Suspense>
 );
 
-const RouteWarmup = () => {
-  const { authInitialized, activeRole } = useAppStore();
+const routeScrollPositions = new Map<string, number>();
+
+/** Restores the exact scroll position on browser/Android Back without waiting
+ * for data effects. New forward navigations start at the top. */
+const RouteScrollMemory = () => {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const routeKey = `${location.pathname}${location.search}`;
+  const previousRouteKeyRef = useRef(routeKey);
 
   useEffect(() => {
-    if (!authInitialized || !activeRole) return;
+    const previousRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
+    return () => {
+      window.history.scrollRestoration = previousRestoration;
+    };
+  }, []);
 
-    const commonLoaders =
-      activeRole === "admin"
-        ? [
-            () => import("./pages/admin/Fleet"),
-            () => import("./pages/admin/Reports"),
-            () => import("./pages/RankingGlobal"),
-          ]
-        : [
-            () => import("./pages/driver/TripHistory"),
-            () => import("./pages/admin/Reports"),
-            () => import("./pages/RankingGlobal"),
-          ];
+  useLayoutEffect(() => {
+    const isSameRoute = previousRouteKeyRef.current === routeKey;
+    const target = isSameRoute
+      ? window.scrollY
+      : navigationType === "POP"
+        ? routeScrollPositions.get(routeKey) ?? 0
+        : 0;
+    previousRouteKeyRef.current = routeKey;
+    // Restore scroll in the same layout commit. Waiting for a frame left the
+    // previous page's position visible after Back in mobile WebViews.
+    window.scrollTo({ top: target, behavior: "auto" });
 
+    return () => {
+      routeScrollPositions.set(routeKey, window.scrollY);
+    };
+  }, [location.key, navigationType, routeKey]);
+
+  return null;
+};
+
+const RouteWarmup = () => {
+  const {
+    authInitialized,
+    sessionReady,
+    currentUser,
+    activeRole,
+    activeCompanyId,
+    allCompanies,
+    companiesLoading,
+  } = useSessionStore();
+
+  useEffect(() => {
+    if (!authInitialized || !currentUser) return;
+
+    // The profile selector is part of the critical authenticated path. Warm it
+    // immediately, together with every home screen the current memberships can
+    // open, so profile changes do not fall through to a route placeholder.
+    void preloadRoute("/select-profile");
+    if (activeRole) {
+      void preloadRoute(
+        activeRole === "admin" ? "/admin/fleet" : "/driver/profile",
+      );
+    }
+  }, [activeRole, authInitialized, currentUser?.id]);
+
+  useEffect(() => {
+    if (!authInitialized || !activeRole || companiesLoading) return;
+
+    // The initial screen only needs the active company's identity. Loading
+    // every company logo at boot consumed bandwidth and decoding time before
+    // the user even opened the ranking.
+    const activeCompany = allCompanies.find(
+      (company) => company.id === activeCompanyId,
+    );
+
+    void preloadImages(
+      [
+        resolveProfilePhoto(currentUser),
+        activeCompany?.logoUrl,
+        activeCompany?.logoURL,
+        (activeCompany as any)?.logo,
+      ],
+      3,
+    );
+
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }).connection;
+    if (
+      connection?.saveData ||
+      connection?.effectiveType === "slow-2g" ||
+      connection?.effectiveType === "2g"
+    ) {
+      return;
+    }
+
+    const additionalLogos = allCompanies
+      .flatMap((company: any) => [
+        company.logoUrl,
+        company.logoURL,
+        company.logo,
+      ])
+      .filter(Boolean)
+      .slice(0, 72);
+    const warmLogos = () => void preloadImages(additionalLogos, 3);
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (idleApi.requestIdleCallback) {
+      const idleId = idleApi.requestIdleCallback(warmLogos, { timeout: 1200 });
+      return () => idleApi.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(warmLogos, 900);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeCompanyId,
+    activeRole,
+    allCompanies,
+    authInitialized,
+    companiesLoading,
+    currentUser,
+  ]);
+
+  useEffect(() => {
+    if (!authInitialized || !sessionReady || !activeRole) return;
+
+    // The role home is the most likely next screen after session/profile
+    // hydration. Start only its chunk immediately; secondary screens remain
+    // idle so the first click has the whole main thread available.
+    void preloadRoute(
+      activeRole === "admin" ? "/admin/fleet" : "/driver/profile",
+    );
+
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }).connection;
+    if (
+      connection?.saveData ||
+      connection?.effectiveType === "slow-2g" ||
+      connection?.effectiveType === "2g"
+    ) {
+      return;
+    }
+
+    // Secondary route chunks are best-effort and deliberately delayed. The
+    // previous implementation also imported the ranking engines here, which
+    // caused Firestore work and module parsing to compete with the first
+    // authenticated screen.
     const warmRoutes = () => {
-      commonLoaders.forEach((load) => void load());
+      void preloadRoleRoutes(activeRole);
     };
 
     const idleWindow = (window as Window & {
@@ -77,18 +273,71 @@ const RouteWarmup = () => {
     }).requestIdleCallback;
 
     if (idleWindow) {
-      const idleId = idleWindow(warmRoutes, { timeout: 2000 });
+      const idleId = idleWindow(warmRoutes, { timeout: 1600 });
       return () => {
         (window as Window & { cancelIdleCallback?: (id: number) => void })
           .cancelIdleCallback?.(idleId);
       };
     }
 
-    const timer = window.setTimeout(warmRoutes, 1200);
+    const timer = window.setTimeout(warmRoutes, 1400);
     return () => window.clearTimeout(timer);
-  }, [authInitialized, activeRole]);
+  }, [authInitialized, sessionReady, activeRole]);
 
   return null;
+};
+
+/**
+ * Ranking data and photo warm-up is intentionally not part of the first
+ * authenticated render. It opens several Firestore listeners and decodes
+ * many images, so starting it immediately after login makes the first profile
+ * feel slower even when the route itself is ready. Once the shell has had an
+ * idle window, the existing account-scoped warm-up can proceed normally.
+ */
+const DeferredRankingWarmup = () => {
+  const { authInitialized, sessionReady, currentUser, activeRole } =
+    useSessionStore();
+  const [enabled, setEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!authInitialized || !sessionReady || !currentUser || !activeRole) {
+      setEnabled(false);
+      return;
+    }
+
+    let cancelled = false;
+    const enable = () => {
+      if (!cancelled) setEnabled(true);
+    };
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+
+    if (idleApi.requestIdleCallback) {
+      const idleId = idleApi.requestIdleCallback(enable, { timeout: 2400 });
+      return () => {
+        cancelled = true;
+        idleApi.cancelIdleCallback?.(idleId);
+      };
+    }
+
+    const timer = window.setTimeout(enable, 2200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeRole, authInitialized, currentUser?.id, sessionReady]);
+
+  if (!enabled) return null;
+  return (
+    <Suspense fallback={null}>
+      <RankingStartupWarmup />
+    </Suspense>
+  );
 };
 
 const ProtectedRoute = ({
@@ -98,36 +347,44 @@ const ProtectedRoute = ({
   children: React.ReactNode;
   allowedRole: "admin" | "driver";
 }) => {
+  const location = useLocation();
   const {
     currentUser,
     authInitialized,
     membershipsLoaded,
+    sessionReady,
     activeRole,
     activeCompanyId,
     memberships,
     companies,
     isSeniorAuthenticated,
-    seniorCompanyId,
   } =
-    useAppStore();
+    useSessionStore();
 
-  if (!authInitialized) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-[#09090b]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
+  if (!authInitialized || !sessionReady) {
+    return <RouteLoading fullPage />;
   }
 
   if (!currentUser) return <Navigate to="/" replace />;
-  if (!membershipsLoaded && !isSeniorAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-[#09090b]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    );
+  // The legacy password gate lives inside SeniorPanel. Let the route render
+  // its login form before a role is configured; Firestore rules temporarily
+  // mirror the old authenticated-only access policy.
+  const isSeniorPanelRoute = location.pathname.startsWith("/admin/senior");
+  const hasLegacySeniorSession = isSeniorAuthenticated;
+  const hasSeniorRole = Boolean(
+    (currentUser as any).role === "senior" ||
+      (Array.isArray((currentUser as any).roles) &&
+        (currentUser as any).roles.includes("senior")),
+  );
+  if (!membershipsLoaded && !hasSeniorRole && !isSeniorPanelRoute && !hasLegacySeniorSession) {
+    return <RouteLoading fullPage />;
   }
-  if (!activeCompanyId || !activeRole)
+  if (
+    (!activeCompanyId || !activeRole) &&
+    !hasSeniorRole &&
+    !isSeniorPanelRoute &&
+    !hasLegacySeniorSession
+  )
     return <Navigate to="/select-profile" replace />;
 
   const activeMembership = memberships.find(
@@ -141,26 +398,29 @@ const ProtectedRoute = ({
       (activeCompany.ownerId === currentUser.id ||
         activeCompany.userId === currentUser.id),
   );
-  const hasRoleForCompany =
-    isSeniorAuthenticated && seniorCompanyId === activeCompanyId
-      ? allowedRole === "admin"
-      : allowedRole === "admin"
-        ? Boolean(
-            activeMembership?.roles?.includes("admin") ||
-              isOwner ||
-              (currentUser.roles?.includes("admin") &&
-                currentUser.companyId === activeCompanyId),
-          )
-        : Boolean(
-            activeMembership?.roles?.includes("driver") ||
-              currentUser.roles?.includes("driver"),
-          );
+  // Session storage is only a UI convenience; authorization must come from
+  // the current Firestore user role. This prevents an old password-based
+  // `isSeniorAuthenticated` flag from bypassing company membership checks.
+  const hasRoleForCompany = hasSeniorRole || hasLegacySeniorSession || isSeniorPanelRoute
+    ? allowedRole === "admin"
+    : allowedRole === "admin"
+      ? Boolean(
+          membershipHasRole(activeMembership, "admin", currentUser) ||
+            isOwner ||
+            (currentUser.roles?.includes("admin") &&
+              currentUser.companyId === activeCompanyId),
+        )
+      : Boolean(
+          membershipHasRole(activeMembership, "driver", currentUser) ||
+            (currentUser.roles?.includes("driver") &&
+              currentUser.companyId === activeCompanyId),
+        );
 
   if (!hasRoleForCompany) {
     return <Navigate to="/select-profile" replace />;
   }
 
-  if (activeRole !== allowedRole) {
+  if (!hasSeniorRole && !hasLegacySeniorSession && !isSeniorPanelRoute && activeRole && activeRole !== allowedRole) {
     return (
       <Navigate to={activeRole === "admin" ? "/admin" : "/driver"} replace />
     );
@@ -169,62 +429,92 @@ const ProtectedRoute = ({
   return <>{children}</>;
 };
 
-function AppRoutes() {
+function AppRouteContent() {
+  const location = useLocation();
+  const backgroundLocation = (
+    location.state as { backgroundLocation?: typeof location } | null
+  )?.backgroundLocation;
+
   return (
-    <BrowserRouter>
+    <>
       <NotificationToastListener />
-      <Routes>
+      <RoleTransitionOverlay />
+      <RouteScrollMemory />
+      <Routes location={backgroundLocation ?? location}>
         {/* Public Routes */}
-        <Route path="/" element={<Portal />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/select-profile" element={<SelectProfile />} />
-        <Route path="/apply" element={<RecruitmentApply />} />
-        <Route path="/apply/:companyId" element={<RecruitmentApply />} />
-        <Route path="/register-company" element={<RegisterCompany />} />
-        <Route path="/status" element={<ApplicationStatus />} />
-        <Route path="/audit" element={<AuditPage />} />
+        <Route path="/" element={<LazyRoute fullPage><Portal /></LazyRoute>} />
+        <Route path="/login" element={<LazyRoute fullPage><Login /></LazyRoute>} />
+        <Route path="/select-profile" element={<LazyRoute fullPage><SelectProfile /></LazyRoute>} />
+        <Route path="/apply" element={<LazyRoute fullPage><RecruitmentApply /></LazyRoute>} />
+        <Route path="/apply/:companyId" element={<LazyRoute fullPage><RecruitmentApply /></LazyRoute>} />
+        <Route path="/register-company" element={<LazyRoute fullPage><RegisterCompany /></LazyRoute>} />
+        <Route path="/status" element={<LazyRoute fullPage><ApplicationStatus /></LazyRoute>} />
+        <Route path="/audit" element={<LazyRoute fullPage><AuditPage /></LazyRoute>} />
 
         {/* Admin Routes */}
         <Route
           path="/admin"
           element={
             <ProtectedRoute allowedRole="admin">
-              <AdminLayout />
+              <LazyRoute fullPage><AdminLayout /></LazyRoute>
             </ProtectedRoute>
           }
         >
           <Route index element={<Navigate to="fleet" replace />} />
-          <Route path="fleet" element={<AdminFleet />} />
+          <Route path="fleet" element={<LazyRoute><AdminFleet /></LazyRoute>} />
           <Route path="operations" element={<Navigate to="fleet" replace />} />
-          <Route path="assign" element={<AssignJob />} />
-          <Route path="add-driver" element={<AddDriver />} />
-          <Route path="contract/new" element={<ManageContract />} />
-          <Route path="contract/:id" element={<ContractDetailsPage />} />
-          <Route path="contract/:id/edit" element={<ManageContract />} />
-          <Route path="senior" element={<SeniorPanel />} />
-          <Route path="reports" element={<Reports />} />
-          <Route path="history" element={<TripHistory />} />
-          <Route path="driver/:id" element={<DriverProfileIsolated />} />
+          <Route path="assign" element={<LazyRoute><AssignJob /></LazyRoute>} />
+          <Route path="add-driver" element={<LazyRoute><AddDriver /></LazyRoute>} />
+          <Route path="contract/new" element={<LazyRoute><ManageContract /></LazyRoute>} />
+          <Route path="contract/:id" element={<LazyRoute><ContractDetailsPage /></LazyRoute>} />
+          <Route path="contract/:id/edit" element={<LazyRoute><ManageContract /></LazyRoute>} />
+          <Route path="senior" element={<LazyRoute><SeniorPanel /></LazyRoute>} />
+          <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
+          <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
+          <Route path="driver/:id" element={<LazyRoute><DriverProfileIsolated /></LazyRoute>} />
         </Route>
 
         {/* Driver Routes */}
-        <Route path="/ranking" element={<RankingGlobal />} />
+        <Route path="/ranking" element={<LazyRoute fullPage><RankingGlobal /></LazyRoute>} />
         <Route
           path="/driver"
           element={
             <ProtectedRoute allowedRole="driver">
-              <DriverLayout />
+              <LazyRoute fullPage><DriverLayout /></LazyRoute>
             </ProtectedRoute>
           }
         >
           <Route index element={<Navigate to="profile" replace />} />
-          <Route path="profile" element={<DriverProfile />} />
-          <Route path="join" element={<JoinCompany />} />
-          <Route path="trip" element={<RecordTrip />} />
-          <Route path="history" element={<TripHistory />} />
-          <Route path="reports" element={<Reports />} />
+          <Route path="profile" element={<LazyRoute><DriverProfile /></LazyRoute>} />
+          <Route path="join" element={<LazyRoute><JoinCompany /></LazyRoute>} />
+          <Route path="trip" element={<LazyRoute><RecordTrip /></LazyRoute>} />
+          <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
+          <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
         </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      {backgroundLocation && (
+        <Routes>
+          <Route
+            path="/ranking"
+            element={
+              <Suspense fallback={null}>
+                <div className="fixed inset-0 z-[2000] overflow-y-auto overscroll-contain bg-gray-50 dark:bg-[#09090b]">
+                  <RankingGlobal />
+                </div>
+              </Suspense>
+            }
+          />
+        </Routes>
+      )}
+    </>
+  );
+}
+
+function AppRoutes() {
+  return (
+    <BrowserRouter>
+      <AppRouteContent />
     </BrowserRouter>
   );
 }
@@ -246,8 +536,6 @@ const LegacyMigration = () => {
     const runMigration = async () => {
       try {
         if (cancelled || isAuthTeardownActive()) return;
-        const { getFirestore, writeBatch, doc } = await import("firebase/firestore");
-        const db = getFirestore();
         const batch = writeBatch(db);
         let updates = 0;
 
@@ -353,8 +641,6 @@ const ContractSnapshotMigration = () => {
     const runMigration = async () => {
       try {
         if (cancelled || isAuthTeardownActive()) return;
-        const { getFirestore, writeBatch, doc } = await import("firebase/firestore");
-        const db = getFirestore();
         const batch = writeBatch(db);
         let updates = 0;
 
@@ -401,56 +687,65 @@ const ContractSnapshotMigration = () => {
   return null;
 };
 
+const CLIENT_MIGRATIONS_ENABLED =
+  String(import.meta.env.VITE_ENABLE_CLIENT_MIGRATIONS).toLowerCase() === "true";
+
 export default function App() {
-  console.log('[NVU PUSH BOOT] App iniciado');
-
-  // Inicialização de teste temporária para validar o plugin de Push no Android
-  useEffect(() => {
-    if (Capacitor.isNativePlatform()) {
-      console.log('[NVU PUSH NATIVE READY] Capacitor Native Platform detectada.');
-      console.log('[NVU PUSH BOOT] Disparando registerDeviceForPush de teste no boot...');
-      registerDeviceForPush({}).catch(err => {
-        if (!isAuthTeardownActive()) {
-          console.warn('[NVU PUSH ERROR] Falha no registerDeviceForPush do boot', err);
-        }
-      });
-    }
-  }, []);
-
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
 
+    let disposed = false;
     let backButtonListener: { remove: () => Promise<void> } | null = null;
+    let appStateListener: { remove: () => Promise<void> } | null = null;
 
-    const registerBackButton = async () => {
-      backButtonListener = await CapacitorApp.addListener(
-        "backButton",
-        ({ canGoBack }) => {
-          if (canGoBack) {
-            window.history.back();
-          } else {
-            void CapacitorApp.exitApp();
-          }
-        },
-      );
-    };
+    void import("@capacitor/app")
+      .then(async ({ App: CapacitorApp }) => {
+        if (disposed) return;
 
-    void registerBackButton();
+        [backButtonListener, appStateListener] = await Promise.all([
+          CapacitorApp.addListener("backButton", ({ canGoBack }) => {
+            if (canGoBack) {
+              window.history.back();
+            } else {
+              void CapacitorApp.exitApp();
+            }
+          }),
+          CapacitorApp.addListener("appStateChange", ({ isActive }) => {
+            if (isActive) {
+              window.dispatchEvent(new Event("nvu-session-refresh"));
+            }
+          }),
+        ]);
+
+        if (disposed) {
+          void backButtonListener?.remove();
+          void appStateListener?.remove();
+        }
+      })
+      .catch((error) => {
+        console.warn("[NVU Native] Capacitor App listeners unavailable:", error);
+      });
 
     return () => {
-      if (backButtonListener) void backButtonListener.remove();
+      disposed = true;
+      void backButtonListener?.remove();
+      void appStateListener?.remove();
     };
   }, []);
 
   return (
     <AppProvider>
-      <ContractSnapshotMigration />
-      <LegacyMigration />
+      <InitialBootOverlay />
+      <DeferredRankingWarmup />
+      {CLIENT_MIGRATIONS_ENABLED && (
+        <>
+          <ContractSnapshotMigration />
+          <LegacyMigration />
+        </>
+      )}
       <RouteWarmup />
       <Toaster position="top-right" richColors />
-      <Suspense fallback={<RouteLoading />}>
-        <AppRoutes />
-      </Suspense>
+      <AppRoutes />
     </AppProvider>
   );
 }

@@ -1,13 +1,13 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import { X, CheckCircle, Image as ImageIcon } from "lucide-react";
 import { convertFileToBase64, compressImage } from "../../lib/utils";
 
 export default function AddDriver() {
   const navigate = useNavigate();
-  const { createManualDriver } = useAppStore();
+  const { createManualDriver } = useOperationalStore();
 
   const [newDriverName, setNewDriverName] = useState("");
   const [newDriverEmail, setNewDriverEmail] = useState("");

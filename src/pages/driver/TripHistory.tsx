@@ -24,6 +24,7 @@ import {
   MapPin,
   ArrowRight,
   DollarSign,
+  Route,
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
@@ -31,12 +32,27 @@ import {
 } from "lucide-react";
 
 import { cn } from "../../lib/utils";
+import { StableImage } from "../../components/common/StableImage";
 import { doc, runTransaction } from "firebase/firestore";
 import { db } from "../../lib/firebase";
 import { useTripHistory } from "../../hooks/useTripHistory";
 import { TripsRepository } from "../../repositories/TripsRepository";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { onAuthTeardown } from "../../lib/authLifecycle";
 import { normalizeTrip, parseTripValue } from "../../lib/tripNormalizer";
+import {
+  getCanonicalTripCompanyId,
+  getCanonicalTripDriverId,
+  getCanonicalTripDriverName,
+} from "../../lib/tripIdentity";
+import { buildTripNumberMap, buildTripOperationCounterMap } from "../../lib/tripSequence";
+import {
+  formatTripDistance,
+  parseTripDistance,
+  readTripDistance,
+  requiresTripDistance,
+  resolveTripSimulatorCode,
+} from "../../lib/tripDistance";
 import {
   filterAndSortTripHistory,
   getTripDisplayDate,
@@ -62,6 +78,9 @@ export interface TripRecord {
   reboqueNome: string;
 
   simuladorNome?: string;
+  simulatorId?: string;
+  simulatorName?: string;
+  distanciaPercorrida?: number;
 
   origem: string;
   destino: string;
@@ -77,95 +96,218 @@ export interface TripRecord {
   date?: any;
 }
 
-// --- Image Caching & Preloading Module ---
-const MAX_COMPROVANTE_CACHE = 120;
-const imageCacheMap = new Map<string, string>();
-const imagePreloadPromises = new Map<string, Promise<string>>();
 
-const getCachedComprovante = (url: string) => {
-  const cachedUrl = imageCacheMap.get(url);
-  if (!cachedUrl) return undefined;
+// --- Trip receipt image cache & progressive preloading ---
+//
+// A separate, bounded cache is used for trip receipts instead of sharing the
+// avatar cache. This keeps a large history from evicting ranking/profile
+// images, while keeping decoded receipts alive for back/next navigation.
+const MAX_COMPROVANTE_CACHE = 180;
+const TRIP_IMAGE_BATCH_SIZE = 15;
+const TRIP_IMAGE_CONCURRENCY = 3;
+const imageCacheMap = new Map<
+  string,
+  { image: HTMLImageElement; promise: Promise<string>; ready: boolean }
+>();
 
-  // Refresh insertion order so frequently opened receipts stay cached.
+// A WebView can keep the module alive across logout/login. Clear receipt
+// bitmaps at the auth boundary so one account can never reuse another
+// account's historical evidence.
+let tripImageTeardownAttached = false;
+if (typeof window !== "undefined" && !tripImageTeardownAttached) {
+  tripImageTeardownAttached = true;
+  onAuthTeardown(() => {
+    imageCacheMap.clear();
+  });
+}
+
+const touchComprovante = (
+  url: string,
+  entry: { image: HTMLImageElement; promise: Promise<string>; ready: boolean },
+) => {
   imageCacheMap.delete(url);
-  imageCacheMap.set(url, cachedUrl);
-  return cachedUrl;
+  imageCacheMap.set(url, entry);
 };
 
-const cacheComprovante = (url: string) => {
-  imageCacheMap.delete(url);
-  imageCacheMap.set(url, url);
+const getCachedComprovante = (url: string) => {
+  const entry = imageCacheMap.get(url);
+  if (!entry) return undefined;
 
-  while (imageCacheMap.size > MAX_COMPROVANTE_CACHE) {
-    const oldestUrl = imageCacheMap.keys().next().value as string | undefined;
-    if (!oldestUrl) break;
-    imageCacheMap.delete(oldestUrl);
+  if (
+    !entry.ready &&
+    entry.image.complete &&
+    entry.image.naturalWidth > 0
+  ) {
+    entry.ready = true;
+  }
+
+  touchComprovante(url, entry);
+  return entry.ready ? url : undefined;
+};
+
+const evictComprovantes = () => {
+  if (imageCacheMap.size <= MAX_COMPROVANTE_CACHE) return;
+  for (const [url, entry] of imageCacheMap) {
+    // Never evict an in-flight receipt: a later navigation can reuse it.
+    if (!entry.ready) continue;
+    imageCacheMap.delete(url);
+    if (imageCacheMap.size <= MAX_COMPROVANTE_CACHE) break;
   }
 };
 
-export const preloadComprovante = async (url: string): Promise<string> => {
-  if (!url) return "";
-  const cachedUrl = getCachedComprovante(url);
-  if (cachedUrl) return cachedUrl;
+const decodeComprovante = (image: HTMLImageElement) =>
+  new Promise<void>((resolve) => {
+    if (typeof image.decode !== "function") {
+      resolve();
+      return;
+    }
 
-  const existingPreload = imagePreloadPromises.get(url);
-  if (existingPreload) return existingPreload;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(finish, 350);
 
-  // Use the browser's native image cache instead of fetching a Blob and
-  // creating ObjectURLs. This avoids an extra conversion step and also works
-  // when Firebase Storage does not expose CORS headers for fetch().
-  const preloadPromise = new Promise<string>((resolve) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => {
-      cacheComprovante(url);
-      imagePreloadPromises.delete(url);
-      resolve(url);
-    };
-    image.onerror = () => {
-      // Keep the direct URL as a safe fallback. The visible <img> still gets
-      // the browser's normal error handling instead of blocking the details.
-      cacheComprovante(url);
-      imagePreloadPromises.delete(url);
-      resolve(url);
-    };
-    image.src = url;
+    try {
+      Promise.resolve(image.decode()).then(finish).catch(finish);
+    } catch {
+      finish();
+    }
   });
 
-  imagePreloadPromises.set(url, preloadPromise);
-  return preloadPromise;
+export const preloadComprovante = (url: string): Promise<string> => {
+  const normalizedUrl = String(url || "").trim();
+  if (!normalizedUrl || typeof window === "undefined") {
+    return Promise.resolve(normalizedUrl);
+  }
+
+  const cachedUrl = getCachedComprovante(normalizedUrl);
+  if (cachedUrl) return Promise.resolve(cachedUrl);
+
+  const existingEntry = imageCacheMap.get(normalizedUrl);
+  if (existingEntry) return existingEntry.promise;
+
+  const image = new Image();
+  image.decoding = "async";
+  image.loading = "eager";
+  (image as HTMLImageElement & { fetchPriority?: string }).fetchPriority =
+    "high";
+
+  const entry = {
+    image,
+    ready: false,
+    promise: Promise.resolve(normalizedUrl),
+  };
+
+  entry.promise = new Promise<string>((resolve) => {
+    let settled = false;
+    const finish = async (loaded: boolean) => {
+      if (settled) return;
+      settled = true;
+
+      if (loaded) {
+        await decodeComprovante(image);
+        entry.ready = true;
+        touchComprovante(normalizedUrl, entry);
+        evictComprovantes();
+      } else if (imageCacheMap.get(normalizedUrl) === entry) {
+        // A transient failure must remain retryable on a later visit.
+        imageCacheMap.delete(normalizedUrl);
+      }
+
+      resolve(normalizedUrl);
+    };
+
+    image.onload = () => void finish(true);
+    image.onerror = () => void finish(false);
+    image.src = normalizedUrl;
+  });
+
+  imageCacheMap.set(normalizedUrl, entry);
+  evictComprovantes();
+  return entry.promise;
 };
 
-const CachedImageViewer = React.memo(({ url, alt, className }: { url: string; alt?: string; className?: string }) => {
-  const [displayUrl, setDisplayUrl] = useState<string>(imageCacheMap.get(url) || url);
-
-  useEffect(() => {
-    let active = true;
-    if (!getCachedComprovante(url)) {
-      preloadComprovante(url).then(cachedObjUrl => {
-        if (active && cachedObjUrl) setDisplayUrl(cachedObjUrl);
-      });
-    } else {
-      setDisplayUrl(getCachedComprovante(url)!);
-    }
-    return () => { active = false; };
-  }, [url]);
-
-  return (
-    <PhotoProvider>
-      <PhotoView src={displayUrl}>
-        <img
-          src={displayUrl}
-          alt={alt || "Comprovante"}
-          loading="eager"
-          decoding="async"
-          fetchPriority="high"
-          className={className}
-        />
-      </PhotoView>
-    </PhotoProvider>
+const preloadComprovanteBatch = async (urls: string[]) => {
+  const uniqueUrls = Array.from(
+    new Set(urls.map((url) => String(url || "").trim()).filter(Boolean)),
   );
-});
+  if (uniqueUrls.length === 0) return;
+
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < uniqueUrls.length) {
+      const url = uniqueUrls[cursor++];
+      await preloadComprovante(url);
+    }
+  };
+
+  const workerCount = Math.min(TRIP_IMAGE_CONCURRENCY, uniqueUrls.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker()),
+  );
+};
+
+const CachedImageViewer = React.memo(
+  ({ url, alt, className }: { url: string; alt?: string; className?: string }) => {
+    const normalizedUrl = String(url || "").trim();
+    const cachedInitialUrl = getCachedComprovante(normalizedUrl);
+    const [displayUrl, setDisplayUrl] = useState<string>(
+      cachedInitialUrl || "",
+    );
+
+    useEffect(() => {
+      let active = true;
+      const cachedUrl = getCachedComprovante(normalizedUrl);
+
+      // Clear the previous receipt immediately. Keeping the old src while the
+      // next trip is loading was the source of the visible image flash.
+      setDisplayUrl(cachedUrl || "");
+
+      if (!normalizedUrl) return () => {
+        active = false;
+      };
+
+      void preloadComprovante(normalizedUrl).then((readyUrl) => {
+        if (active && readyUrl) setDisplayUrl(readyUrl);
+      });
+
+      return () => {
+        active = false;
+      };
+    }, [normalizedUrl]);
+
+    if (!displayUrl) {
+      return (
+        <div
+          aria-busy="true"
+          className={cn(
+            "w-full min-h-[180px] bg-gray-100/70 dark:bg-gray-800/50 animate-pulse",
+            className,
+          )}
+        />
+      );
+    }
+
+    return (
+      <PhotoProvider>
+        <PhotoView src={displayUrl}>
+          <img
+            src={displayUrl}
+            alt={alt || "Comprovante"}
+            loading="eager"
+            decoding="async"
+            fetchPriority="high"
+            className={className}
+          />
+        </PhotoView>
+      </PhotoProvider>
+    );
+  },
+);
 // -----------------------------------------
 
 
@@ -353,6 +495,8 @@ const TripListItem = React.memo(({
   formatDate,
   formatTime,
   tripNumber,
+  operationCounterLabel,
+  distanceKm,
 }: {
   trip: TripRecord;
   comp: any;
@@ -367,6 +511,8 @@ const TripListItem = React.memo(({
   formatDate: (d: any) => string;
   formatTime: (d: any) => string;
   tripNumber?: number;
+  operationCounterLabel?: string;
+  distanceKm?: number;
 }) => {
   const getCompanyColor = (name: string) => {
     const colors = [
@@ -395,17 +541,30 @@ const TripListItem = React.memo(({
     <div
       onClick={() => toggleExpand(trip.id)}
       className={cn(
-        "group relative bg-white dark:bg-[#121213] p-2 sm:p-2.5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-[0_1px_8px_-4px_rgba(0,0,0,0.05)] flex flex-col cursor-pointer transition-all hover:border-gray-200 dark:hover:border-gray-700 w-full"
+        "nvu-content-auto group relative bg-white dark:bg-[#121213] p-2 sm:p-2.5 rounded-xl border border-gray-100 dark:border-gray-800 shadow-[0_1px_8px_-4px_rgba(0,0,0,0.05)] flex flex-col cursor-pointer transition-[border-color,box-shadow,background-color] hover:border-gray-200 dark:hover:border-gray-700 w-full"
       )}
     >
       {/* Top Bar */}
       <div className="flex items-center justify-between pb-1.5">
         <div className="flex items-center gap-2 min-w-0">
           {comp?.logoUrl ? (
-            <img
+            <StableImage
               src={comp.logoUrl}
               alt={trip.empresaNome || "Empresa"}
-              className="w-7 h-7 rounded-lg object-cover shrink-0"
+              loading="lazy"
+              decoding="async"
+              wrapperClassName="w-7 h-7 rounded-lg shrink-0"
+              className="object-cover"
+              fallback={
+                <span
+                  className={cn(
+                    "h-full w-full flex items-center justify-center text-white text-[11px] font-bold tracking-wide",
+                    getCompanyColor(trip.empresaNome || "Empresa"),
+                  )}
+                >
+                  {getInitials(trip.empresaNome || "Empresa")}
+                </span>
+              }
             />
           ) : (
             <div
@@ -565,6 +724,20 @@ const TripListItem = React.memo(({
               </div>
             </div>
           </div>
+
+          {distanceKm !== undefined && distanceKm > 0 && (
+            <>
+              <div className="w-full h-px bg-gray-50 dark:bg-gray-800/60" />
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                  Distância percorrida
+                </span>
+                <span className="text-[11px] font-bold text-gray-900 dark:text-gray-100">
+                  {formatTripDistance(distanceKm)} km
+                </span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -583,16 +756,21 @@ const TripListItem = React.memo(({
         </div>
 
         <div className="flex items-center gap-1">
+          {operationCounterLabel && (
+            <div
+              className="min-w-[42px] h-6 px-2 rounded-md bg-gray-100 dark:bg-gray-800/80 text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center justify-center"
+              aria-label={`Posição na operação ${operationCounterLabel}`}
+              title={`Viagem ${operationCounterLabel} da operação`}
+            >
+              {operationCounterLabel}
+            </div>
+          )}
           <div className="w-px h-4 bg-gray-200 dark:bg-gray-800 mx-1" />
           <button
             onClick={(e) => {
               e.stopPropagation();
               if (trip.comprovanteUrl) void preloadComprovante(trip.comprovanteUrl);
               setSelectedTrip(trip);
-            }}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              if (trip.comprovanteUrl) void preloadComprovante(trip.comprovanteUrl);
             }}
             onMouseEnter={() => {
               if (trip.comprovanteUrl) void preloadComprovante(trip.comprovanteUrl);
@@ -645,10 +823,37 @@ const TripListItem = React.memo(({
   );
 });
 
+const TripHistorySkeleton = () => (
+  <div className="flex flex-col gap-3" role="status" aria-live="polite">
+    {[0, 1, 2].map((item) => (
+      <div
+        key={item}
+        className="h-[112px] rounded-xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-[#121213] p-3 animate-pulse"
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-7 h-7 rounded-lg bg-gray-200 dark:bg-gray-800" />
+          <div className="space-y-1.5 flex-1">
+            <div className="h-3 w-36 rounded bg-gray-200 dark:bg-gray-800" />
+            <div className="h-2.5 w-20 rounded bg-gray-100 dark:bg-gray-800/70" />
+          </div>
+          <div className="h-2.5 w-24 rounded bg-gray-100 dark:bg-gray-800/70" />
+        </div>
+        <div className="grid grid-cols-2 gap-4 border-t border-gray-100 dark:border-gray-800 pt-3">
+          <div className="h-8 rounded bg-gray-100 dark:bg-gray-800/70" />
+          <div className="h-8 rounded bg-gray-100 dark:bg-gray-800/70" />
+        </div>
+      </div>
+    ))}
+    <span className="sr-only">Carregando histórico de viagens</span>
+  </div>
+);
+
 export default function TripHistory({
   embeddedJob,
   hideHeader = false,
+  hideHeaderActions = false,
   isInsideAdminTab = false,
+  externalExpandAllState,
   onTripDetailsOpen,
   defaultDriverName,
   defaultDriverId,
@@ -658,7 +863,9 @@ export default function TripHistory({
 }: {
   embeddedJob?: any;
   hideHeader?: boolean;
+  hideHeaderActions?: boolean;
   isInsideAdminTab?: boolean;
+  externalExpandAllState?: boolean;
   onTripDetailsOpen?: (isOpen: boolean) => void;
   defaultDriverName?: string;
   defaultDriverId?: string;
@@ -672,9 +879,8 @@ export default function TripHistory({
     activeCompanyId: contextActiveCompanyId,
     activeRole,
     companies,
-    users,
-    allCompanyMembers,
-  } = useAppStore();
+  } = useSessionStore();
+  const { contracts, jobs, users, allCompanyMembers, simulators } = useOperationalStore();
   const activeCompanyId = companyId || contextActiveCompanyId;
   const {
     historicoTrips: companyHistoryTrips = [],
@@ -689,6 +895,39 @@ export default function TripHistory({
   const [expandedTrips, setExpandedTrips] = useState<Set<string>>(new Set());
   const [visibleTripCount, setVisibleTripCount] = useState(30);
   const observerTarget = React.useRef<HTMLDivElement>(null);
+  const imagePrefetchBatchesRef = React.useRef<Set<string>>(new Set());
+  const imagePrefetchScopeRef = React.useRef("");
+
+  const canonicalDriverNames = React.useMemo(() => {
+    const names = new Map<string, string>();
+    (users || []).forEach((user: any) => {
+      const id = String(user?.id || "").trim();
+      const name = String(user?.name || "").trim();
+      if (id && name) names.set(id, name);
+    });
+    const ownId = String(currentUser?.id || "").trim();
+    const ownName = String(currentUser?.name || "").trim();
+    if (ownId && ownName) names.set(ownId, ownName);
+    return names;
+  }, [currentUser?.id, currentUser?.name, users]);
+
+  // Trip documents keep the name captured at completion for audit history,
+  // while the active approved user profile is the canonical display identity.
+  // Normalize the display field before filtering so an old Google name cannot
+  // hide or relabel the current user's trips.
+  const identityNormalizedHistoryTrips = React.useMemo(
+    () =>
+      companyHistoryTrips.map((trip: any) => {
+        const driverId = getCanonicalTripDriverId(trip);
+        const canonicalName = driverId
+          ? canonicalDriverNames.get(driverId)
+          : undefined;
+        return canonicalName
+          ? { ...trip, motoristaNome: canonicalName, driverName: canonicalName }
+          : trip;
+      }),
+    [canonicalDriverNames, companyHistoryTrips],
+  );
 
   const toggleExpand = React.useCallback((tripId: string) => {
     setExpandedTrips((prev) => {
@@ -720,14 +959,42 @@ export default function TripHistory({
   const [pendingFilters, setPendingFilters] = useState(initialFilters);
   const [appliedFilters, setAppliedFilters] = useState(initialFilters);
 
-  // Backfill for old records
+  // Legacy enrichment runs only after the first history snapshot is visible
+  // and while the browser/WebView is idle. It must never compete with the
+  // initial page transition or block the current trip list.
   useEffect(() => {
-    TripsRepository.runBackfill(activeCompanyId || "");
-  }, [activeCompanyId]);
+    if (!activeCompanyId || historyLoading) return;
+
+    let cancelled = false;
+    const runBackfill = () => {
+      if (!cancelled) void TripsRepository.runBackfill(activeCompanyId);
+    };
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+
+    if (idleApi.requestIdleCallback) {
+      const idleId = idleApi.requestIdleCallback(runBackfill, { timeout: 5000 });
+      return () => {
+        cancelled = true;
+        idleApi.cancelIdleCallback?.(idleId);
+      };
+    }
+
+    const timer = window.setTimeout(runBackfill, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeCompanyId, historyLoading]);
 
   const canonicalHistoryTrips = React.useMemo(
     () =>
-      filterAndSortTripHistory(companyHistoryTrips, {
+      filterAndSortTripHistory(identityNormalizedHistoryTrips, {
         periodPreset: embeddedJob ? "todos" : appliedFilters.periodoPreset,
         customStartDate: appliedFilters.periodoInicio,
         customEndDate: appliedFilters.periodoFim,
@@ -741,8 +1008,8 @@ export default function TripHistory({
       appliedFilters.periodoFim,
       appliedFilters.periodoInicio,
       appliedFilters.periodoPreset,
-      companyHistoryTrips,
       embeddedJob,
+      identityNormalizedHistoryTrips,
     ],
   );
 
@@ -763,6 +1030,143 @@ export default function TripHistory({
     () => canonicalHistoryTrips.slice(0, visibleTripCount),
     [canonicalHistoryTrips, visibleTripCount],
   );
+
+  const historyImageScopeKey = React.useMemo(
+    () =>
+      [
+        activeCompanyId || "",
+        embeddedJob?.id || "",
+        appliedFilters.motoristaId || "",
+        appliedFilters.motorista || "",
+        appliedFilters.periodoPreset || "",
+        appliedFilters.periodoInicio || "",
+        appliedFilters.periodoFim || "",
+        canonicalHistoryTrips.map((trip) => String(trip.id || "")).join(","),
+      ].join("|"),
+    [
+      activeCompanyId,
+      appliedFilters.motorista,
+      appliedFilters.motoristaId,
+      appliedFilters.periodoFim,
+      appliedFilters.periodoInicio,
+      appliedFilters.periodoPreset,
+      canonicalHistoryTrips,
+      embeddedJob?.id,
+    ],
+  );
+
+  const prefetchTripImageWindow = React.useCallback(
+    (tripIndex: number) => {
+      const startIndex =
+        Math.max(0, Math.floor(Math.max(0, tripIndex) / TRIP_IMAGE_BATCH_SIZE)) *
+        TRIP_IMAGE_BATCH_SIZE;
+      const scopeKey = historyImageScopeKey;
+      imagePrefetchScopeRef.current = scopeKey;
+
+      // Warm the current batch immediately and queue one complete lookahead
+      // batch shortly afterwards. This keeps the first 15 images ready without
+      // opening dozens of concurrent requests during the first frame.
+      [startIndex, startIndex + TRIP_IMAGE_BATCH_SIZE].forEach(
+        (batchStart, batchOffset) => {
+          const batch = canonicalHistoryTrips.slice(
+            batchStart,
+            batchStart + TRIP_IMAGE_BATCH_SIZE,
+          );
+          const urls = batch
+            .map((trip) => String((trip as any).comprovanteUrl || "").trim())
+            .filter(Boolean);
+          if (urls.length === 0) return;
+
+          const batchKey = `${scopeKey}:${batchStart}:${urls.join("|")}`;
+          if (imagePrefetchBatchesRef.current.has(batchKey)) return;
+          imagePrefetchBatchesRef.current.add(batchKey);
+
+          const warm = () => {
+            if (imagePrefetchScopeRef.current !== scopeKey) return;
+            void preloadComprovanteBatch(urls);
+          };
+
+          if (batchOffset === 0 || typeof window === "undefined") {
+            warm();
+          } else {
+            window.setTimeout(warm, 150);
+          }
+        },
+      );
+    },
+    [canonicalHistoryTrips, historyImageScopeKey],
+  );
+
+  // A filter/company change starts a fresh progressive image window. The
+  // first 15 receipts begin warming as soon as the filtered history exists.
+  const previousImageScopeRef = React.useRef("");
+  useEffect(() => {
+    if (previousImageScopeRef.current === historyImageScopeKey) return;
+    previousImageScopeRef.current = historyImageScopeKey;
+    imagePrefetchBatchesRef.current.clear();
+    prefetchTripImageWindow(0);
+  }, [historyImageScopeKey, prefetchTripImageWindow]);
+
+  useEffect(() => {
+    if (typeof externalExpandAllState !== "boolean") return;
+    if (externalExpandAllState) {
+      setExpandedTrips(new Set(finalTrips.map((trip) => trip.id)));
+    } else {
+      setExpandedTrips(new Set());
+    }
+  }, [externalExpandAllState, finalTrips]);
+
+  const tripNumberById = React.useMemo(
+    () => buildTripNumberMap(canonicalHistoryTrips, { singleSequence: true }),
+    [canonicalHistoryTrips],
+  );
+
+  const contractsById = React.useMemo(
+    () => new Map((contracts || []).map((contract: any) => [String(contract.id), contract])),
+    [contracts],
+  );
+
+  const plannedTotalsByJobId = React.useMemo(() => {
+    const totals = new Map<string, number>();
+    (jobs || []).forEach((job: any) => {
+      const contract = contractsById.get(String(job.contractId));
+      const configuredTotal = Number(
+        job.totalDeliveries || contract?.totalDeliveries || 0,
+      );
+      if (job.id && configuredTotal > 0) {
+        totals.set(String(job.id), configuredTotal);
+      }
+    });
+    return totals;
+  }, [contractsById, jobs]);
+
+  const embeddedOperationTotal = React.useMemo(() => {
+    if (!embeddedJob) return 0;
+    const contract = contractsById.get(String(embeddedJob.contractId || ""));
+    return Number(
+      embeddedJob.totalDeliveries || contract?.totalDeliveries || 0,
+    );
+  }, [contractsById, embeddedJob]);
+
+  const operationCounterById = React.useMemo(
+    () =>
+      buildTripOperationCounterMap(
+        embeddedJob ? canonicalHistoryTrips : companyHistoryTrips,
+        {
+          singleSequence: Boolean(embeddedJob),
+          plannedTotal: embeddedOperationTotal,
+          plannedTotalsByJobId,
+        },
+      ),
+    [
+      canonicalHistoryTrips,
+      companyHistoryTrips,
+      embeddedJob,
+      embeddedOperationTotal,
+      plannedTotalsByJobId,
+    ],
+  );
+
   const hasMore = visibleTripCount < canonicalHistoryTrips.length;
   const loading = historyLoading;
   const { totalViagens, faturamentoTotal } = React.useMemo(
@@ -818,19 +1222,8 @@ export default function TripHistory({
       .map((trip) => normalizeTrip(trip as any))
       .filter((trip) => trip.isValid)
       .forEach((trip) => {
-        const historyDriverId = String(
-          trip.motoristaId ||
-            (trip as any).driverId ||
-            (trip as any).motorista_id ||
-            (trip as any).userId ||
-            "",
-        ).trim();
-        const historyDriverName = String(
-          trip.motoristaNome ||
-            (trip as any).driverName ||
-            (trip as any).motorista_nome ||
-            "",
-        ).trim();
+        const historyDriverId = getCanonicalTripDriverId(trip) || "";
+        const historyDriverName = getCanonicalTripDriverName(trip) || "";
 
         if (
           historyDriverId &&
@@ -852,25 +1245,65 @@ export default function TripHistory({
     [companies],
   );
 
+  const getTripCompany = React.useCallback(
+    (trip: TripRecord) =>
+      companiesMap.get(getCanonicalTripCompanyId(trip) || ""),
+    [companiesMap],
+  );
+
+  const getVisibleTripDistance = React.useCallback(
+    (trip: TripRecord): number | undefined => {
+      const tripCode = resolveTripSimulatorCode(trip as any, simulators as any[]);
+      const simulatorSource = tripCode ? trip : getTripCompany(trip);
+
+      if (!requiresTripDistance(simulatorSource as any, simulators as any[])) {
+        return undefined;
+      }
+
+      const distance = readTripDistance(trip as any);
+      return distance > 0 ? distance : undefined;
+    },
+    [getTripCompany, simulators],
+  );
+
+  const distanciaTotal = React.useMemo(() => {
+    return canonicalHistoryTrips.reduce((total, trip) => {
+      const distance = getVisibleTripDistance(trip as unknown as TripRecord);
+      return total + (distance || 0);
+    }, 0);
+  }, [canonicalHistoryTrips, getVisibleTripDistance]);
+
+  const selectedTripDistance = selectedTrip
+    ? getVisibleTripDistance(selectedTrip)
+    : undefined;
+  const editingTripRequiresDistance = editingTrip
+    ? requiresTripDistance(
+        resolveTripSimulatorCode(editingTrip as any, simulators as any[])
+          ? (editingTrip as any)
+          : (getTripCompany(editingTrip) as any),
+        simulators as any[],
+      )
+    : false;
+
   // --- Image Preloading Logic ---
   useEffect(() => {
     // Notify parent when trip details are opened/closed
     if (onTripDetailsOpen) {
       onTripDetailsOpen(!!selectedTrip);
     }
-    // Preload adjacent trips when a trip is selected
+    // Keep the current 15-trip window and the following 15-trip window warm.
+    // This makes rapid next/previous navigation reuse decoded images rather
+    // than waiting for a new request at the moment of the click.
     if (selectedTrip) {
-      const idx = finalTrips.findIndex(t => t.id === selectedTrip.id);
-      if (idx > 0) {
-        const prev = finalTrips[idx - 1];
-        if (prev.comprovanteUrl) preloadComprovante(prev.comprovanteUrl);
-      }
-      if (idx !== -1 && idx < finalTrips.length - 1) {
-        const next = finalTrips[idx + 1];
-        if (next.comprovanteUrl) preloadComprovante(next.comprovanteUrl);
-      }
+      const idx = canonicalHistoryTrips.findIndex(t => t.id === selectedTrip.id);
+      if (idx !== -1) prefetchTripImageWindow(idx);
     }
-  }, [selectedTrip, finalTrips, onTripDetailsOpen]);
+  }, [
+    selectedTrip,
+    canonicalHistoryTrips,
+    onTripDetailsOpen,
+    prefetchTripImageWindow,
+  ]);
   // ------------------------------
 
   const formatCurrency = React.useCallback((value: number) => {
@@ -905,10 +1338,10 @@ export default function TripHistory({
   const canEditTrip = React.useCallback((trip: TripRecord) => {
     if (!currentUser) return false;
     if (activeRole === "admin") {
-      return trip.empresaId === activeCompanyId;
+      return getCanonicalTripCompanyId(trip) === activeCompanyId;
     }
     if (activeRole === "driver") {
-      return trip.motoristaId === currentUser.id;
+      return getCanonicalTripDriverId(trip) === currentUser.id;
     }
     return false;
   }, [currentUser, activeRole, activeCompanyId]);
@@ -956,6 +1389,7 @@ export default function TripHistory({
       )}
     >
       {/* Header Section */}
+      {(!hideHeader || !hideHeaderActions) && (
       <div className={cn("flex items-start mb-4 pt-2", hideHeader ? "justify-end" : "justify-between")}>
         {!hideHeader && (
           <div className="flex flex-col gap-0.5">
@@ -1010,6 +1444,7 @@ export default function TripHistory({
             )}
           </div>
         )}
+        {!hideHeaderActions && (
         <div className="flex items-center gap-4 mt-1 mr-2">
           <button
             onClick={() => {
@@ -1042,7 +1477,9 @@ export default function TripHistory({
             </button>
           )}
         </div>
+        )}
       </div>
+      )}
 
       {/* Filter Card inline */}
       {showFilters && !embeddedJob && (
@@ -1128,20 +1565,13 @@ export default function TripHistory({
         )}
 
         {loading && finalTrips.length === 0 ? (
-          <div className="flex justify-center p-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          </div>
+          <TripHistorySkeleton />
         ) : finalTrips.length === 0 ? (
           <div className="text-center p-8 text-gray-500 bg-white dark:bg-[#121213] rounded-2xl border border-gray-100 dark:border-gray-800">
             Nenhum histórico de viagens encontrado.
           </div>
         ) : (
           <>
-            {loading && (
-              <div className="text-center text-xs text-gray-400 dark:text-gray-500 py-1">
-                Atualizando viagens…
-              </div>
-            )}
             {finalTrips.map((trip, index) => {
               const tripCompanyId =
                 trip.empresaId ||
@@ -1165,7 +1595,9 @@ export default function TripHistory({
                   formatCurrency={formatCurrency}
                   formatDate={formatDate}
                   formatTime={formatTime}
-                  tripNumber={embeddedJob ? finalTrips.length - index : undefined}
+                  tripNumber={tripNumberById.get(String(trip.id))}
+                  operationCounterLabel={operationCounterById.get(String(trip.id))?.label}
+                  distanceKm={getVisibleTripDistance(trip as any)}
                 />
               );
             })}
@@ -1203,6 +1635,19 @@ export default function TripHistory({
                   {formatCurrency(faturamentoTotal)}
                 </span>
               </div>
+              {distanciaTotal > 0 && (
+                <div className="col-span-2 bg-gray-50/50 dark:bg-[#20252D] px-3 py-2.5 flex flex-row items-center gap-3 border-t border-gray-100 dark:border-gray-800">
+                  <Route size={18} className="text-gray-500" />
+                  <div className="flex flex-col">
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-gray-500 dark:text-gray-400">
+                      Distância percorrida
+                    </span>
+                    <span className="text-[15px] font-bold text-gray-900 dark:text-white">
+                      {distanciaTotal.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} km
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1225,17 +1670,19 @@ export default function TripHistory({
       {/* Modal Detailed View */}
       {selectedTrip &&
         (() => {
-          const selectedIndex = finalTrips.findIndex(t => t.id === selectedTrip.id);
+          const selectedIndex = canonicalHistoryTrips.findIndex(t => t.id === selectedTrip.id);
+          const selectedTripNumber = tripNumberById.get(String(selectedTrip.id));
+          const selectedOperationCounter = operationCounterById.get(String(selectedTrip.id));
           
           const handlePrevTrip = () => {
             if (selectedIndex > 0) {
-              setSelectedTrip(finalTrips[selectedIndex - 1] as any);
+              setSelectedTrip(canonicalHistoryTrips[selectedIndex - 1] as any);
             }
           };
 
           const handleNextTrip = () => {
-            if (selectedIndex !== -1 && selectedIndex < finalTrips.length - 1) {
-              setSelectedTrip(finalTrips[selectedIndex + 1] as any);
+            if (selectedIndex !== -1 && selectedIndex < canonicalHistoryTrips.length - 1) {
+              setSelectedTrip(canonicalHistoryTrips[selectedIndex + 1] as any);
             }
           };
 
@@ -1248,6 +1695,15 @@ export default function TripHistory({
                   </h3>
                   <div className="flex items-center gap-2">
                     <div className="flex items-center space-x-1 mr-1">
+                      {selectedTripNumber !== undefined && (
+                        <div
+                          className="flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-gray-100 dark:bg-gray-800/80 text-[12px] font-bold text-gray-700 dark:text-gray-300 border border-gray-200/70 dark:border-gray-700"
+                          aria-label={`Viagem número ${selectedTripNumber}`}
+                          title={`Viagem ${selectedTripNumber}`}
+                        >
+                          {selectedTripNumber.toString().padStart(2, "0")}
+                        </div>
+                      )}
                       <button
                         onClick={handlePrevTrip}
                         disabled={selectedIndex <= 0}
@@ -1262,10 +1718,10 @@ export default function TripHistory({
                       </button>
                       <button
                         onClick={handleNextTrip}
-                        disabled={selectedIndex === -1 || selectedIndex >= finalTrips.length - 1}
+                        disabled={selectedIndex === -1 || selectedIndex >= canonicalHistoryTrips.length - 1}
                         className={cn(
                           "p-1.5 rounded-lg border transition-colors",
-                          selectedIndex === -1 || selectedIndex >= finalTrips.length - 1
+                          selectedIndex === -1 || selectedIndex >= canonicalHistoryTrips.length - 1
                             ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
                             : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                         )}
@@ -1336,18 +1792,25 @@ export default function TripHistory({
                         <div className="absolute left-[50%] top-2 bottom-2 w-px bg-gray-100 dark:bg-gray-800/60" />
 
                         {/* Simulator */}
-                        <div className="flex items-center gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
-                          <div className="w-7 h-7 rounded-md bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center shrink-0 border border-orange-100 dark:border-orange-500/20">
-                            <Gamepad2 size={12} className="text-orange-600 dark:text-orange-400" />
+                        <div className="flex items-center justify-between gap-2.5 p-2 sm:p-2.5 min-w-0 bg-slate-50/50 dark:bg-[#1A1F26]">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-7 h-7 rounded-md bg-orange-50 dark:bg-orange-500/10 flex items-center justify-center shrink-0 border border-orange-100 dark:border-orange-500/20">
+                              <Gamepad2 size={12} className="text-orange-600 dark:text-orange-400" />
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                                Simulador
+                              </span>
+                              <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
+                                {selectedTrip.simuladorNome || "-"}
+                              </span>
+                            </div>
                           </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
-                              Simulador
-                            </span>
-                            <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-200 truncate">
-                              {selectedTrip.simuladorNome || "-"}
-                            </span>
-                          </div>
+                          {selectedOperationCounter?.label && (
+                            <div className="min-w-[44px] h-7 px-2 rounded-md bg-gray-100 dark:bg-gray-800/80 text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center justify-center shrink-0">
+                              {selectedOperationCounter.label}
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -1407,6 +1870,20 @@ export default function TripHistory({
                           </div>
                         </div>
                       </div>
+
+                      {selectedTripDistance !== undefined && (
+                        <>
+                          <div className="w-full h-px bg-gray-100 dark:bg-gray-800/60" />
+                          <div className="flex items-center justify-between p-2.5 sm:p-3 bg-slate-50/50 dark:bg-[#1A1F26]">
+                            <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                              Distância percorrida
+                            </span>
+                            <span className="text-[12px] font-bold text-gray-900 dark:text-gray-100">
+                              {formatTripDistance(selectedTripDistance)} km
+                            </span>
+                          </div>
+                        </>
+                      )}
 
                       <div className="w-full h-px bg-gray-100 dark:bg-gray-800/60" />
 
@@ -1525,11 +2002,22 @@ export default function TripHistory({
                   const origem = form.origem.value;
                   const destino = form.destino.value;
                   const valor = parseTripValue(form.valor.value);
+                  const distancia = editingTripRequiresDistance
+                    ? parseTripDistance(form.distanciaPercorrida?.value)
+                    : 0;
+
+                  if (editingTripRequiresDistance && distancia <= 0) {
+                    alert("Informe uma distância percorrida válida em quilômetros.");
+                    return;
+                  }
 
                   await TripsRepository.updateTrip(editingTrip.id, {
                     origem,
                     destino,
                     valor,
+                    ...(editingTripRequiresDistance
+                      ? { distanciaPercorrida: distancia }
+                      : {}),
                   });
 
                   setEditingTrip(null);
@@ -1562,6 +2050,22 @@ export default function TripHistory({
                     className="w-full border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2 text-gray-900 dark:text-white outline-none"
                   />
                 </div>
+                {editingTripRequiresDistance && (
+                  <div>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1">
+                      Distância percorrida (km)
+                    </label>
+                    <input
+                      name="distanciaPercorrida"
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      defaultValue={readTripDistance(editingTrip as any) || ""}
+                      required
+                      className="w-full border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2 text-gray-900 dark:text-white outline-none"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1">
                     Valor

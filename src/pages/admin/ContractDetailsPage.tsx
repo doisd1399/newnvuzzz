@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import {
   X,
@@ -29,16 +29,16 @@ import { useNavigate, useParams, useLocation } from "react-router-dom";
 
 export default function ContractDetailsPage() {
   const { id: contractId } = useParams<{ id: string }>();
+  const { companies } = useSessionStore();
   const {
     contracts,
     trailers,
     jobs,
     users,
     vehicles,
-    companies,
     deleteContract,
     cancelJob,
-  } = useAppStore();
+  } = useOperationalStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useAppStore } from "../context/AppContext";
+import { useSessionStore } from "../context/AppContext";
 import { Button } from "./ui/Button";
 import { Camera, X } from "lucide-react";
 import { cn, convertFileToBase64, compressImage } from "../lib/utils";
@@ -13,7 +13,7 @@ interface Props {
 }
 
 export function ProfileModal({ isOpen, onClose }: Props) {
-  const { currentUser, setCurrentUser } = useAppStore();
+  const { currentUser, setCurrentUser } = useSessionStore();
   const [name, setName] = useState(currentUser?.name || "");
   const [whatsapp, setWhatsapp] = useState(currentUser?.whatsapp || "");
   const [photoBase64, setPhotoBase64] = useState<string | undefined>(

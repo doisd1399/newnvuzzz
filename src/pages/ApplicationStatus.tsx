@@ -1,7 +1,9 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { useActivityStore, useSessionStore } from "../context/AppContext";
 import { Button } from "../components/ui/Button";
+import { repairApprovedMembership } from "../services/recruitmentAccessService";
+import { toast } from "sonner";
 import {
   ShieldAlert,
   CheckCircle2,
@@ -12,13 +14,16 @@ import {
 export default function ApplicationStatus() {
   const {
     currentUser,
-    recruitmentApplications,
     authInitialized,
     membershipsLoaded,
+    sessionReady,
     memberships,
     logOutApp,
-  } = useAppStore();
+  } = useSessionStore();
+  const { recruitmentApplications } = useActivityStore();
   const navigate = useNavigate();
+  const [repairingAccess, setRepairingAccess] = React.useState(false);
+  const repairAttemptedRef = React.useRef(false);
 
   const applicationTimestamp = (application: any) => {
     const raw =
@@ -65,18 +70,49 @@ export default function ApplicationStatus() {
     navigate("/apply");
   };
 
+  const handleContinueApproved = React.useCallback(async () => {
+    if (repairingAccess) return;
+    setRepairingAccess(true);
+    try {
+      await repairApprovedMembership();
+      toast.success("Acesso sincronizado com sucesso.");
+      // Recarrega a sessão para que os listeners de usuário e vínculo partam
+      // de um estado limpo antes de entrar na seleção de perfil.
+      window.location.replace("/select-profile");
+    } catch (error: any) {
+      console.error("[NVU Recruitment] Falha ao reparar acesso aprovado:", error);
+      toast.error(
+        error?.message ||
+          "Não foi possível sincronizar seu acesso agora. Tente novamente em instantes.",
+      );
+      setRepairingAccess(false);
+    }
+  }, [repairingAccess]);
+
+  React.useEffect(() => {
+    if (
+      myApp?.status === "approved" &&
+      membershipsLoaded &&
+      !memberships.some((membership) => membership.status === "active") &&
+      !repairAttemptedRef.current
+    ) {
+      repairAttemptedRef.current = true;
+      void handleContinueApproved();
+    }
+  }, [myApp?.status, membershipsLoaded, memberships, handleContinueApproved]);
+
   React.useEffect(() => {
     if (authInitialized && !currentUser) {
       navigate("/", { replace: true });
-    } else if (authInitialized && currentUser && membershipsLoaded) {
+    } else if (sessionReady && currentUser && membershipsLoaded) {
       const hasActiveMembership = memberships.some((m) => m.status === "active");
       if (hasActiveMembership) {
         navigate("/select-profile", { replace: true });
       }
     }
-  }, [authInitialized, currentUser, membershipsLoaded, memberships, navigate]);
+  }, [sessionReady, currentUser, membershipsLoaded, memberships, navigate]);
 
-  if (!authInitialized || !currentUser || !membershipsLoaded) {
+  if (!sessionReady || !currentUser || !membershipsLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#09090b]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-800 dark:border-slate-400"></div>
@@ -85,7 +121,6 @@ export default function ApplicationStatus() {
   }
 
   const isRejected = myApp?.status === "rejected";
-  const hasApp = Boolean(myApp);
   const isPending = myApp?.status === "pending";
   const isApproved = myApp?.status === "approved";
 
@@ -123,8 +158,31 @@ export default function ApplicationStatus() {
                 Sair
               </Button>
             </div>
-          ) : isPending || isApproved || hasApp ? (
-            // Pending / approved while membership propagation finishes
+          ) : isApproved ? (
+            <div className="flex flex-col items-center">
+              <div className="w-20 h-20 bg-emerald-50 dark:bg-green-500/10 border border-emerald-100 dark:border-green-500/20 rounded-2xl flex items-center justify-center mb-6">
+                <CheckCircle2
+                  size={40}
+                  className="text-emerald-500 dark:text-green-400"
+                />
+              </div>
+              <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-3 tracking-tight">
+                Inscrição aprovada
+              </h2>
+              <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm leading-relaxed px-4">
+                Sua inscrição foi aprovada. O acesso será liberado assim que o
+                vínculo com a empresa terminar de sincronizar.
+              </p>
+              <Button
+                onClick={handleContinueApproved}
+                disabled={repairingAccess}
+                className="w-full h-12 rounded-xl font-semibold"
+              >
+                {repairingAccess ? "Sincronizando acesso..." : "Continuar"}
+                {!repairingAccess && <ArrowRight size={18} />}
+              </Button>
+            </div>
+          ) : isPending ? (
             <div className="flex flex-col items-center">
               <div className="w-20 h-20 bg-emerald-50 dark:bg-green-500/10 border border-emerald-100 dark:border-green-500/20 rounded-2xl flex items-center justify-center mb-6">
                 <CheckCircle2
@@ -151,7 +209,7 @@ export default function ApplicationStatus() {
               </Button>
             </div>
           ) : (
-            // Hasn't applied yet, just logged in with google implicitly
+            // Hasn't applied yet, just logged in with Google implicitly
             <div className="flex flex-col items-center">
               <div className="w-16 h-16 bg-blue-50 dark:bg-blue-500/10 border border-transparent dark:border-blue-500/20 text-blue-500 dark:text-blue-400 rounded-full flex items-center justify-center mb-6">
                 <ShieldAlert size={32} />

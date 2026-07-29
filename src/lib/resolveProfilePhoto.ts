@@ -4,8 +4,6 @@ export function resolveProfilePhoto(profile: any): string {
     profile?.photoURL ||
     profile?.photoUrl ||
     profile?.avatar ||
-    profile?.logoUrl ||
-    profile?.companyLogoURL ||
     profile?.ownerPhotoUrl ||
     profile?.profileImage ||
     profile?.imageUrl ||

@@ -19,6 +19,71 @@
 
 @custom-variant dark (&:is(.dark *));
 
+
+html,
+body,
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+  background: #f9fafb;
+}
+
+.dark html,
+.dark body,
+.dark #root,
+html.dark,
+html.dark body,
+html.dark #root {
+  background: #09090b;
+}
+
+#root {
+  isolation: isolate;
+  overflow-anchor: none;
+}
+
+/* Remove the legacy tap-compatibility delay on Android/WebView controls. */
+button,
+a,
+select,
+[role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The first authenticated deep link crosses session, authorization and lazy
+ * route boundaries. A single persistent overlay owns that whole sequence;
+ * intermediate indicators stay mounted for their logic but cannot paint a
+ * second brand underneath it. */
+html.nvu-initial-boot-active [data-nvu-route-loading-brand],
+html.nvu-initial-boot-active [data-nvu-layout-brand],
+html.nvu-initial-boot-active [data-nvu-role-transition] {
+  visibility: hidden !important;
+}
+
+/* The profile veil owns the loading identity while it is active. Hiding the
+ * page/header copies prevents a second NVU from showing through the softened
+ * background without shifting the underlying layout. */
+html.nvu-role-transition-active [data-nvu-background-brand] {
+  visibility: hidden !important;
+}
+
+/* On the first cold route load, the shell header can mount before its lazy
+ * content. Keep the centered NVU + progress bar as the single visible brand
+ * until that content is ready; visibility preserves the header layout. */
+html.nvu-route-loading-active [data-nvu-layout-brand] {
+  visibility: hidden !important;
+}
+
+/* Route changes are committed synchronously. Disabling the browser's default
+ * root snapshot cross-fade prevents the white/gray flash seen in Android and
+ * AI Studio Preview when large pages or images differ between routes. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none !important;
+  mix-blend-mode: normal;
+}
+
 @layer base {
   body {
     @apply bg-gray-50 text-gray-900 dark:bg-[#09090b] dark:text-[#fafafa] antialiased text-[15px];
@@ -40,5 +105,46 @@
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+}
+
+/* Performance utilities used by long operational lists. Chromium/WebView can
+ * skip layout and paint for off-screen cards while preserving their scroll
+ * footprint. Browsers without content-visibility simply ignore the property. */
+@layer utilities {
+  .nvu-content-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: 112px;
+  }
+
+  .nvu-content-auto-lg {
+    content-visibility: auto;
+    contain-intrinsic-size: 180px;
+  }
+}
+
+@keyframes nvu-progress {
+  0% { transform: translateX(-120%); }
+  50% { transform: translateX(150%); }
+  100% { transform: translateX(320%); }
+}
+
+@keyframes nvu-navigation-progress {
+  0% { transform: scaleX(0.06); }
+  45% { transform: scaleX(0.58); }
+  75% { transform: scaleX(0.78); }
+  100% { transform: scaleX(0.91); }
+}
+
+/* Respect the OS accessibility setting and avoid expensive transition chains
+ * on devices whose user explicitly requested less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }

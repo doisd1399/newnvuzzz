@@ -15,9 +15,12 @@ type TripHistoryCacheEntry = TripHistoryState & {
   listeners: Set<() => void>;
   unsubscribe: (() => void) | null;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  retryAttempt: number;
 };
 
-const CACHE_RELEASE_DELAY_MS = 30_000;
+const CACHE_RELEASE_DELAY_MS = 120_000;
+const RETRY_MAX_DELAY_MS = 30_000;
 const tripHistoryCache = new Map<string, TripHistoryCacheEntry>();
 
 const EMPTY_STATE: TripHistoryState = {
@@ -34,7 +37,10 @@ function ensureTeardownListener() {
   onAuthTeardown(() => {
     for (const entry of tripHistoryCache.values()) {
       if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+      if (entry.retryTimer) clearTimeout(entry.retryTimer);
       entry.releaseTimer = null;
+      entry.retryTimer = null;
+      entry.retryAttempt = 0;
       try {
         entry.unsubscribe?.();
       } catch {
@@ -71,11 +77,72 @@ function scheduleEntryRelease(companyId: string, entry: TripHistoryCacheEntry) {
       // Listener cleanup is best-effort.
     }
     entry.unsubscribe = null;
+    if (entry.retryTimer) clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
+    entry.retryAttempt = 0;
 
     if (tripHistoryCache.get(companyId) === entry) {
       tripHistoryCache.delete(companyId);
     }
   }, CACHE_RELEASE_DELAY_MS);
+}
+
+function subscribeEntry(companyId: string, entry: TripHistoryCacheEntry) {
+  if (isAuthTeardownActive()) return;
+
+  try {
+    entry.unsubscribe = TripsRepository.listenCompanyTrips(
+      companyId,
+      (trips) => {
+        if (isAuthTeardownActive()) return;
+        entry.retryAttempt = 0;
+        if (entry.retryTimer) clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+        entry.trips = trips;
+        entry.loading = false;
+        entry.error = null;
+        notify(entry);
+      },
+      (error) => {
+        if (isAuthTeardownActive()) return;
+        console.warn("Error fetching trip history:", error);
+        entry.error = error;
+        // Keep a previous complete dataset during a retry. The repository
+        // never supplies a canonical-only subset.
+        entry.loading = entry.trips.length === 0;
+        notify(entry);
+
+        if (entry.retryTimer) return;
+        const delay = Math.min(
+          RETRY_MAX_DELAY_MS,
+          1_000 * 2 ** entry.retryAttempt,
+        );
+        entry.retryAttempt += 1;
+        entry.retryTimer = setTimeout(() => {
+          entry.retryTimer = null;
+          if (
+            isAuthTeardownActive() ||
+            tripHistoryCache.get(companyId) !== entry
+          )
+            return;
+          try {
+            entry.unsubscribe?.();
+          } catch {
+            // Listener cleanup is best-effort before a retry.
+          }
+          entry.unsubscribe = null;
+          entry.loading = entry.trips.length === 0;
+          subscribeEntry(companyId, entry);
+        }, delay);
+      },
+    );
+  } catch (error) {
+    if (isAuthTeardownActive()) return;
+    console.warn("Error subscribing to trip history:", error);
+    entry.error = error;
+    entry.loading = entry.trips.length === 0;
+    notify(entry);
+  }
 }
 
 function ensureEntry(companyId: string): TripHistoryCacheEntry {
@@ -96,34 +163,11 @@ function ensureEntry(companyId: string): TripHistoryCacheEntry {
     listeners: new Set(),
     unsubscribe: null,
     releaseTimer: null,
+    retryTimer: null,
+    retryAttempt: 0,
   };
   tripHistoryCache.set(companyId, entry);
-
-  try {
-    entry.unsubscribe = TripsRepository.listenCompanyTrips(
-      companyId,
-      (trips) => {
-        if (isAuthTeardownActive()) return;
-        entry.trips = trips;
-        entry.loading = false;
-        entry.error = null;
-        notify(entry);
-      },
-      (error) => {
-        if (isAuthTeardownActive()) return;
-        console.warn("Error fetching trip history:", error);
-        entry.error = error;
-        entry.loading = false;
-        notify(entry);
-      },
-    );
-  } catch (error) {
-    if (!isAuthTeardownActive()) {
-      console.warn("Error subscribing to trip history:", error);
-    }
-    entry.error = error;
-    entry.loading = false;
-  }
+  subscribeEntry(companyId, entry);
 
   return entry;
 }
@@ -150,16 +194,20 @@ type HookState = {
   value: TripHistoryState;
 };
 
-export function useTripHistory(companyId: string | null | undefined) {
+export function useTripHistory(
+  companyId: string | null | undefined,
+  options: { enabled?: boolean } = {},
+) {
   ensureTeardownListener();
-  const normalizedCompanyId = companyId ?? null;
+  const enabled = options.enabled !== false;
+  const normalizedCompanyId = enabled ? companyId ?? null : null;
   const [state, setState] = useState<HookState>(() => ({
     companyId: normalizedCompanyId,
-    value: getInitialState(companyId),
+    value: getInitialState(normalizedCompanyId),
   }));
 
   useEffect(() => {
-    if (!companyId || isAuthTeardownActive()) {
+    if (!enabled || !companyId || isAuthTeardownActive()) {
       setState({ companyId: null, value: EMPTY_STATE });
       return;
     }
@@ -177,7 +225,7 @@ export function useTripHistory(companyId: string | null | undefined) {
         scheduleEntryRelease(companyId, entry);
       }
     };
-  }, [companyId]);
+  }, [companyId, enabled]);
 
   const visibleState = state.companyId === normalizedCompanyId
     ? state.value

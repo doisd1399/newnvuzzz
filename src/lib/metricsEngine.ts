@@ -1,7 +1,28 @@
-import { resolveSimulatorId } from "./resolveSimulator";
+import {
+  hasSimulatorIdentity,
+  isAllSimulatorSelection,
+  resolveSimulatorId,
+} from "./resolveSimulator";
 import { NormalizedTrip, normalizeTrip } from "./tripNormalizer";
+import {
+  getCanonicalTripCompanyId,
+  getCanonicalTripDriverId,
+  getCanonicalTripDriverName,
+} from "./tripIdentity";
 
 export { normalizeTrip };
+
+type EntityRecord = Record<string, unknown>;
+
+const readEntityText = (record: EntityRecord | undefined, key: string): string => {
+  const value = record?.[key];
+  return typeof value === "string" ? value : "";
+};
+
+const entityHasDriverRole = (record: EntityRecord): boolean => {
+  const roles = record.roles;
+  return (Array.isArray(roles) && roles.includes("driver")) || record.role === "driver";
+};
 
 export function getTodayRange(referenceDate = new Date()) {
   const start = new Date(referenceDate);
@@ -43,51 +64,98 @@ export function normalizeDate(date: string | Date | number) {
   return new Date(date);
 }
 
-function normalizeSimulatorId(value: unknown) {
-  return String(value || "").trim().toLocaleLowerCase().replace(/\s+/g, "-");
+function getTripCompany(trip: NormalizedTrip | Record<string, unknown>, companies: Record<string, unknown>[]) {
+  const tripCompanyId = getCanonicalTripCompanyId(trip);
+  if (!tripCompanyId) return undefined;
+  return companies.find((company) => String(company?.id) === String(tripCompanyId));
 }
 
-function isAllSimulatorSelection(value: unknown) {
-  const normalized = normalizeSimulatorId(value);
-  return (
-    !normalized ||
-    normalized === "all" ||
-    normalized === "todos-os-simuladores"
+export function getTripSimulatorId(
+  trip: NormalizedTrip | Record<string, unknown>,
+  companies: Record<string, unknown>[] = [],
+  simulators: Record<string, unknown>[] = [],
+) {
+  const tripRecord = trip as Record<string, unknown>;
+  const hasTripSimulatorSnapshot = hasSimulatorIdentity(tripRecord);
+
+  // A simulator snapshot stored on the trip is authoritative. Legacy names are
+  // converted to the same canonical ID by the centralized resolver.
+  if (hasTripSimulatorSnapshot) {
+    return resolveSimulatorId(tripRecord, simulators, companies);
+  }
+
+  const company = getTripCompany(tripRecord, companies);
+  return resolveSimulatorId(company, simulators, companies);
+}
+
+function createTripSimulatorMatcher(
+  simulatorId: string | undefined,
+  companies: Record<string, unknown>[],
+  simulators: Record<string, unknown>[],
+) {
+  if (!simulatorId || isAllSimulatorSelection(simulatorId)) {
+    return (_trip: NormalizedTrip) => true;
+  }
+
+  const canonicalTargetId = resolveSimulatorId(
+    { simulatorId },
+    simulators,
+    companies,
   );
-}
+  if (!canonicalTargetId) return (_trip: NormalizedTrip) => false;
 
-export function getTripSimulatorId(trip: NormalizedTrip | any, companies: any[] = []) {
-  const explicitId = trip?.simulatorId || trip?.simuladorId;
-  if (explicitId) return String(explicitId);
+  // Most trips inherit their simulator from the company. Resolve each company
+  // once per filter instead of searching and reconciling the same catalog for
+  // every trip in the period.
+  const companiesById = new Map(
+    companies
+      .map((company) => [String(company?.id || ""), company] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+  const companySimulatorIds = new Map<string, string>();
 
-  // Preserve the simulator snapshot stored on the trip before consulting the
-  // company's current simulator. Otherwise old trips can move between
-  // rankings when a company changes simulator later.
-  const tripSimulatorName =
-    trip?.simulatorName || trip?.simuladorNome || trip?.simulator;
-  if (tripSimulatorName) return normalizeSimulatorId(tripSimulatorName);
+  return (trip: NormalizedTrip) => {
+    const tripRecord = trip as Record<string, unknown>;
+    if (hasSimulatorIdentity(tripRecord)) {
+      return (
+        resolveSimulatorId(tripRecord, simulators, companies) ===
+        canonicalTargetId
+      );
+    }
 
-  const tripCompanyId = trip?.empresaId || trip?.companyId || trip?.company_id;
-  const company = companies.find((item) => item.id === tripCompanyId);
+    const companyId = getCanonicalTripCompanyId(tripRecord);
+    if (!companyId) return false;
 
-  return resolveSimulatorId(company, []);
+    let resolvedCompanySimulatorId = companySimulatorIds.get(companyId);
+    if (resolvedCompanySimulatorId === undefined) {
+      resolvedCompanySimulatorId = resolveSimulatorId(
+        companiesById.get(companyId),
+        simulators,
+        companies,
+      );
+      companySimulatorIds.set(companyId, resolvedCompanySimulatorId);
+    }
+
+    return resolvedCompanySimulatorId === canonicalTargetId;
+  };
 }
 
 export function filterTripsBySimulator(
   trips: NormalizedTrip[],
-  simulator?: string,
-  companies: any[] = [],
+  simulatorId?: string,
+  companies: Record<string, unknown>[] = [],
+  simulators: Record<string, unknown>[] = [],
 ) {
-  const targetSimulator = normalizeSimulatorId(simulator);
-  if (isAllSimulatorSelection(targetSimulator)) {
-    return trips;
-  }
+  // Undefined remains a generic no-filter mode for shared metric helpers. The
+  // explicit cross-simulator UI option is still represented only by `all`.
+  if (!simulatorId || isAllSimulatorSelection(simulatorId)) return trips;
 
-  return trips.filter(
-    (trip) =>
-      normalizeSimulatorId(getTripSimulatorId(trip, companies)) ===
-      targetSimulator,
+  const matchesSimulator = createTripSimulatorMatcher(
+    simulatorId,
+    companies,
+    simulators,
   );
+  return trips.filter(matchesSimulator);
 }
 
 export function getFilteredTrips(
@@ -95,10 +163,17 @@ export function getFilteredTrips(
   startDate?: Date,
   endDate?: Date,
   empresaId?: string,
-  simulator?: string,
-  companies?: any[], // Needed for simulator filtering
-  motorista?: string // Motorista name or ID filter
+  simulatorId?: string,
+  companies?: EntityRecord[], // Needed for simulator filtering
+  motorista?: string, // Motorista name or ID filter
+  simulators?: Record<string, unknown>[],
 ) {
+  const matchesSimulator = createTripSimulatorMatcher(
+    simulatorId,
+    companies || [],
+    simulators || [],
+  );
+
   return trips.filter((trip) => {
     if (!trip.isValid) return false;
 
@@ -107,17 +182,17 @@ export function getFilteredTrips(
     if (startDate && completed < startDate) return false;
     if (endDate && completed > endDate) return false;
 
-    const tripCompanyId = trip.empresaId || (trip as any).companyId;
+    const tripCompanyId = getCanonicalTripCompanyId(trip);
     if (empresaId && tripCompanyId !== empresaId) return false;
 
-    if (!filterTripsBySimulator([trip], simulator, companies).length) {
+    if (!matchesSimulator(trip)) {
       return false;
     }
 
     if (motorista && motorista !== "Todos os Motoristas" && motorista !== "all") {
        if (
-         trip.motoristaNome?.toLowerCase() !== motorista.toLowerCase() &&
-         trip.motoristaId !== motorista
+         getCanonicalTripDriverName(trip)?.toLowerCase() !== motorista.toLowerCase() &&
+         getCanonicalTripDriverId(trip) !== motorista
        ) {
          return false;
        }
@@ -132,11 +207,21 @@ export function calculateWeeklyMetrics(
   startDate?: Date,
   endDate?: Date,
   empresaId?: string,
-  simulator?: string,
-  companies?: any[],
-  motorista?: string
+  simulatorId?: string,
+  companies?: EntityRecord[],
+  motorista?: string,
+  simulators?: EntityRecord[],
 ) {
-  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies, motorista);
+  const filteredTrips = getFilteredTrips(
+    trips,
+    startDate,
+    endDate,
+    empresaId,
+    simulatorId,
+    companies,
+    motorista,
+    simulators,
+  );
 
   const tripsCount = filteredTrips.length;
   const totalRevenue = filteredTrips.reduce((acc, trip) => acc + trip.normalizedValor, 0);
@@ -163,20 +248,20 @@ export function getDriverIdsForPeriod(
   startDate?: Date,
   endDate?: Date,
   empresaId?: string,
-  currentMembers: any[] = [],
+  currentMembers: EntityRecord[] = [],
 ) {
   const driverIds = new Set<string>();
 
   currentMembers.forEach((member) => {
-    const hasDriverRole =
-      member?.roles?.includes?.("driver") || member?.role === "driver";
+    const userId = readEntityText(member, "userId");
+    const companyId = readEntityText(member, "companyId");
     if (
-      member?.userId &&
-      member?.status === "active" &&
-      hasDriverRole &&
-      (!empresaId || member.companyId === empresaId)
+      userId &&
+      member.status === "active" &&
+      entityHasDriverRole(member) &&
+      (!empresaId || companyId === empresaId)
     ) {
-      driverIds.add(member.userId);
+      driverIds.add(userId);
     }
   });
 
@@ -184,12 +269,12 @@ export function getDriverIdsForPeriod(
     if (!trip.isValid) return;
     if (startDate && trip.metricDate < startDate) return;
     if (endDate && trip.metricDate > endDate) return;
-    const tripCompanyId = trip.empresaId || (trip as any).companyId;
+    const tripCompanyId = getCanonicalTripCompanyId(trip);
     if (empresaId && tripCompanyId !== empresaId) {
       return;
     }
 
-    const driverId = trip.motoristaId || (trip as any).driverId;
+    const driverId = getCanonicalTripDriverId(trip);
     if (driverId) driverIds.add(driverId);
   });
 
@@ -197,25 +282,34 @@ export function getDriverIdsForPeriod(
 }
 
 /**
- * Returns the companies that must participate in a company ranking for a
- * period. The population is the union of:
- *   1. companies that currently exist in the companies source; and
- *   2. every company with at least one valid trip in the selected period.
+ * Returns the companies that may participate in a company ranking.
  *
- * A company removed after operating during the period therefore remains in
- * that historical ranking, while current companies with zero trips remain in
- * the comparison population.
+ * A trip is historical evidence, not proof that its company still exists.
+ * Hard-deleted companies therefore keep their trips for audit/history, but
+ * those trips can no longer recreate an "Empresa Desconhecida" in rankings.
+ * `currentCompanies` defines the zero-trip population for the selected
+ * simulator, while `existingCompanies` validates historical trip references.
+ * A future archive policy can be added here without changing trip history.
  */
 export function getCompanyIdsForPeriod(
   trips: NormalizedTrip[],
   startDate?: Date,
   endDate?: Date,
-  currentCompanies: any[] = [],
+  currentCompanies: EntityRecord[] = [],
+  existingCompanies: EntityRecord[] = currentCompanies,
 ) {
   const companyIds = new Set<string>();
+  const existingCompanyIds = new Set(
+    existingCompanies
+      .map((company) => readEntityText(company, "id"))
+      .filter(Boolean),
+  );
 
   currentCompanies.forEach((company) => {
-    if (company?.id) companyIds.add(company.id);
+    const companyId = readEntityText(company, "id");
+    if (companyId && existingCompanyIds.has(companyId)) {
+      companyIds.add(companyId);
+    }
   });
 
   trips.forEach((trip) => {
@@ -223,8 +317,10 @@ export function getCompanyIdsForPeriod(
     if (startDate && trip.metricDate < startDate) return;
     if (endDate && trip.metricDate > endDate) return;
 
-    const companyId = trip.empresaId || (trip as any).companyId;
-    if (companyId) companyIds.add(companyId);
+    const companyId = getCanonicalTripCompanyId(trip);
+    if (companyId && existingCompanyIds.has(companyId)) {
+      companyIds.add(companyId);
+    }
   });
 
   return companyIds;
@@ -234,41 +330,80 @@ export function groupMetricsByCompany(
   trips: NormalizedTrip[],
   startDate?: Date,
   endDate?: Date,
-  simulator?: string,
-  companies?: any[]
+  simulatorId?: string,
+  companies?: EntityRecord[],
+  simulators?: EntityRecord[],
 ) {
-  const filteredTrips = getFilteredTrips(trips, startDate, endDate, undefined, simulator, companies);
+  const filteredTrips = getFilteredTrips(
+    trips,
+    startDate,
+    endDate,
+    undefined,
+    simulatorId,
+    companies,
+    undefined,
+    simulators,
+  );
   const stats: Record<string, { id: string; name: string; logo: string; trips: number; val: number }> = {};
 
-  const currentCompanies = (companies || []).filter(
-    (company) =>
-      isAllSimulatorSelection(simulator) ||
-      normalizeSimulatorId(resolveSimulatorId(company)) ===
-        normalizeSimulatorId(simulator),
+  const existingCompanies = companies || [];
+  const companiesById = new Map(
+    existingCompanies
+      .map((company) => [readEntityText(company, "id"), company] as const)
+      .filter(([id]) => Boolean(id)),
   );
+  const canonicalTargetId = simulatorId
+    ? resolveSimulatorId({ simulatorId }, simulators || [], existingCompanies)
+    : "";
+  const currentCompanies = existingCompanies.filter((company) => {
+    if (!simulatorId || isAllSimulatorSelection(simulatorId)) return true;
+    return resolveSimulatorId(company, simulators || [], existingCompanies) === canonicalTargetId;
+  });
 
-  getCompanyIdsForPeriod(filteredTrips, undefined, undefined, currentCompanies).forEach((companyId) => {
-    const company = currentCompanies.find((item) => item.id === companyId) ||
-      companies?.find((item) => item.id === companyId);
+  getCompanyIdsForPeriod(
+    filteredTrips,
+    undefined,
+    undefined,
+    currentCompanies,
+    existingCompanies,
+  ).forEach((companyId) => {
+    const company = companiesById.get(companyId);
+    if (!company) return;
     stats[companyId] = {
       id: companyId,
-      name: company?.companyName || company?.name || "Empresa Desconhecida",
-      logo: company?.logoUrl || company?.logoURL || company?.logo || "",
+      name:
+        readEntityText(company, "companyName") ||
+        readEntityText(company, "name") ||
+        "Empresa Desconhecida",
+      logo:
+        readEntityText(company, "logoUrl") ||
+        readEntityText(company, "logoURL") ||
+        readEntityText(company, "logo"),
       trips: 0,
       val: 0,
     };
   });
   
   filteredTrips.forEach((trip) => {
-    const cId = trip.empresaId || (trip as any).companyId;
+    const cId = getCanonicalTripCompanyId(trip);
     if (!cId) return;
-    
+
+    const comp = companiesById.get(cId);
+    // Trips from a hard-deleted company stay stored, but are not ranking data.
+    if (!comp) return;
+
     if (!stats[cId]) {
-      const comp = companies?.find(c => c.id === cId);
       stats[cId] = {
         id: cId,
-        name: comp?.companyName || comp?.name || trip.empresaNome || "Empresa Desconhecida",
-        logo: comp?.logoUrl || comp?.logoURL || comp?.logo || "",
+        name:
+          readEntityText(comp, "companyName") ||
+          readEntityText(comp, "name") ||
+          trip.empresaNome ||
+          "Empresa Desconhecida",
+        logo:
+          readEntityText(comp, "logoUrl") ||
+          readEntityText(comp, "logoURL") ||
+          readEntityText(comp, "logo"),
         trips: 0,
         val: 0
       };
@@ -288,22 +423,33 @@ export function groupMetricsByDriver(
   startDate?: Date,
   endDate?: Date,
   empresaId?: string,
-  users?: any[],
-  simulator?: string,
-  companies?: any[],
-  companyDrivers?: any[]
+  users?: EntityRecord[],
+  simulatorId?: string,
+  companies?: EntityRecord[],
+  companyDrivers?: EntityRecord[],
+  simulators?: EntityRecord[],
 ) {
-  const filteredTrips = getFilteredTrips(trips, startDate, endDate, empresaId, simulator, companies);
+  const filteredTrips = getFilteredTrips(
+    trips,
+    startDate,
+    endDate,
+    empresaId,
+    simulatorId,
+    companies,
+    undefined,
+    simulators,
+  );
   const stats: Record<string, { id: string; name: string; logo: string; trips: number; val: number }> = {};
   
   // Preload company drivers (Internal Ranking Dynamic)
   if (companyDrivers && companyDrivers.length > 0) {
-    companyDrivers.forEach(m => {
-      const hasDriverRole =
-        m?.roles?.includes?.("driver") || m?.role === "driver";
-      if (m.userId && m.status === "active" && hasDriverRole) {
-        const user = users?.find(u => u.id === m.userId);
-        let driverName = user?.name || "Motorista Desconhecido";
+    companyDrivers.forEach((member) => {
+      const userId = readEntityText(member, "userId");
+      if (userId && member.status === "active" && entityHasDriverRole(member)) {
+        const user = users?.find(
+          (candidate) => readEntityText(candidate, "id") === userId,
+        );
+        let driverName = readEntityText(user, "name") || "Motorista Desconhecido";
         if (driverName) {
           const parts = driverName.trim().split(" ");
           if (parts.length > 1) {
@@ -312,10 +458,10 @@ export function groupMetricsByDriver(
             driverName = parts[0];
           }
         }
-        stats[m.userId] = {
-          id: m.userId,
+        stats[userId] = {
+          id: userId,
           name: driverName,
-          logo: user?.profilePhotoURL || "",
+          logo: readEntityText(user, "profilePhotoURL"),
           trips: 0,
           val: 0
         };
@@ -324,13 +470,16 @@ export function groupMetricsByDriver(
   }
 
   filteredTrips.forEach((trip) => {
-    const mId = trip.motoristaId || (trip as any).driverId;
+    const mId = getCanonicalTripDriverId(trip);
     if (!mId) return;
 
     if (!stats[mId]) {
-      const user = users?.find(u => u.id === mId);
+      const user = users?.find((candidate) => readEntityText(candidate, "id") === mId);
       
-      let driverName = trip.motoristaNome || user?.name || "Motorista Desconhecido";
+      let driverName =
+        getCanonicalTripDriverName(trip) ||
+        readEntityText(user, "name") ||
+        "Motorista Desconhecido";
       if (driverName) {
         const parts = driverName.trim().split(" ");
         if (parts.length > 1) {
@@ -343,7 +492,7 @@ export function groupMetricsByDriver(
       stats[mId] = {
         id: mId,
         name: driverName,
-        logo: user?.profilePhotoURL || "",
+        logo: readEntityText(user, "profilePhotoURL"),
         trips: 0,
         val: 0
       };

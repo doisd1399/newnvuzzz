@@ -1,7 +1,13 @@
-import React, { useState, useEffect } from "react";
+import React, {
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
-import { useAppStore } from "../../context/AppContext";
+import { useSessionStore } from "../../context/AppContext";
 import {
   ChevronLeft,
   Bell,
@@ -22,15 +28,28 @@ import {
   Pencil,
   Eye,
 } from "lucide-react";
-import OperationsTab from "./fleet/OperationsTab";
-import CompanyTab from "./fleet/CompanyTab";
-import VehiclesTab from "./fleet/VehiclesTab";
-import TrailersTab from "./fleet/TrailersTab";
-import DriversTab from "./fleet/DriversTab";
-import ContractsTab from "./fleet/ContractsTab";
-import RecruitmentTab from "./fleet/RecruitmentTab";
-import TripHistory from "../driver/TripHistory";
 import { toast } from "sonner";
+import { StableImage } from "../../components/common/StableImage";
+import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
+import { preloadRoute } from "../../lib/routePreload";
+import OperationsTab from "./fleet/OperationsTab";
+
+const loadOperationsTab = () => import("./fleet/OperationsTab");
+const loadCompanyTab = () => import("./fleet/CompanyTab");
+const loadVehiclesTab = () => import("./fleet/VehiclesTab");
+const loadTrailersTab = () => import("./fleet/TrailersTab");
+const loadDriversTab = () => import("./fleet/DriversTab");
+const loadContractsTab = () => import("./fleet/ContractsTab");
+const loadRecruitmentTab = () => import("./fleet/RecruitmentTab");
+const loadTripHistory = () => import("../driver/TripHistory");
+
+const CompanyTab = lazy(loadCompanyTab);
+const VehiclesTab = lazy(loadVehiclesTab);
+const TrailersTab = lazy(loadTrailersTab);
+const DriversTab = lazy(loadDriversTab);
+const ContractsTab = lazy(loadContractsTab);
+const RecruitmentTab = lazy(loadRecruitmentTab);
+const TripHistory = lazy(loadTripHistory);
 
 type Tab = "operations" | "company" | "fleet" | "hr" | "history" | "reports";
 
@@ -68,16 +87,39 @@ const fleetTabIds: readonly FleetTab[] = [
   "trailers",
 ];
 
-// The header has several local menu states. Memoized panels avoid rendering
-// the active data-heavy view again when only one of those menus changes.
-const MemoOperationsTab = React.memo(OperationsTab);
-const MemoCompanyTab = React.memo(CompanyTab);
-const MemoVehiclesTab = React.memo(VehiclesTab);
-const MemoTrailersTab = React.memo(TrailersTab);
-const MemoDriversTab = React.memo(DriversTab);
-const MemoContractsTab = React.memo(ContractsTab);
-const MemoRecruitmentTab = React.memo(RecruitmentTab);
-const MemoTripHistory = React.memo(TripHistory);
+const FleetPanelTransition = () => (
+  <div className="min-h-[220px]" aria-hidden="true" />
+);
+
+const preloadTopLevelTab = (tab: Tab): Promise<void> => {
+  const loader =
+    tab === "operations"
+      ? loadOperationsTab
+      : tab === "company"
+        ? loadCompanyTab
+        : tab === "hr"
+          ? loadRecruitmentTab
+          : tab === "history"
+            ? loadTripHistory
+            : tab === "fleet"
+              ? loadDriversTab
+              : null;
+  return loader
+    ? loader().then(() => undefined).catch(() => undefined)
+    : Promise.resolve();
+};
+
+const preloadFleetSubTab = (tab: FleetTab): Promise<void> => {
+  const loader =
+    tab === "drivers"
+      ? loadDriversTab
+      : tab === "contracts"
+        ? loadContractsTab
+        : tab === "vehicles"
+          ? loadVehiclesTab
+          : loadTrailersTab;
+  return loader().then(() => undefined).catch(() => undefined);
+};
 
 type FleetNavigation = {
   activeTab: Tab;
@@ -132,16 +174,40 @@ export default function Fleet() {
     setActiveCompanyId,
     companies,
     currentUser,
-    notifications,
-    syncCompanyData,
     memberships,
-  } = useAppStore();
+  } = useSessionStore();
   const [activeTab, setActiveTab] = useState<Tab>(() =>
     getFleetNavigation(location.state).activeTab,
   );
-  const [activeFleetTab, setActiveFleetTab] = useState<FleetTab>(() =>
-    getFleetNavigation(location.state).activeFleetTab,
-  );
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(new Set([activeTab]));
+  const [activeFleetTab, setActiveFleetTab] = useState<FleetTab>(() => getFleetNavigation(location.state).activeFleetTab);
+  const [visitedFleetTabs, setVisitedFleetTabs] = useState<Set<string>>(new Set([getFleetNavigation(location.state).activeFleetTab]));
+  // The selected panel is the visual acknowledgement of the user's click.
+  // Deferring these values made the active tab wait for React's background
+  // scheduler on slower WebViews, even though the click had already
+  // committed the new state.
+  const renderedTab = activeTab;
+  const renderedFleetTab = activeFleetTab;
+  // Only the selected panel is mounted initially, so no timer is needed
+  // before displaying it.
+  const [showSecondary] = useState(true);
+
+  useEffect(() => {
+    setVisitedTabs((previous) =>
+      previous.has(renderedTab)
+        ? previous
+        : new Set(previous).add(renderedTab),
+    );
+  }, [renderedTab]);
+
+  useEffect(() => {
+    setVisitedFleetTabs((prev) => {
+      if (prev.has(renderedFleetTab)) return prev;
+      const next = new Set(prev);
+      next.add(renderedFleetTab);
+      return next;
+    });
+  }, [renderedFleetTab]);
   const [editContractId, setEditContractId] = useState<string | null>(null);
   const [preselectedDriverId, setPreselectedDriverId] = useState<string | null>(
     null,
@@ -157,32 +223,97 @@ export default function Fleet() {
   const [isCompanyEditMode, setIsCompanyEditMode] = useState(false);
   const [isCompanyViewMode, setIsCompanyViewMode] = useState(false);
   const [isCompanySettingsOpen, setIsCompanySettingsOpen] = useState(false);
+  const tabRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!isTabMenuOpen) return;
+    // Opening the selector itself must stay light. Warm only the visible
+    // panel here; the remaining chunks are handled by the idle warm-up.
+    void preloadTopLevelTab(activeTab);
+  }, [activeTab, isTabMenuOpen]);
+
+  useEffect(() => {
+    if (!isFleetMenuOpen) return;
+    void preloadFleetSubTab(activeFleetTab);
+  }, [activeFleetTab, isFleetMenuOpen]);
+
+  useEffect(() => {
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }).connection;
+    if (connection?.saveData || connection?.effectiveType === "2g") return;
+
+    const warmAllPanels = () => {
+      const loaders = [
+        loadCompanyTab,
+        loadRecruitmentTab,
+        loadTripHistory,
+        loadDriversTab,
+        loadContractsTab,
+        loadVehiclesTab,
+        loadTrailersTab,
+      ];
+      let index = 0;
+      const worker = async () => {
+        while (index < loaders.length) {
+          const loader = loaders[index++];
+          try {
+            await loader();
+          } catch {
+            // Best-effort warm-up; click navigation can retry.
+          }
+        }
+      };
+      void Promise.all([worker(), worker()]);
+    };
+
+    // Parsing every secondary panel in the first frame competes with the
+    // first user interaction. Use an idle slice after the shell is usable.
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (idleApi.requestIdleCallback) {
+      const idleId = idleApi.requestIdleCallback(warmAllPanels, { timeout: 1400 });
+      return () => idleApi.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(warmAllPanels, 900);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const handleContractEditComplete = React.useCallback(() => {
     setEditContractId(null);
   }, []);
 
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
-  const unreadCount = notifications.filter((n) => !n.lida).length;
-
-  const isStillLoading =
-    !activeCompany &&
-    (activeCompanyId ||
-      currentUser?.companyId ||
-      (memberships && memberships.length > 0));
 
   useEffect(() => {
     const nextNavigation = getFleetNavigation(location.state);
-    setActiveTab(nextNavigation.activeTab);
-    setActiveFleetTab(nextNavigation.activeFleetTab);
-    setEditContractId(nextNavigation.editContractId);
+    setActiveTab((current) =>
+      current === nextNavigation.activeTab ? current : nextNavigation.activeTab,
+    );
+    setActiveFleetTab((current) =>
+      current === nextNavigation.activeFleetTab
+        ? current
+        : nextNavigation.activeFleetTab,
+    );
+    setEditContractId((current) =>
+      current === nextNavigation.editContractId
+        ? current
+        : nextNavigation.editContractId,
+    );
   }, [location.state]);
 
   // These selectors are views inside the same route. Keeping their state in
   // React Router creates real browser/WebView history entries, so Back
   // returns through the previous corporate view instead of closing the app.
   const selectFleetTab = (nextTab: Tab) => {
+    setIsTabMenuOpen(false);
     if (nextTab === activeTab) return;
+    const requestId = ++tabRequestRef.current;
 
     const currentState =
       location.state && typeof location.state === "object"
@@ -192,18 +323,24 @@ export default function Fleet() {
       ...currentState,
       activeTab: nextTab,
     };
+    if (nextTab === "fleet") nextState.activeFleetTab = activeFleetTab;
+    else delete nextState.editContractId;
 
-    if (nextTab === "fleet") {
-      nextState.activeFleetTab = activeFleetTab;
-    } else {
-      delete nextState.editContractId;
-    }
-
-    navigate(location.pathname, { state: nextState });
+    // Start the module request and switch the selected panel in the click frame.
+    void prepareAndCommitNavigation(
+      () => preloadTopLevelTab(nextTab),
+      () => {
+        if (requestId !== tabRequestRef.current) return;
+        setActiveTab(nextTab);
+        navigate(location.pathname, { state: nextState });
+      },
+    );
   };
 
   const selectFleetSubTab = (nextTab: FleetTab) => {
+    setIsFleetMenuOpen(false);
     if (activeTab === "fleet" && nextTab === activeFleetTab) return;
+    const requestId = ++tabRequestRef.current;
 
     const currentState =
       location.state && typeof location.state === "object"
@@ -214,10 +351,17 @@ export default function Fleet() {
       activeTab: "fleet",
       activeFleetTab: nextTab,
     };
-
     if (nextTab !== "contracts") delete nextState.editContractId;
 
-    navigate(location.pathname, { state: nextState });
+    void prepareAndCommitNavigation(
+      () => preloadFleetSubTab(nextTab),
+      () => {
+        if (requestId !== tabRequestRef.current) return;
+        setActiveTab("fleet");
+        setActiveFleetTab(nextTab);
+        navigate(location.pathname, { state: nextState });
+      },
+    );
   };
 
   const activeTabDetails =
@@ -234,10 +378,19 @@ export default function Fleet() {
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <div className="w-12 h-12 sm:w-14 sm:h-14 bg-slate-900 dark:bg-[#2A2F3A] rounded-lg overflow-hidden flex items-center justify-center shrink-0 border border-slate-200 dark:border-[#3A3F4A] shadow-sm relative">
                   {activeCompany.logoUrl ? (
-                    <img
+                    <StableImage
                       src={activeCompany.logoUrl}
                       alt="Logo"
-                      className="w-full h-full object-cover"
+                      loading="eager"
+                      decoding="async"
+                      fetchPriority="high"
+                      wrapperClassName="w-full h-full"
+                      className="object-cover"
+                      fallback={
+                        <span className="h-full w-full bg-slate-900 dark:bg-[#2A2F3A] flex items-center justify-center text-base sm:text-lg font-bold text-white tracking-tighter">
+                          {activeCompany.companyName?.substring(0, 2).toUpperCase() || "NV"}
+                        </span>
+                      }
                     />
                   ) : (
                     <span className="text-base sm:text-lg font-bold text-white tracking-tighter">
@@ -380,7 +533,7 @@ export default function Fleet() {
 
                 {/* Sub-selector for Fleet */}
                 {activeTab === "fleet" && (
-                  <div className="min-w-0 flex-1 sm:flex-none animate-in fade-in slide-in-from-left-2">
+                  <div className="min-w-0 flex-1 sm:flex-none">
                     <button
                       onClick={() => setIsFleetMenuOpen(!isFleetMenuOpen)}
                       className="w-full sm:w-auto h-9 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-lg px-3 flex items-center justify-center sm:justify-start gap-2 shadow-sm focus:outline-none transition-colors hover:bg-slate-50 dark:hover:bg-[#2A2F3A]"
@@ -470,7 +623,10 @@ export default function Fleet() {
                       key={tab.id}
                       onClick={() => {
                         if (tab.id === "reports") {
-                          navigate("/admin/reports");
+                          void prepareAndCommitNavigation(
+                            () => preloadRoute("/admin/reports"),
+                            () => navigate("/admin/reports"),
+                          );
                         } else {
                           selectFleetTab(tab.id as Tab);
                         }
@@ -551,40 +707,50 @@ export default function Fleet() {
 
         {/* Content Area */}
         <div className="relative">
-          {activeTab === "operations" && <MemoOperationsTab />}
-          {activeTab === "company" && (
-            <MemoCompanyTab
-              isEditingProp={isCompanyEditMode}
-              setIsEditingProp={setIsCompanyEditMode}
-              isViewingProp={isCompanyViewMode}
-              setIsViewingProp={setIsCompanyViewMode}
-            />
-          )}
-          {activeTab === "hr" && (
-            <MemoRecruitmentTab onFormOpen={setIsRecruitmentFormOpen} />
-          )}
-          {activeTab === "history" && (
-            <MemoTripHistory
-              isInsideAdminTab={true}
-              onTripDetailsOpen={setIsTripDetailsOpen}
-              mode="company"
-              companyId={activeCompanyId || undefined}
-            />
-          )}
+          <Suspense fallback={<FleetPanelTransition />}>
+            {(visitedTabs.has("operations") || renderedTab === "operations") && <div className={cn(renderedTab !== "operations" && "hidden")}>{showSecondary && <OperationsTab />}</div>}
+            {(visitedTabs.has("company") || renderedTab === "company") && (
+              <div className={cn(renderedTab !== "company" && "hidden")}>
+                {showSecondary && <CompanyTab
+                  isEditingProp={isCompanyEditMode}
+                  setIsEditingProp={setIsCompanyEditMode}
+                  isViewingProp={isCompanyViewMode}
+                  setIsViewingProp={setIsCompanyViewMode}
+                />}
+              </div>
+            )}
+            {(visitedTabs.has("hr") || renderedTab === "hr") && (
+              <div className={cn(renderedTab !== "hr" && "hidden")}>
+                {showSecondary && <RecruitmentTab onFormOpen={setIsRecruitmentFormOpen} />}
+              </div>
+            )}
+            {(visitedTabs.has("history") || renderedTab === "history") && (
+              <div className={cn(renderedTab !== "history" && "hidden")}>
+                {showSecondary && <TripHistory
+                  isInsideAdminTab={true}
+                  onTripDetailsOpen={setIsTripDetailsOpen}
+                  mode="company"
+                  companyId={activeCompanyId || undefined}
+                />}
+              </div>
+            )}
 
-          {activeTab === "fleet" && (
-            <div className="space-y-4">
-              {activeFleetTab === "drivers" && <MemoDriversTab />}
-              {activeFleetTab === "contracts" && (
-                <MemoContractsTab
-                  editContractId={editContractId}
-                  onEditComplete={handleContractEditComplete}
-                />
-              )}
-              {activeFleetTab === "vehicles" && <MemoVehiclesTab />}
-              {activeFleetTab === "trailers" && <MemoTrailersTab />}
-            </div>
-          )}
+            {(visitedTabs.has("fleet") || renderedTab === "fleet") && (
+              <div className={cn("space-y-4", renderedTab !== "fleet" && "hidden")}>
+                {(visitedFleetTabs.has("drivers") || renderedFleetTab === "drivers") && <div className={cn(renderedFleetTab !== "drivers" && "hidden")}>{showSecondary && <DriversTab />}</div>}
+                {(visitedFleetTabs.has("contracts") || renderedFleetTab === "contracts") && (
+                  <div className={cn(renderedFleetTab !== "contracts" && "hidden")}>
+                    {showSecondary && <ContractsTab
+                      editContractId={editContractId}
+                      onEditComplete={handleContractEditComplete}
+                    />}
+                  </div>
+                )}
+                {(visitedFleetTabs.has("vehicles") || renderedFleetTab === "vehicles") && <div className={cn(renderedFleetTab !== "vehicles" && "hidden")}><VehiclesTab /></div>}
+                {(visitedFleetTabs.has("trailers") || renderedFleetTab === "trailers") && <div className={cn(renderedFleetTab !== "trailers" && "hidden")}><TrailersTab /></div>}
+              </div>
+            )}
+          </Suspense>
         </div>
       </div>
     </div>

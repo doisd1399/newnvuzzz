@@ -1,12 +1,39 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Package, Truck, ArrowRight, ShieldCheck, LogIn } from "lucide-react";
+import { useSessionStore } from "../context/AppContext";
+import { preloadRoute } from "../lib/routePreload";
 
 export default function Portal() {
   const navigate = useNavigate();
+  const { currentUser, sessionReady, activeRole } = useSessionStore();
   const [showSubscribeOptions, setShowSubscribeOptions] = useState(false);
+
+  useEffect(() => {
+    // Login for an already-authenticated user is a critical path. Warm the
+    // login and selector immediately while the portal is visible.
+    void preloadRoute("/login");
+    void preloadRoute("/select-profile");
+    if (sessionReady && currentUser) {
+      void preloadRoute(activeRole === "admin" ? "/admin/fleet" : "/driver/profile");
+    }
+  }, [activeRole, currentUser?.id, sessionReady]);
+
+  useEffect(() => {
+    if (!showSubscribeOptions) return;
+    void preloadRoute("/apply");
+    void preloadRoute("/register-company");
+  }, [showSubscribeOptions]);
+
+  const openLogin = () => {
+    const target = sessionReady && currentUser ? "/select-profile" : "/login";
+    // The route change is the first operation of the click. Login and profile
+    // selection are part of the initial bundle, so neither a dynamic import nor
+    // a best-effort warm-up can hold the current screen on Android/WebView.
+    navigate(target);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex flex-col justify-center items-center p-4">
@@ -30,7 +57,7 @@ export default function Portal() {
               {!showSubscribeOptions ? (
                 <>
                   <Button
-                    onClick={() => navigate('/login')}
+                    onClick={openLogin}
                     className="w-full h-12 bg-white dark:bg-[#27272a]/50 hover:bg-slate-50 dark:hover:bg-[#27272a] text-slate-700 dark:text-[#e4e4e7] border border-slate-200 dark:border-[#2A2F3A]/50 shadow-sm dark:shadow-none transition-all rounded-xl font-semibold text-[15px] flex items-center justify-center gap-2"
                   >
                     <LogIn size={18} className="text-blue-500" />

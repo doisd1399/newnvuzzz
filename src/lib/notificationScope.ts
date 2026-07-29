@@ -3,6 +3,7 @@ export type NotificationTargetProfile = "driver" | "corporate";
 export interface NotificationScopeRecord {
   userId?: string;
   companyId?: string | null;
+  dedupeKey?: string | null;
   targetProfile?: NotificationTargetProfile;
   type?: string;
   tipo?: string;
@@ -115,6 +116,22 @@ export function notificationTimestampMs(
   );
 }
 
+export function notificationIdentity(
+  notification: NotificationScopeRecord,
+  documentId: string,
+): string {
+  const dedupeKey =
+    typeof notification.dedupeKey === "string"
+      ? notification.dedupeKey.trim()
+      : "";
+
+  if (dedupeKey) {
+    return `event:${notification.userId ?? "unknown"}:${dedupeKey}`;
+  }
+
+  return `document:${documentId}`;
+}
+
 export function notificationPopupWasShown(
   notification: NotificationScopeRecord,
 ): boolean {
@@ -129,7 +146,7 @@ export function isOperationalNotificationRoute(pathname: string): boolean {
   return (
     pathname.startsWith("/admin") ||
     pathname.startsWith("/driver") ||
-    pathname === "/ranking"
+    pathname === "/ranking" || pathname.endsWith("/ranking")
   );
 }
 

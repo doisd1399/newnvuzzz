@@ -1,5 +1,6 @@
 import { buildDriverRankingContext, RankingScope } from "./performanceEngine";
 import { filterTripsBySimulator } from "./metricsEngine";
+import type { NormalizedTrip } from "./tripNormalizer";
 
 export interface RankingPageDriverItem {
   id: string;
@@ -12,14 +13,15 @@ export interface RankingPageDriverItem {
 }
 
 export interface BuildDriverRankingPageDataParams {
-  trips: any[];
+  trips: NormalizedTrip[];
   startDate?: Date;
   endDate?: Date;
   scope: RankingScope;
   companyId?: string | null;
-  simulator?: string;
-  companies?: any[];
-  users?: any[];
+  simulatorId?: string;
+  companies?: Record<string, unknown>[];
+  simulators?: Record<string, unknown>[];
+  users?: Record<string, unknown>[];
 }
 
 export interface BuildCanonicalDriverRankingContextParams
@@ -38,8 +40,9 @@ export function buildCanonicalDriverRankingContext({
   endDate,
   scope,
   companyId,
-  simulator,
+  simulatorId,
   companies = [],
+  simulators = [],
   driverId,
 }: BuildCanonicalDriverRankingContextParams) {
   if (scope === "internal" && !companyId) {
@@ -52,7 +55,7 @@ export function buildCanonicalDriverRankingContext({
     });
   }
 
-  const simulatorTrips = filterTripsBySimulator(trips, simulator, companies);
+  const simulatorTrips = filterTripsBySimulator(trips, simulatorId, companies, simulators);
   return buildDriverRankingContext(simulatorTrips, {
     scope,
     startDate: startDate || new Date(0),
@@ -80,8 +83,9 @@ export function buildDriverRankingPageData({
   endDate,
   scope,
   companyId,
-  simulator,
+  simulatorId,
   companies = [],
+  simulators = [],
   users = [],
 }: BuildDriverRankingPageDataParams): RankingPageDriverItem[] {
   if (scope === "internal" && !companyId) return [];
@@ -92,33 +96,55 @@ export function buildDriverRankingPageData({
     endDate,
     scope,
     companyId,
-    simulator,
+    simulatorId,
     companies,
+    simulators,
     // The ranking page needs the ordered population, not a specific driver's
     // position. A sentinel ID keeps the shared engine deterministic.
     driverId: "__ranking_page__",
   });
 
+  const readText = (record: Record<string, unknown> | undefined, key: string) => {
+    const value = record?.[key];
+    return typeof value === "string" ? value : "";
+  };
+
+  const usersById = new Map(
+    users
+      .map((user) => [readText(user, "id"), user] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+  const companiesById = new Map(
+    companies
+      .map((company) => [readText(company, "id"), company] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+
   return context.ranking.map((entry) => {
-    const user = users.find((candidate) => candidate?.id === entry.id);
-    const company = companies.find((candidate) => candidate?.id === entry.companyId);
+    const user = usersById.get(entry.id);
+    const company = entry.companyId
+      ? companiesById.get(entry.companyId)
+      : undefined;
 
     return {
       id: entry.id,
-      name: shortDriverName(entry.name || user?.name),
+      // The user document is the canonical identity after approval. Trip
+      // snapshots intentionally keep their historical motoristaNome for
+      // auditability, but must not overwrite a newer approved profile name.
+      name: shortDriverName(readText(user, "name") || entry.name),
       logo:
-        user?.profilePhotoURL ||
-        user?.photoURL ||
-        user?.photoUrl ||
-        user?.avatar ||
-        user?.profileImage ||
-        user?.imageUrl ||
-        user?.photo ||
-        "",
+        readText(user, "profilePhotoURL") ||
+        readText(user, "photoURL") ||
+        readText(user, "photoUrl") ||
+        readText(user, "avatar") ||
+        readText(user, "profileImage") ||
+        readText(user, "imageUrl") ||
+        readText(user, "photo"),
       trips: entry.trips,
       val: entry.earnings,
       companyId: entry.companyId,
-      companyName: company?.companyName || company?.name || "",
+      companyName:
+        readText(company, "companyName") || readText(company, "name"),
     };
   });
 }

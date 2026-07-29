@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { PhotoProvider, PhotoView } from 'react-photo-view';
 import 'react-photo-view/dist/react-photo-view.css';
-import { useAppStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import {
   ArrowLeft,
   MapPin,
@@ -31,6 +31,12 @@ import { uploadService } from "../../services/uploadService";
 import { TripsRepository } from "../../repositories/TripsRepository";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { parseTripValue } from "../../lib/tripNormalizer";
+import { extractGtoTripValue } from "../../services/gtoOcrService";
+import {
+  parseTripDistance,
+  requiresTripDistance,
+  resolveTripSimulatorCode,
+} from "../../lib/tripDistance";
 
 const generateImageHash = async (file: File): Promise<string> => {
   if (!window.crypto || !window.crypto.subtle) {
@@ -44,20 +50,20 @@ const generateImageHash = async (file: File): Promise<string> => {
 
 export default function RecordTrip() {
   const navigate = useNavigate();
+  const { currentUser, companies, activeCompanyId, memberships } = useSessionStore();
   const {
-    currentUser,
-    companies,
-    activeCompanyId,
     jobs,
     contracts,
     vehicles,
     trailers,
-    memberships,
-  } = useAppStore();
+    simulators,
+    simulatorsLoading,
+  } = useOperationalStore();
 
   const [origem, setOrigem] = useState("");
   const [destino, setDestino] = useState("");
   const [valor, setValor] = useState("");
+  const [distanciaPercorrida, setDistanciaPercorrida] = useState("");
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [imageHash, setImageHash] = useState<string | null>(null);
   const [deviceId, setDeviceId] = useState<string>("");
@@ -65,9 +71,11 @@ export default function RecordTrip() {
   const [uploadCountMinute, setUploadCountMinute] = useState<number[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isReadingValue, setIsReadingValue] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isNavigating, setIsNavigating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const ocrRequestIdRef = useRef(0);
 
   useEffect(() => {
     let id = localStorage.getItem("deviceId");
@@ -79,6 +87,23 @@ export default function RecordTrip() {
   }, []);
 
   const currentCompany = companies.find((c) => c.id === activeCompanyId);
+  const resolvedSimulatorCode = resolveTripSimulatorCode(
+    currentCompany as any,
+    simulators as any[],
+  );
+  const distanceRequired = requiresTripDistance(
+    currentCompany as any,
+    simulators as any[],
+  );
+  const simulatorResolutionPending = Boolean(
+    currentCompany && simulatorsLoading && !resolvedSimulatorCode,
+  );
+
+  useEffect(() => {
+    if (!distanceRequired && distanciaPercorrida) {
+      setDistanciaPercorrida("");
+    }
+  }, [distanceRequired, distanciaPercorrida]);
 
   const driverMembership = memberships?.find(
     (m) =>
@@ -150,6 +175,34 @@ export default function RecordTrip() {
         <button
           onClick={() => navigate("/")}
           className="mt-4 text-blue-600 dark:text-blue-400 underline text-sm hover:text-blue-700 dark:hover:text-blue-300"
+        >
+          Voltar
+        </button>
+      </div>
+    );
+  }
+
+  if (simulatorResolutionPending) {
+    return (
+      <div className="w-full flex flex-col items-center justify-center py-12 gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-200 border-b-blue-600" />
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Identificando o simulador da empresa...
+        </p>
+      </div>
+    );
+  }
+
+  if (!resolvedSimulatorCode) {
+    return (
+      <div className="w-full text-center py-10 px-4">
+        <p className="text-gray-600 dark:text-gray-300">
+          Não foi possível identificar o simulador desta empresa. Atualize o
+          cadastro da empresa antes de lançar uma viagem.
+        </p>
+        <button
+          onClick={() => navigate(-1)}
+          className="mt-4 text-blue-600 dark:text-blue-400 underline text-sm"
         >
           Voltar
         </button>
@@ -234,8 +287,50 @@ export default function RecordTrip() {
         return;
       }
 
+      const requestId = ++ocrRequestIdRef.current;
       const localPreviewUrl = URL.createObjectURL(file);
       setImagePreview(localPreviewUrl);
+
+      const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
+      const simulatorName =
+        currentCompany.simulatorName ||
+        simulators.find((simulator) => simulator.id === simulatorId)?.name ||
+        resolvedSimulatorCode;
+      const isGto = resolvedSimulatorCode === "GTO";
+      console.log("[NVU GTO OCR] context", {
+        simulatorId,
+        simulatorName,
+        resolvedSimulatorCode,
+        isGto,
+      });
+
+      // OCR and upload run at the same time. The screenshot no longer waits for
+      // recognition before it starts uploading, keeping the page responsive.
+      if (isGto) {
+        setIsReadingValue(true);
+        void extractGtoTripValue(file)
+          .then((detected) => {
+            if (ocrRequestIdRef.current !== requestId) return;
+
+            if (detected) {
+              setValor(detected);
+              toast.success(`Valor identificado: R$ ${detected}`);
+              return;
+            }
+
+            toast.warning(
+              "Não foi possível confirmar o valor automaticamente. Confira e preencha manualmente.",
+            );
+          })
+          .finally(() => {
+            if (ocrRequestIdRef.current === requestId) {
+              setIsReadingValue(false);
+            }
+          });
+      } else {
+        setIsReadingValue(false);
+      }
+
       setIsUploading(true);
       setUploadProgress(0);
 
@@ -246,8 +341,11 @@ export default function RecordTrip() {
         
         if (isDuplicate) {
           toast.error("Esta imagem já foi utilizada em um lançamento anterior.");
+          ocrRequestIdRef.current += 1;
+          setIsReadingValue(false);
           setIsUploading(false);
           setImagePreview(null);
+          URL.revokeObjectURL(localPreviewUrl);
           if (fileInputRef.current) fileInputRef.current.value = "";
           return;
         }
@@ -265,10 +363,14 @@ export default function RecordTrip() {
         setUploadCountMinute([...recentUploads, now]);
         setImageHash(hash);
         setImagePreview(url);
+        URL.revokeObjectURL(localPreviewUrl);
         toast.success("Comprovante pronto para envio!", { position: "top-center" });
       } catch (err: any) {
         console.error("Upload error:", err);
+        ocrRequestIdRef.current += 1;
+        setIsReadingValue(false);
         setImagePreview(null);
+        URL.revokeObjectURL(localPreviewUrl);
         toast.error(
           `Falha no envio da imagem. Tente novamente. ${err.message}`,
         );
@@ -296,6 +398,12 @@ export default function RecordTrip() {
       return;
     }
 
+    const distanciaNumerica = parseTripDistance(distanciaPercorrida);
+    if (distanceRequired && distanciaNumerica <= 0) {
+      toast.error("Informe uma distância percorrida válida em quilômetros.");
+      return;
+    }
+
     if (!activeJob) {
       toast.error("Nenhuma operação iniciada encontrada. Inicie uma operação antes de lançar viagens.");
       return;
@@ -315,13 +423,19 @@ export default function RecordTrip() {
 
       const valorNumerico = parseTripValue(valor);
 
+      const simulatorId = resolveSimulatorId(currentCompany, simulators);
+      const simulatorName =
+        currentCompany.simulatorName ||
+        simulators.find((simulator) => simulator.id === simulatorId)?.name ||
+        resolvedSimulatorCode;
+
       const data: any = {
         empresaId: currentCompany?.id || "Geral",
         companyId: currentCompany?.id || "Geral",
         empresaNome: currentCompany?.companyName || "Geral",
-        simulatorId: resolveSimulatorId(currentCompany),
-        simulatorName: currentCompany?.simulatorName || "Geral",
-        simuladorNome: currentCompany?.simulatorName || "Geral",
+        simulatorId,
+        simulatorName,
+        simuladorNome: simulatorName,
         motoristaId: currentUser.id,
         driverId: currentUser.id,
         motoristaNome: currentUser.name,
@@ -340,6 +454,9 @@ export default function RecordTrip() {
         origem: finalOrigem,
         destino: finalDestino,
         valor: valorNumerico,
+        ...(distanceRequired
+          ? { distanciaPercorrida: distanciaNumerica }
+          : {}),
         comprovanteUrl: imagePreview,
         status: "concluida",
         criadoPor: currentUser.id,
@@ -378,6 +495,7 @@ export default function RecordTrip() {
       setOrigem("");
       setDestino("");
       setValor("");
+      setDistanciaPercorrida("");
       setImagePreview(null);
       setImageHash(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -422,6 +540,21 @@ export default function RecordTrip() {
   const companyLogo = currentCompany?.logoUrl || "";
   const companyName = currentCompany?.companyName || "Empresa";
   const cnpj = currentCompany?.cnpj || "00.000.000/0000-00";
+  const distanceFieldNumber = predefinedRoutes ? 2 : 3;
+  const receiptFieldNumber = predefinedRoutes
+    ? distanceRequired
+      ? 3
+      : 2
+    : distanceRequired
+      ? 4
+      : 3;
+  const valueFieldNumber = predefinedRoutes
+    ? distanceRequired
+      ? 4
+      : 3
+    : distanceRequired
+      ? 5
+      : 4;
 
   return (
     <div className="w-full max-w-2xl mx-auto space-y-3 pb-6 px-0 sm:px-4 text-gray-900 dark:text-gray-100 font-sans tracking-[-0.01em]">
@@ -645,10 +778,32 @@ export default function RecordTrip() {
             </>
           )}
 
+          {distanceRequired && (
+            <div>
+              <label className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 mb-1 block">
+                {distanceFieldNumber}. Distância percorrida (km)*
+              </label>
+              <div className="relative flex items-center border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden bg-white dark:bg-[#1A1F26] focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 transition-shadow h-9">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={distanciaPercorrida}
+                  onChange={(event) => setDistanciaPercorrida(event.target.value)}
+                  className="w-full bg-transparent text-gray-900 dark:text-white text-right font-semibold text-[13px] block px-3 py-1.5 outline-none placeholder:text-gray-400 dark:placeholder:text-gray-500"
+                  placeholder="0"
+                  aria-label="Distância percorrida em quilômetros"
+                />
+                <div className="px-3 py-1.5 border-l border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/50 text-gray-600 dark:text-gray-400 font-medium text-[13px] shrink-0">
+                  km
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Comprovante */}
           <div>
             <label className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 mb-1 block">
-              {predefinedRoutes ? "2" : "3"}. Comprovante da Entrega*
+              {receiptFieldNumber}. Comprovante da Entrega*
             </label>
             <div className="flex items-center flex-wrap gap-2 mb-2">
               <input
@@ -682,6 +837,11 @@ export default function RecordTrip() {
                   <button
                     disabled={isUploading}
                     onClick={() => {
+                      ocrRequestIdRef.current += 1;
+                      setIsReadingValue(false);
+                      if (imagePreview?.startsWith("blob:")) {
+                        URL.revokeObjectURL(imagePreview);
+                      }
                       setImagePreview(null);
                       setImageHash(null);
                       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -736,9 +896,17 @@ export default function RecordTrip() {
 
           {/* Valor */}
           <div className="pt-0.5">
-            <label className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 mb-1 block">
-              {predefinedRoutes ? "3" : "4"}. Valor ganho (R$)*
-            </label>
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <label className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 block">
+                {valueFieldNumber}. Valor ganho (R$)*
+              </label>
+              {isReadingValue && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+                  <span className="h-2.5 w-2.5 animate-spin rounded-full border border-blue-200 border-b-blue-600 dark:border-blue-500/30 dark:border-b-blue-400" />
+                  Leitura automática
+                </span>
+              )}
+            </div>
             <div className="relative flex items-center border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden bg-white dark:bg-[#1A1F26] focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 transition-shadow h-9">
               <div className="px-3 py-1.5 border-r border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/50 text-gray-600 dark:text-gray-400 font-medium text-[13px] shrink-0">
                 R$

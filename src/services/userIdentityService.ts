@@ -12,6 +12,12 @@ import {
   type DocumentReference,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
+import {
+  approvedApplicationField,
+  resolveCanonicalProfileName,
+  selectNewestApprovedApplication,
+  type IdentityApplication,
+} from "../lib/canonicalIdentity";
 import { resolvePersistedUserProfilePhoto } from "../lib/profilePhotoRecovery";
 
 interface UserDocumentRecord {
@@ -85,10 +91,14 @@ function mergeUsefulDocuments(records: UserDocumentRecord[], canonicalUid: strin
   const memberships: Record<string, any> = {};
   for (const record of records) {
     const role = record.data.role;
-    if (role === "admin" || role === "driver") roles.add(role);
+    if (role === "admin" || role === "driver" || role === "senior") {
+      roles.add(role);
+    }
     if (Array.isArray(record.data.roles)) {
       record.data.roles.forEach((item: unknown) => {
-        if (item === "admin" || item === "driver") roles.add(item);
+        if (item === "admin" || item === "driver" || item === "senior") {
+          roles.add(item);
+        }
       });
     }
     if (record.data.memberships && typeof record.data.memberships === "object") {
@@ -211,6 +221,39 @@ async function migrateUserReferences(oldUserId: string, canonicalUserId: string)
   return failures.length === 0;
 }
 
+async function loadApprovedIdentityApplication(
+  userId: string,
+  normalizedEmail: string,
+): Promise<IdentityApplication | null> {
+  const applications = new Map<string, IdentityApplication>();
+  const identityQueries = [
+    query(
+      collection(db, "recruitment_applications"),
+      where("userId", "==", userId),
+    ),
+    query(
+      collection(db, "recruitment_applications"),
+      where("email", "==", normalizedEmail),
+    ),
+  ];
+
+  const snapshots = await Promise.allSettled(
+    identityQueries.map((identityQuery) => getDocs(identityQuery)),
+  );
+
+  snapshots.forEach((result) => {
+    if (result.status !== "fulfilled") return;
+    result.value.docs.forEach((applicationDocument) => {
+      applications.set(applicationDocument.id, {
+        id: applicationDocument.id,
+        ...(applicationDocument.data() as IdentityApplication),
+      });
+    });
+  });
+
+  return selectNewestApprovedApplication(Array.from(applications.values()));
+}
+
 export async function unifyUserDocument(user: FirebaseAuthUser) {
   if (!user.uid || !user.email) {
     throw new Error("Usuário autenticado sem UID ou e-mail válido.");
@@ -243,8 +286,19 @@ export async function unifyUserDocument(user: FirebaseAuthUser) {
   }
 
   const records = Array.from(recordsById.values());
+  const canonicalRecord = recordsById.get(user.uid)?.data ?? null;
+  const approvedIdentityApplication = await loadApprovedIdentityApplication(
+    user.uid,
+    normalizedEmail,
+  );
   const { merged, roles, memberships } = mergeUsefulDocuments(records, user.uid);
   const preservedProfilePhotoURL = resolvePersistedUserProfilePhoto(
+    {
+      profilePhotoURL: approvedApplicationField(
+        approvedIdentityApplication,
+        "applicationPhotoURL",
+      ),
+    },
     merged,
     ...records.map((record) => record.data),
   );
@@ -254,7 +308,11 @@ export async function unifyUserDocument(user: FirebaseAuthUser) {
     null;
 
   if (roles.size === 0) roles.add("driver");
-  const finalRole = roles.has("admin") ? "admin" : "driver";
+  const finalRole = roles.has("senior")
+    ? "senior"
+    : roles.has("admin")
+      ? "admin"
+      : "driver";
   if (finalRole === "admin") {
     roles.add("admin");
     roles.add("driver");
@@ -270,7 +328,7 @@ export async function unifyUserDocument(user: FirebaseAuthUser) {
 
   const hasActiveRecord = records.some((record) => record.data.status === "active");
   const finalStatus =
-    finalRole === "admin" || hasActiveRecord
+    finalRole === "admin" || finalRole === "senior" || hasActiveRecord
       ? "active"
       : merged.status || "pending";
 
@@ -278,13 +336,21 @@ export async function unifyUserDocument(user: FirebaseAuthUser) {
     ...merged,
     id: user.uid,
     email: normalizedEmail,
-    name:
-      user.displayName ||
-      merged.name ||
-      normalizedEmail.split("@")[0] ||
-      "Usuário",
+    name: resolveCanonicalProfileName({
+      approvedApplication: approvedIdentityApplication,
+      canonicalRecord,
+      mergedRecord: merged,
+      googleDisplayName: user.displayName,
+      email: normalizedEmail,
+    }),
+    whatsapp:
+      approvedApplicationField(approvedIdentityApplication, "whatsapp") ||
+      merged.whatsapp ||
+      "",
     authPhotoURL: preservedAuthPhotoURL,
-    profilePhotoURL: preservedProfilePhotoURL || null,
+    ...(preservedProfilePhotoURL && {
+      profilePhotoURL: preservedProfilePhotoURL,
+    }),
     role: finalRole,
     roles: Array.from(roles),
     status: finalStatus,

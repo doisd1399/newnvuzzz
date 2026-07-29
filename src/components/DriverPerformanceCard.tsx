@@ -17,22 +17,20 @@ import {
   CalendarCheck,
   DollarSign,
 } from "lucide-react";
-import {
-  getWeeklyRange,
-  getMonthlyRange,
-} from "../lib/metricsEngine";
+import { getWeeklyRange } from "../lib/metricsEngine";
 import { normalizeTrip } from "../lib/tripNormalizer";
+import { mergeTripDatasetsInInterval } from "../lib/tripDatasetReconciliation";
 import { buildCanonicalDriverRankingContext } from "../lib/rankingPageEngine";
+import { getCanonicalTripDriverId } from "../lib/tripIdentity";
+import { useTripsRealtime } from "../hooks/useTripsRealtime";
+import { useLiveCalendarReference } from "../hooks/useLiveCalendarReference";
 import {
-  differenceInDays,
-  subDays,
-  startOfWeek,
-  endOfWeek,
-  subWeeks,
-  startOfMonth,
-  endOfMonth,
-  subMonths,
-} from "date-fns";
+  buildClassificationPeriods,
+  getClassificationHistoryInterval,
+  resolvePerformanceInterval,
+  resolvePreviousPerformanceInterval,
+} from "../lib/performancePeriods";
+import { differenceInDays } from "date-fns";
 
 export interface DriverPerformanceCardProps {
   historicoTrips: any[];
@@ -41,9 +39,11 @@ export interface DriverPerformanceCardProps {
   driverId: string;
   activeCompanyId: string | null;
   allCompanyMembers: any[];
+  users?: any[];
   currentUser: any;
-  simulatorName?: string;
+  simulatorId?: string;
   allCompanies?: any[];
+  simulators?: Record<string, unknown>[];
   displayLevel?: number;
   currentLevelXp?: number;
   xpProgress?: number;
@@ -51,14 +51,16 @@ export interface DriverPerformanceCardProps {
 
 export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
   historicoTrips,
-  globalHistoricoTrips = [],
-  globalTripsLoading = false,
+  globalHistoricoTrips,
+  globalTripsLoading,
   driverId,
   activeCompanyId,
   allCompanyMembers,
+  users = [],
   currentUser,
-  simulatorName,
+  simulatorId,
   allCompanies = [],
+  simulators = [],
   displayLevel = 1,
   currentLevelXp = 0,
   xpProgress = 0,
@@ -72,53 +74,44 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     { from: getWeeklyRange().start, to: getWeeklyRange().end },
   );
 
-  const { sDate, eDate } = useMemo(() => {
-    const now = new Date();
-    if (selectedPeriod === "Semana atual") {
-      return { sDate: getWeeklyRange().start, eDate: getWeeklyRange().end };
-    }
-    if (selectedPeriod === "Mês atual") {
-      return { sDate: getMonthlyRange().start, eDate: getMonthlyRange().end };
-    }
-    if (selectedPeriod === "Hoje") {
-      const start = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        0,
-        0,
-        0,
-        0,
-      );
-      const end = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
-        23,
-        59,
-        59,
-        999,
-      );
-      return { sDate: start, eDate: end };
-    }
-    if (selectedPeriod === "Personalizado" && customDateRange?.from) {
-      const start = new Date(customDateRange.from);
-      start.setHours(0, 0, 0, 0);
-      let end = customDateRange.to
-        ? new Date(customDateRange.to)
-        : new Date(customDateRange.from);
-      end.setHours(23, 59, 59, 999);
-      return { sDate: start, eDate: end };
-    }
-    return { sDate: getWeeklyRange().start, eDate: getWeeklyRange().end };
-  }, [selectedPeriod, customDateRange]);
-
-  const periodDays = differenceInDays(eDate, sDate) + 1;
+  const referenceDate = useLiveCalendarReference();
   const [isCustomDateModalOpen, setIsCustomDateModalOpen] = useState(false);
   const periodSelectorRef = useRef<HTMLDivElement>(null);
   const [classificationView, setClassificationView] = useState<
     "Semanal" | "Mensal"
   >("Semanal");
+
+  const currentPeriodRange = useMemo(
+    () =>
+      resolvePerformanceInterval(
+        selectedPeriod,
+        customDateRange,
+        referenceDate,
+      ),
+    [customDateRange, referenceDate, selectedPeriod],
+  );
+  const previousPeriodRange = useMemo(
+    () =>
+      resolvePreviousPerformanceInterval(
+        selectedPeriod,
+        currentPeriodRange,
+        referenceDate,
+      ),
+    [currentPeriodRange, referenceDate, selectedPeriod],
+  );
+  const classificationPeriods = useMemo(
+    () => buildClassificationPeriods(classificationView, referenceDate, 5),
+    [classificationView, referenceDate],
+  );
+  const classificationHistoryRange = useMemo(
+    () => getClassificationHistoryInterval(classificationPeriods),
+    [classificationPeriods],
+  );
+
+  const sDate = currentPeriodRange.start;
+  const eDate = currentPeriodRange.end;
+  const prevSDate = previousPeriodRange.start;
+  const prevEDate = previousPeriodRange.end;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -158,19 +151,105 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     return selectedPeriod;
   };
 
-  const prevSDate = subDays(sDate, periodDays);
-  const prevEDate = subDays(eDate, periodDays);
+  const shouldLoadScopedTrips = globalHistoricoTrips === undefined;
+  const scopedTripsState = useTripsRealtime({
+    startDate: prevSDate,
+    endDate: eDate,
+    enabled: shouldLoadScopedTrips,
+    keepPreviousData: true,
+  });
+  const classificationTripsState = useTripsRealtime({
+    startDate: classificationHistoryRange.start,
+    endDate: classificationHistoryRange.end,
+    enabled: shouldLoadScopedTrips,
+    keepPreviousData: true,
+  });
 
-  const normalizedGlobalTrips = useMemo(() => {
-    return globalHistoricoTrips.map(normalizeTrip).filter((t) => t.isValid);
-  }, [globalHistoricoTrips]);
+  const effectiveCurrentTrips = globalHistoricoTrips ?? scopedTripsState.trips;
+  const effectiveClassificationTrips =
+    globalHistoricoTrips ?? classificationTripsState.trips;
+  const effectiveGlobalTripsLoading =
+    globalTripsLoading ?? scopedTripsState.loading;
+  const classificationTripsLoading =
+    globalTripsLoading ??
+    (classificationTripsState.loading || classificationTripsState.refreshing);
 
-  // The profile card must use the exact same simulator-wide trip stream as the
-  // detailed ranking page. Company-only trips are intentionally not used as a
-  // fallback because they can produce a different next competitor or gap.
+  // Reconcile the complete active-company history with the bounded global
+  // ranking source. The bounded query can omit legacy/transitional documents
+  // that are already visible in Histórico de Viagens, causing Meu Perfil to
+  // show fewer trips and earnings for the exact same period.
+  const reconciledCurrentTrips = useMemo(
+    () =>
+      mergeTripDatasetsInInterval(
+        prevSDate,
+        eDate,
+        historicoTrips,
+        effectiveCurrentTrips,
+      ),
+    [eDate, effectiveCurrentTrips, historicoTrips, prevSDate],
+  );
+  const reconciledClassificationTrips = useMemo(
+    () =>
+      mergeTripDatasetsInInterval(
+        classificationHistoryRange.start,
+        classificationHistoryRange.end,
+        historicoTrips,
+        effectiveClassificationTrips,
+      ),
+    [
+      classificationHistoryRange.end,
+      classificationHistoryRange.start,
+      effectiveClassificationTrips,
+      historicoTrips,
+    ],
+  );
+
+  const normalizedCurrentTrips = useMemo(() => {
+    return reconciledCurrentTrips.map(normalizeTrip).filter((t) => t.isValid);
+  }, [reconciledCurrentTrips]);
+  const normalizedClassificationTrips = useMemo(() => {
+    return reconciledClassificationTrips
+      .map(normalizeTrip)
+      .filter((trip) => trip.isValid);
+  }, [reconciledClassificationTrips]);
+
+  // Current KPIs and previous-period evolution stay on a small live range. The
+  // five-row classification history has its own bounded live range; otherwise
+  // rows older than the immediately previous period are incorrectly rendered
+  // as zero after the Firestore scope optimization.
+  const canonicalUserNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const user of users) {
+      const id = String(user?.id || "").trim();
+      const name = String(user?.name || "").trim();
+      if (id && name) names.set(id, name);
+    }
+    const ownId = String(currentUser?.id || driverId || "").trim();
+    const ownName = String(currentUser?.name || "").trim();
+    if (ownId && ownName) names.set(ownId, ownName);
+    return names;
+  }, [currentUser?.id, currentUser?.name, driverId, users]);
+
   const canonicalRankingTrips = useMemo(
-    () => (globalTripsLoading ? [] : normalizedGlobalTrips),
-    [globalTripsLoading, normalizedGlobalTrips],
+    () =>
+      normalizedCurrentTrips.map((trip) => {
+        const tripDriverId = getCanonicalTripDriverId(trip);
+        const canonicalName = tripDriverId
+          ? canonicalUserNames.get(tripDriverId)
+          : undefined;
+        return canonicalName
+          ? {
+              ...trip,
+              motoristaNome: canonicalName,
+              driverName: canonicalName,
+            }
+          : trip;
+      }),
+    [canonicalUserNames, normalizedCurrentTrips],
+  );
+  const classificationRankingTrips = useMemo(
+    () => normalizedClassificationTrips,
+    [normalizedClassificationTrips],
   );
 
   const internalCurrentContext = useMemo(
@@ -182,10 +261,11 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
         endDate: eDate,
         driverId,
         companyId: activeCompanyId,
-        simulator: simulatorName,
+        simulatorId,
         companies: allCompanies,
+        simulators,
       }),
-    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, eDate, sDate, simulatorName],
+    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, eDate, sDate, simulatorId, simulators],
   );
 
   const globalCurrentContext = useMemo(
@@ -197,10 +277,11 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
         endDate: eDate,
         driverId,
         companyId: activeCompanyId,
-        simulator: simulatorName,
+        simulatorId,
         companies: allCompanies,
+        simulators,
       }),
-    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, eDate, sDate, simulatorName],
+    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, eDate, sDate, simulatorId, simulators],
   );
 
   const internalPreviousContext = useMemo(
@@ -212,10 +293,11 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
         endDate: prevEDate,
         driverId,
         companyId: activeCompanyId,
-        simulator: simulatorName,
+        simulatorId,
         companies: allCompanies,
+        simulators,
       }),
-    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, prevEDate, prevSDate, simulatorName],
+    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, prevEDate, prevSDate, simulatorId, simulators],
   );
 
   const globalPreviousContext = useMemo(
@@ -227,10 +309,11 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
         endDate: prevEDate,
         driverId,
         companyId: activeCompanyId,
-        simulator: simulatorName,
+        simulatorId,
         companies: allCompanies,
+        simulators,
       }),
-    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, prevEDate, prevSDate, simulatorName],
+    [activeCompanyId, allCompanies, canonicalRankingTrips, driverId, prevEDate, prevSDate, simulatorId, simulators],
   );
 
   const currentRankingContext = rankingScope === "internal"
@@ -239,18 +322,17 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
   const previousRankingContext = rankingScope === "internal"
     ? internalPreviousContext
     : globalPreviousContext;
-  const selectedScopeTrips = canonicalRankingTrips;
 
   const currentDriverStats = currentRankingContext.current;
   const hasCurrentDriverActivity = currentDriverStats.trips > 0;
   const currentPositionDisplay =
-    globalTripsLoading
+    effectiveGlobalTripsLoading
       ? "…"
       : currentRankingContext.position
         ? `#${currentRankingContext.position}`
         : "—";
   const currentTotalDrivers = currentRankingContext.totalParticipants;
-  const isSelectedScopeLoading = globalTripsLoading;
+  const isSelectedScopeLoading = effectiveGlobalTripsLoading;
   const currentDiffToNext = isSelectedScopeLoading
     ? 0
     : currentRankingContext.differenceToNext;
@@ -390,52 +472,40 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
   };
 
   const classificationHistory = useMemo(() => {
-    const history = [];
-    const now = new Date();
-    const isWeekly = classificationView === "Semanal";
-    const numPeriods = 5;
-
-    for (let i = 0; i < numPeriods; i++) {
-      let periodStart: Date, periodEnd: Date, periodLabel: string;
-
-      if (isWeekly) {
-        const refDate = subWeeks(now, i);
-        periodStart = startOfWeek(refDate, { weekStartsOn: 0 });
-        periodEnd = endOfWeek(refDate, { weekStartsOn: 0 });
-        periodLabel = `${periodStart.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} a ${periodEnd.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}`;
-      } else {
-        const refDate = subMonths(now, i);
-        periodStart = startOfMonth(refDate);
-        periodEnd = endOfMonth(refDate);
-        const formattedMonth = periodStart
-          .toLocaleDateString("pt-BR", { month: "short" })
-          .replace(".", "");
-        periodLabel = `${formattedMonth.charAt(0).toUpperCase() + formattedMonth.slice(1)} ${periodStart.getFullYear()}`;
-      }
-
+    return classificationPeriods.map((period) => {
       const context = buildCanonicalDriverRankingContext({
-        trips: selectedScopeTrips,
+        trips: classificationRankingTrips,
         scope: rankingScope,
-        startDate: periodStart,
-        endDate: periodEnd,
+        startDate: period.start,
+        endDate: period.end,
         driverId,
         companyId: activeCompanyId,
-        simulator: simulatorName,
+        simulatorId,
         companies: allCompanies,
+        simulators,
       });
 
-      history.push({
-        id: i,
-        label: periodLabel,
+      return {
+        id: period.id,
+        label: period.label,
         trips: context.current.trips,
         earnings: context.current.earnings,
         position: context.position,
         total: context.totalParticipants,
-      });
-    }
-
-    return history;
-  }, [activeCompanyId, allCompanies, classificationView, driverId, rankingScope, selectedScopeTrips, simulatorName]);
+        loading: classificationTripsLoading,
+      };
+    });
+  }, [
+    activeCompanyId,
+    allCompanies,
+    classificationPeriods,
+    classificationRankingTrips,
+    classificationTripsLoading,
+    driverId,
+    rankingScope,
+    simulatorId,
+    simulators,
+  ]);
 
   const scales = [
     "Muito baixo",
@@ -468,7 +538,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
       <div className="mb-3 px-3 py-2 rounded-xl bg-slate-100 dark:bg-white/5 text-xs font-semibold">
         {rankingScope === "internal"
           ? "🏢 Ranking Interno — comparação com sua equipe no período"
-          : globalTripsLoading
+          : effectiveGlobalTripsLoading
             ? "🌎 Ranking Global — carregando dados do simulador..."
             : "🌎 Ranking Global — comparação com o simulador no período"}
       </div>
@@ -1057,13 +1127,15 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                     {item.label}
                   </td>
                   <td className="py-2.5 sm:py-3 text-[11px] sm:text-[13px] font-bold text-slate-900 dark:text-white text-center whitespace-nowrap">
-                    {item.trips}
+                    {item.loading ? "…" : item.trips}
                   </td>
                   <td className="py-2.5 sm:py-3 text-[11px] sm:text-[13px] font-bold text-slate-900 dark:text-white text-center whitespace-nowrap">
-                    {formatCurrencyExact(item.earnings)}
+                    {item.loading ? "…" : formatCurrencyExact(item.earnings)}
                   </td>
                   <td className="py-2.5 sm:py-3 text-[11px] sm:text-[13px] font-bold text-slate-900 dark:text-white text-right whitespace-nowrap">
-                    {item.position === null ? (
+                    {item.loading ? (
+                      <span className="text-slate-400 dark:text-slate-500">…</span>
+                    ) : item.position === null ? (
                       <span className="text-slate-400 dark:text-slate-500">
                         —
                       </span>
@@ -1078,7 +1150,9 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                         #{item.position}
                       </span>
                     )}{" "}
-                    <span className="text-slate-400">/ {item.total}</span>
+                    {!item.loading && (
+                      <span className="text-slate-400">/ {item.total}</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1088,7 +1162,9 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
 
         <div className="w-full text-center mt-3 sm:mt-4">
           <span className="text-[10px] font-medium text-slate-400 dark:text-slate-500">
-            Os dados são atualizados em tempo real.
+            {classificationTripsLoading
+              ? "Sincronizando histórico de classificação…"
+              : "Os dados são atualizados em tempo real."}
           </span>
         </div>
       </div>

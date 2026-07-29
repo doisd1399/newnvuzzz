@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useAppStore } from "../../context/AppContext";
+import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import {
   Plus,
@@ -30,19 +30,18 @@ type StatusFilter = "all" | "ongoing" | "active" | "delayed" | "completed";
 export default function Operations() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { companies, activeCompanyId } = useSessionStore();
   const {
     jobs,
     contracts,
     users,
     vehicles,
     trailers,
-    companies,
     cancelJob,
     deleteJob,
-    jobDemands,
-    activeCompanyId,
     rejectJobDemand,
-  } = useAppStore();
+  } = useOperationalStore();
+  const { jobDemands } = useActivityStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ongoing");

@@ -1,4 +1,4 @@
-import { resolveSimulatorId } from "./resolveSimulator";
+import { normalizeSimulatorId, resolveSimulatorId } from "./resolveSimulator";
 import { collection, doc, writeBatch, getDocs, query, where, setDoc, deleteDoc, getDoc } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { CompanyMember, CompanyProfile } from "../context/AppContext";
@@ -24,7 +24,12 @@ export async function syncSingleSimulatorMember(
       return;
     }
 
-    let simulatorId = simulatorIdOverride;
+    let simulatorId = simulatorIdOverride?.trim();
+    // Older callers passed the display name in this position. Normalize that
+    // legacy value instead of persisting a name into simulator_members.
+    if (simulatorId && /\s/.test(simulatorId)) {
+      simulatorId = normalizeSimulatorId(simulatorId);
+    }
     if (!simulatorId) {
       const companyDoc = await getDoc(doc(db, "frotas", companyId));
       if (companyDoc.exists()) {

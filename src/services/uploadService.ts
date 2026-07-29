@@ -9,6 +9,9 @@ export interface UploadOptions {
   userId: string;
   folder?: string;
   onProgress?: (progress: number) => void;
+  compressionMaxSizeMB?: number;
+  maxWidthOrHeight?: number;
+  maxOutputBytes?: number;
 }
 
 export class UploadError extends Error {
@@ -34,6 +37,9 @@ export const uploadService = {
     userId,
     folder = "uploads",
     onProgress,
+    compressionMaxSizeMB = 1,
+    maxWidthOrHeight = 1920,
+    maxOutputBytes,
   }: UploadOptions): Promise<string> {
     // 1. Validate file type
     const validTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -43,23 +49,22 @@ export const uploadService = {
       );
     }
 
-    // 2. Validate file size (re-validating after just in case, but usually smaller to start with)
-    // Removed 5MB check to allow larger images which will be compressed, 
-    // or keep it? The prompt wants it to be transparent for user. Keep original validation but before compress.
-    const MAX_SIZE_MB = 10; // Increased to 10MB to allow larger source files before compression
+    // 2. Validate the source before attempting local compression.
+    const MAX_SIZE_MB = 10;
     const maxSize = MAX_SIZE_MB * 1024 * 1024;
     if (file.size > maxSize) {
       throw new UploadError(
-        `Arquivo orginal muito grande. O limite máximo é de ${MAX_SIZE_MB}MB.`,
+        `Arquivo original muito grande. O limite máximo é de ${MAX_SIZE_MB}MB.`,
       );
     }
 
-    // Compress Image
+    // Compress the image locally. Callers can provide a stricter limit when
+    // the Firebase Storage rule for that media type is smaller.
     let finalFile = file;
     try {
       const options = {
-        maxSizeMB: 1,
-        maxWidthOrHeight: 1920,
+        maxSizeMB: compressionMaxSizeMB,
+        maxWidthOrHeight,
         useWebWorker: true,
         fileType: "image/webp" as string,
       };
@@ -73,6 +78,12 @@ export const uploadService = {
       console.warn("Image compression failed, using original file", error);
     }
 
+    if (maxOutputBytes && finalFile.size >= maxOutputBytes) {
+      throw new UploadError(
+        "Não foi possível reduzir a imagem para o tamanho permitido. Escolha outra imagem e tente novamente.",
+      );
+    }
+
     // 3. Generate structured file path
     // Format: empresas / companyId / folder / userId / timestamp_filename
     const timestamp = Date.now();
@@ -83,7 +94,13 @@ export const uploadService = {
     const storageRef = ref(storage, path);
 
     // 5. Upload file
-    const uploadTask = uploadBytesResumable(storageRef, finalFile);
+    const uploadTask = uploadBytesResumable(storageRef, finalFile, {
+      contentType: finalFile.type || "image/webp",
+      // Every upload uses a timestamped path, so the URL is immutable. A long
+      // cache lifetime prevents the same logo/avatar from being downloaded on
+      // every route change or app restart.
+      cacheControl: "public,max-age=31536000,immutable",
+    });
 
     // 6. Return a promise that resolves with the download URL
     return new Promise((resolve, reject) => {

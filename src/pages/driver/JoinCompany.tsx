@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../context/AppContext";
+import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
+import { StableImage } from "../../components/common/StableImage";
 import {
   UserCog,
   Building2,
@@ -13,15 +14,17 @@ import {
 export default function JoinCompany() {
   const navigate = useNavigate();
   const {
-    simulators,
     currentUser,
     companies: _companies, // Not used here directly anymore since we need all companies
     allCompanies,
-    driverRequests,
+  } = useSessionStore();
+  const {
+    simulators,
     allCompanyMembers,
     requestJoinCompany,
     cancelRequestJoinCompany,
-  } = useAppStore();
+  } = useOperationalStore();
+  const { driverRequests } = useActivityStore();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedSimulatorId, setSelectedSimulatorId] = useState("");
@@ -76,9 +79,12 @@ export default function JoinCompany() {
   // Not linked to any company yet
   const handleRequest = async (companyId: string) => {
     setIsRequestingId(companyId);
-    await new Promise((resolve) => setTimeout(resolve, 800)); // slight UI delay for feedback
-    await requestJoinCompany(companyId);
-    setIsRequestingId(null);
+    try {
+      // Never hold the action behind an artificial delay.
+      await requestJoinCompany(companyId);
+    } finally {
+      setIsRequestingId(null);
+    }
   };
 
   // Calculate member counts
@@ -200,14 +206,20 @@ export default function JoinCompany() {
                 {/* AVATAR */}
                 <div className="flex flex-col items-center gap-1.5 shrink-0">
                   {company.logoUrl ? (
-                    <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-gray-100 dark:border-[#2A2F3A] overflow-hidden shrink-0">
-                      <img
-                        src={company.logoUrl}
-                        alt="Logo"
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                      />
-                    </div>
+                    <StableImage
+                      src={company.logoUrl}
+                      alt="Logo"
+                      loading="lazy"
+                      decoding="async"
+                      wrapperClassName="w-10 h-10 sm:w-12 sm:h-12 rounded-full border border-gray-100 dark:border-[#2A2F3A] shrink-0"
+                      className="object-cover"
+                      referrerPolicy="no-referrer"
+                      fallback={
+                        <span className="h-full w-full bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center font-bold text-blue-700 dark:text-blue-400 text-sm sm:text-base">
+                          {company.companyName.substring(0, 2).toUpperCase()}
+                        </span>
+                      }
+                    />
                   ) : (
                     <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/20 border border-blue-100 dark:border-blue-500/20/50 flex items-center justify-center font-bold text-blue-700 dark:text-blue-400 text-sm sm:text-base group-hover:bg-blue-600 group-hover:text-white transition-colors">
                       {company.companyName.substring(0, 2).toUpperCase()}

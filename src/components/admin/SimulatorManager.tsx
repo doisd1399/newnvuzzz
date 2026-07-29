@@ -1,11 +1,11 @@
 import React, {useState} from "react";
-import {useAppStore} from "../../context/AppContext";
+import {useOperationalStore} from "../../context/AppContext";
 import {db} from "../../lib/firebase";
 import {collection, doc, setDoc, updateDoc} from "firebase/firestore";
 import {Card, CardContent} from "../ui/Card";
 
 export default function SimulatorManager(){
- const {simulators=[]}=useAppStore();
+ const {simulators=[]}=useOperationalStore();
  const [name,setName]=useState("");
  const [editingId,setEditingId]=useState<string|null>(null);
  const create=async()=>{

@@ -1,7 +1,7 @@
 import { resolveDriverPhoto } from '../../../lib/resolveDriverPhoto';
 import React, { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useAppStore } from "../../../context/AppContext";
+import { useActivityStore, useOperationalStore, useRankingFilterStore, useSessionStore } from "../../../context/AppContext";
 import { StableImage } from "../../../components/common/StableImage";
 import { preloadImages } from "../../../lib/imageCache";
 
@@ -82,34 +82,37 @@ import {
 import { DesempenhoOperacionalCard } from "../../../components/DesempenhoOperacionalCard";
 import { useTripHistory } from "../../../hooks/useTripHistory";
 
-export default function OperationsTab() {
+function OperationsTab() {
+  const { companies, currentUser, activeCompanyId } = useSessionStore();
   const {
     users,
     contracts,
     jobs,
     vehicles,
     trailers,
-    companies,
-    currentUser,
     cancelJob,
-    activeCompanyId,
     allCompanyMembers,
-    jobDemands,
     rejectJobDemand,
+  } = useOperationalStore();
+  const { jobDemands } = useActivityStore();
+  const {
     globalPeriodPreset: desempenhoPeriod,
     setGlobalPeriodPreset: setDesempenhoPeriod,
     globalStartDateStr,
     globalEndDateStr,
-  } = useAppStore();
+  } = useRankingFilterStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const navigate = useNavigate();
 
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    }).format(val);
-  };
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("pt-BR", {
+        style: "currency",
+        currency: "BRL",
+      }),
+    [],
+  );
+  const formatCurrency = (value: number) => currencyFormatter.format(value);
 
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [activeMobileSection, setActiveMobileSection] = useState<string | null>(
@@ -158,6 +161,26 @@ export default function OperationsTab() {
   const activeDrivers = activeDriversCount;
 
   const activeContractsCount = contracts.length;
+  const contractsById = useMemo(
+    () => new Map(contracts.map((contract) => [contract.id, contract])),
+    [contracts],
+  );
+  const usersById = useMemo(
+    () => new Map(users.map((user) => [user.id, user])),
+    [users],
+  );
+  const vehiclesById = useMemo(
+    () => new Map(vehicles.map((vehicle) => [vehicle.id, vehicle])),
+    [vehicles],
+  );
+  const trailersById = useMemo(
+    () => new Map(trailers.map((trailer) => [trailer.id, trailer])),
+    [trailers],
+  );
+  const companiesById = useMemo(
+    () => new Map(companies.map((company) => [company.id, company])),
+    [companies],
+  );
 
   // Computed data for Active Jobs
   const getJobStatusDetails = (job: any, contract: any) => {
@@ -204,19 +227,24 @@ export default function OperationsTab() {
   };
 
   const activeJobsList = useMemo(() => {
+    const now = new Date();
     return jobs
       .map((job) => {
-        const contract = contracts.find((c) => c.id === job.contractId);
-        const driver = users.find((u) => u.id === job.driverId);
-        const vehicle = vehicles.find((v) => v.id === job.vehicleId);
+        const contract = contractsById.get(job.contractId);
+        const driver = usersById.get(job.driverId);
+        const vehicle = vehiclesById.get(job.vehicleId);
         const effectiveTrailerId = job.trailerId || contract?.trailerId;
-        const trailer = trailers.find((t) => t.id === effectiveTrailerId);
-        const company = companies.find((c) => c.id === job.companyId);
+        const trailer = effectiveTrailerId
+          ? trailersById.get(effectiveTrailerId)
+          : undefined;
+        const company = job.companyId
+          ? companiesById.get(job.companyId)
+          : undefined;
 
         const statusDetails = getJobStatusDetails(job, contract);
         const daysLeft = differenceInDays(
           new Date(job.deadlineDate),
-          new Date(),
+          now,
         );
 
         return {
@@ -236,7 +264,14 @@ export default function OperationsTab() {
           j.driver &&
           !["completed", "cancelled"].includes(j.status),
       );
-  }, [jobs, contracts, users, vehicles, trailers, companies]);
+  }, [
+    companiesById,
+    contractsById,
+    jobs,
+    trailersById,
+    usersById,
+    vehiclesById,
+  ]);
 
   const filteredActiveJobsList = useMemo(() => {
     return activeJobsList.filter((job) => {
@@ -290,8 +325,7 @@ export default function OperationsTab() {
         const realProgress = validTripCountByJobId.get(job.id) || 0;
         comp += realProgress || 0;
 
-        const contract = contracts.find((c) => c.id === job.contractId);
-        req += contract?.totalDeliveries || 0;
+        req += job.contract?.totalDeliveries || 0;
       }
     }
 
@@ -308,7 +342,7 @@ export default function OperationsTab() {
       summaryActiveContractsCount: activeJobsCount,
       summaryEfficiency: eff,
     };
-  }, [activeJobsList, contracts, activeCompanyId, validTripCountByJobId]);
+  }, [activeJobsList, activeCompanyId, validTripCountByJobId]);
 
   const resumoMetrics = useMemo(() => {
     const { start, end } =
@@ -324,41 +358,37 @@ export default function OperationsTab() {
   const resumoTrips = resumoMetrics.filteredTrips;
   const totalGanhos = resumoMetrics.totalRevenue;
 
-  const { workingDrivers, freeDrivers } = useMemo(() => {
-    const workingIds = new Set<string>();
-    const workingJobsByDriverId = new Map<string, any>();
-    
-    const operatingStatuses = [
-      "active",
-      "assigned",
-      "in_progress",
-      "em_andamento",
-      "em_operacao",
-      "started",
-    ];
+  const { driversWithOperation, driversWithoutOperation } = useMemo(() => {
+    const jobsByDriverId = new Map<string, any>();
 
     for (const job of activeJobsList) {
-      if (job.companyId === activeCompanyId && job.driverId && operatingStatuses.includes(job.status)) {
-        workingIds.add(job.driverId);
-        workingJobsByDriverId.set(job.driverId, job);
+      if (job.companyId !== activeCompanyId || !job.driverId) continue;
+
+      const currentJob = jobsByDriverId.get(job.driverId);
+      const shouldPreferStartedJob =
+        currentJob?.status === "pending" && job.status !== "pending";
+
+      if (!currentJob || shouldPreferStartedJob) {
+        jobsByDriverId.set(job.driverId, job);
       }
     }
 
-    const working: Array<{ user: any; job: any }> = [];
-    const free: any[] = [];
+    const withOperation: Array<{ user: any; job: any }> = [];
+    const withoutOperation: any[] = [];
 
     for (const driver of drivers) {
-      if (workingIds.has(driver.id)) {
-        working.push({
-          user: driver,
-          job: workingJobsByDriverId.get(driver.id),
-        });
+      const job = jobsByDriverId.get(driver.id);
+      if (job) {
+        withOperation.push({ user: driver, job });
       } else {
-        free.push(driver);
+        withoutOperation.push(driver);
       }
     }
 
-    return { workingDrivers: working, freeDrivers: free };
+    return {
+      driversWithOperation: withOperation,
+      driversWithoutOperation: withoutOperation,
+    };
   }, [drivers, activeJobsList, activeCompanyId]);
 
   useEffect(() => {
@@ -366,14 +396,16 @@ export default function OperationsTab() {
     // user is still looking at the operations dashboard.
     void preloadImages(
       [
-        ...freeDrivers.map((user) => resolveDriverPhoto(user) || null),
-        ...workingDrivers.map(
+        ...driversWithoutOperation.map(
+          (user) => resolveDriverPhoto(user) || null,
+        ),
+        ...driversWithOperation.map(
           ({ user }) => resolveDriverPhoto(user) || null,
         ),
       ],
       6,
     );
-  }, [freeDrivers, workingDrivers]);
+  }, [driversWithoutOperation, driversWithOperation]);
 
   const META_SEMANAL_POR_MOTORISTA = 15;
   const META_MENSAL_POR_MOTORISTA = 40;
@@ -649,11 +681,19 @@ export default function OperationsTab() {
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-3 min-w-0">
                         {resolveDriverPhoto(driver) || null ? (
-                          <img
+                          <StableImage
                             src={resolveDriverPhoto(driver) || null}
                             alt={driver?.name}
-                            className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                            loading="lazy"
+                            decoding="async"
+                            wrapperClassName="w-10 h-10 rounded-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#1A1F26]"
+                            className="object-cover"
                             referrerPolicy="no-referrer"
+                            fallback={
+                              <span className="h-full w-full text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm">
+                                {driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                              </span>
+                            }
                           />
                         ) : (
                           <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
@@ -779,13 +819,13 @@ export default function OperationsTab() {
                 </div>
                 <div className="flex items-baseline gap-1 mt-auto">
                   <span className="text-[18px] font-bold text-gray-900 dark:text-[#fafafa] leading-none">
-                    {summaryActiveDriversCount}{" "}
+                    {driversWithOperation.length}{" "}
                     <span className="text-[12px] font-medium text-gray-400">
                       / {drivers.length}
                     </span>
                   </span>
                   <span className="text-[10px] text-gray-400 leading-none">
-                    Ativos
+                    Com operação
                   </span>
                 </div>
               </div>
@@ -1009,11 +1049,19 @@ export default function OperationsTab() {
                       <div className="flex justify-between items-start w-full">
                           <div className="flex items-center gap-3 min-w-0 pr-4">
                             {resolveDriverPhoto(job.driver) || null ? (
-                              <img
+                              <StableImage
                                 src={resolveDriverPhoto(job.driver) || null}
                                 alt={job.driver?.name}
-                                className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                                loading="lazy"
+                                decoding="async"
+                                wrapperClassName="w-10 h-10 rounded-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#1A1F26]"
+                                className="object-cover"
                                 referrerPolicy="no-referrer"
+                                fallback={
+                                  <span className="h-full w-full text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm">
+                                    {job.driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                                  </span>
+                                }
                               />
                             ) : (
                               <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
@@ -1474,13 +1522,13 @@ export default function OperationsTab() {
                 </div>
                 <div className="flex items-baseline gap-1.5 mt-auto">
                   <span className="text-[24px] font-bold text-gray-900 dark:text-[#fafafa] leading-none">
-                    {summaryActiveDriversCount}{" "}
+                    {driversWithOperation.length}{" "}
                     <span className="text-[14px] font-medium text-gray-400">
                       / {drivers.length}
                     </span>
                   </span>
                   <span className="text-[12px] text-gray-400 leading-none">
-                    Ativos
+                    Com operação
                   </span>
                 </div>
               </div>
@@ -1634,11 +1682,19 @@ export default function OperationsTab() {
                         <div className="flex justify-between items-start w-full">
                           <div className="flex items-center gap-3 min-w-0 pr-4">
                             {resolveDriverPhoto(job.driver) || null ? (
-                              <img
+                              <StableImage
                                 src={resolveDriverPhoto(job.driver) || null}
                                 alt={job.driver?.name}
-                                className="w-10 h-10 rounded-full object-cover shrink-0 border border-gray-100 dark:border-[#2A2F3A]"
+                                loading="lazy"
+                                decoding="async"
+                                wrapperClassName="w-10 h-10 rounded-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#1A1F26]"
+                                className="object-cover"
                                 referrerPolicy="no-referrer"
+                                fallback={
+                                  <span className="h-full w-full text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm">
+                                    {job.driver?.name?.substring(0, 2).toUpperCase() || "M"}
+                                  </span>
+                                }
                               />
                             ) : (
                               <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-[#1A1F26] text-gray-600 dark:text-[#d4d4d8] flex items-center justify-center font-bold text-sm shrink-0 border border-gray-200 dark:border-[#2A2F3A]">
@@ -1938,10 +1994,10 @@ export default function OperationsTab() {
                       Total: {drivers.length}
                     </span>
                     <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 px-2 py-0.5 rounded text-center leading-tight">
-                      Em Operação: {workingDrivers.length}
+                      Com operação: {driversWithOperation.length}/{drivers.length}
                     </span>
-                    <span className="text-[11px] font-bold text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-500/10 border border-green-100 dark:border-green-500/20 px-2 py-0.5 rounded text-center leading-tight">
-                      Livres: {freeDrivers.length}
+                    <span className="text-[11px] font-bold text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-[#2A2F3A] border border-gray-200 dark:border-gray-600 px-2 py-0.5 rounded text-center leading-tight">
+                      Sem operação: {driversWithoutOperation.length}
                     </span>
                   </div>
                 </div>
@@ -1954,91 +2010,146 @@ export default function OperationsTab() {
               </div>
 
               <div className="overflow-y-auto w-full flex-1 p-4 flex flex-col gap-6 bg-gray-50/50 dark:bg-[#15191E]">
-                {freeDrivers.length > 0 && (
+                {driversWithoutOperation.length > 0 && (
                   <div>
                     <h4 className="flex items-center gap-2 text-[12px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider mb-2.5 px-1">
-                      <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                      Motoristas Livres
+                      <div className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                      Motoristas sem operação
                     </h4>
                     <div className="space-y-2">
-                      {freeDrivers.map((user) => (
-                        <div
-                          key={user.id}
-                          className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none hover:border-gray-200 dark:hover:border-gray-600 transition-colors"
-                        >
-                          <StableImage
-                            src={resolveDriverPhoto(user) || null}
-                            alt={user.name}
-                            loading="eager"
-                            decoding="async"
-                            wrapperClassName="w-10 h-10 rounded-full shrink-0 bg-green-50 dark:bg-green-900/20"
-                            className="object-cover"
-                            fallback={
-                              <span className="h-full w-full bg-green-50 dark:bg-green-900/20 flex items-center justify-center">
-                              <User
-                                size={18}
-                                className="text-green-500 dark:text-green-400"
-                              />
-                              </span>
-                            }
-                          />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center">
-                            <p className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa] truncate leading-tight">
-                              {user.name}
-                            </p>
-                            <div className="flex items-center gap-1.5 mt-1">
-                              <span className="text-[10px] font-bold text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-500/10 border border-green-100 dark:border-green-500/20 px-1.5 py-0.5 rounded truncate">
-                                DISPONÍVEL
-                              </span>
+                      {driversWithoutOperation.map((user) => {
+                        const isAvailable = Boolean(user.isOnline);
+
+                        return (
+                          <div
+                            key={user.id}
+                            className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none hover:border-gray-200 dark:hover:border-gray-600 transition-colors"
+                          >
+                            <StableImage
+                              src={resolveDriverPhoto(user) || null}
+                              alt={user.name}
+                              loading="eager"
+                              decoding="async"
+                              wrapperClassName={cn(
+                                "w-10 h-10 rounded-full shrink-0",
+                                isAvailable
+                                  ? "bg-green-50 dark:bg-green-900/20"
+                                  : "bg-gray-100 dark:bg-gray-800",
+                              )}
+                              className="object-cover"
+                              fallback={
+                                <span
+                                  className={cn(
+                                    "h-full w-full flex items-center justify-center",
+                                    isAvailable
+                                      ? "bg-green-50 dark:bg-green-900/20"
+                                      : "bg-gray-100 dark:bg-gray-800",
+                                  )}
+                                >
+                                  <User
+                                    size={18}
+                                    className={
+                                      isAvailable
+                                        ? "text-green-500 dark:text-green-400"
+                                        : "text-gray-400 dark:text-gray-500"
+                                    }
+                                  />
+                                </span>
+                              }
+                            />
+                            <div className="flex-1 min-w-0 flex flex-col justify-center">
+                              <p className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa] truncate leading-tight">
+                                {user.name}
+                              </p>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span
+                                  className={cn(
+                                    "text-[10px] font-bold border px-1.5 py-0.5 rounded truncate",
+                                    isAvailable
+                                      ? "text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-500/10 border-green-100 dark:border-green-500/20"
+                                      : "text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-500/10 border-gray-200 dark:border-gray-500/20",
+                                  )}
+                                >
+                                  {isAvailable ? "DISPONÍVEL" : "INDISPONÍVEL"}
+                                </span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
 
-                {workingDrivers.length > 0 && (
+                {driversWithOperation.length > 0 && (
                   <div>
                     <h4 className="flex items-center gap-2 text-[12px] font-bold text-gray-500 dark:text-[#a1a1aa] uppercase tracking-wider mb-2.5 px-1">
                       <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                      Motoristas em Operação
+                      Motoristas com operação
                     </h4>
                     <div className="space-y-2">
-                      {workingDrivers.map(({ user, job }) => (
-                        <div
-                          key={user.id}
-                          className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none hover:border-gray-200 dark:hover:border-gray-600 transition-colors"
-                        >
-                          <StableImage
-                            src={resolveDriverPhoto(user) || null}
-                            alt={user.name}
-                            loading="eager"
-                            decoding="async"
-                            wrapperClassName="w-10 h-10 rounded-full shrink-0 bg-blue-50 dark:bg-blue-900/20"
-                            className="object-cover"
-                            fallback={
-                              <span className="h-full w-full bg-blue-50 dark:bg-blue-900/20 flex items-center justify-center">
-                              <User
-                                size={18}
-                                className="text-blue-500 dark:text-blue-400"
-                              />
-                              </span>
-                            }
-                          />
-                          <div className="flex-1 min-w-0 flex flex-col justify-center">
-                            <p className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa] truncate leading-tight">
-                              {user.name}
-                            </p>
-                            <div className="flex items-center gap-1.5 mt-1">
-                              <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 px-1.5 py-0.5 rounded truncate max-w-full">
-                                CONTRATO:{" "}
-                                {job?.contract?.contractNumber || "ATIVO"}
-                              </span>
+                      {driversWithOperation.map(({ user, job }) => {
+                        const isWaiting = job.status === "pending";
+
+                        return (
+                          <div
+                            key={user.id}
+                            className="flex items-center gap-3 p-2.5 rounded-xl bg-white dark:bg-[#1A1F26] border border-gray-100 dark:border-[#2A2F3A] shadow-sm dark:shadow-none hover:border-gray-200 dark:hover:border-gray-600 transition-colors"
+                          >
+                            <StableImage
+                              src={resolveDriverPhoto(user) || null}
+                              alt={user.name}
+                              loading="eager"
+                              decoding="async"
+                              wrapperClassName={cn(
+                                "w-10 h-10 rounded-full shrink-0",
+                                isWaiting
+                                  ? "bg-amber-50 dark:bg-amber-900/20"
+                                  : "bg-blue-50 dark:bg-blue-900/20",
+                              )}
+                              className="object-cover"
+                              fallback={
+                                <span
+                                  className={cn(
+                                    "h-full w-full flex items-center justify-center",
+                                    isWaiting
+                                      ? "bg-amber-50 dark:bg-amber-900/20"
+                                      : "bg-blue-50 dark:bg-blue-900/20",
+                                  )}
+                                >
+                                  <User
+                                    size={18}
+                                    className={
+                                      isWaiting
+                                        ? "text-amber-500 dark:text-amber-400"
+                                        : "text-blue-500 dark:text-blue-400"
+                                    }
+                                  />
+                                </span>
+                              }
+                            />
+                            <div className="flex-1 min-w-0 flex flex-col justify-center">
+                              <p className="text-[14px] font-bold text-gray-900 dark:text-[#fafafa] truncate leading-tight">
+                                {user.name}
+                              </p>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span
+                                  className={cn(
+                                    "text-[10px] font-bold border px-1.5 py-0.5 rounded truncate max-w-full",
+                                    isWaiting
+                                      ? "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-100 dark:border-amber-500/20"
+                                      : "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border-blue-100 dark:border-blue-500/20",
+                                  )}
+                                >
+                                  {isWaiting
+                                    ? "AGUARDANDO"
+                                    : "OPERAÇÃO ATIVA"}
+                                </span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -2059,3 +2170,5 @@ export default function OperationsTab() {
     </div>
   );
 }
+
+export default React.memo(OperationsTab);

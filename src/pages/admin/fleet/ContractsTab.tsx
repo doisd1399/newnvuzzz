@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -32,10 +32,11 @@ interface ContractsTabProps {
   onEditComplete?: () => void;
 }
 
-export default function ContractsTab({
+function ContractsTab({
   editContractId,
   onEditComplete,
 }: ContractsTabProps = {}) {
+  const { companies, activeCompanyId } = useSessionStore();
   const {
     contracts,
     sequences,
@@ -45,9 +46,7 @@ export default function ContractsTab({
     updateContract,
     deleteContract,
     trailers,
-    companies,
-    activeCompanyId,
-  } = useAppStore();
+  } = useOperationalStore();
   
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
   const navigate = useNavigate();
@@ -687,3 +686,5 @@ export default function ContractsTab({
     </div>
   );
 }
+
+export default React.memo(ContractsTab);

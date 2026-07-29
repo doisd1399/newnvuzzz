@@ -1,7 +1,7 @@
-import { auth, db } from './firebase';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { auth, functions } from './firebase';
 import { Capacitor } from '@capacitor/core';
 import { isAuthTeardownActive } from './authLifecycle';
+import { httpsCallable } from 'firebase/functions';
 
 export type PushContext = {
   userId?: string | null;
@@ -30,8 +30,23 @@ export function clearPushRegistrationContext() {
 
 export async function registerDeviceForPush(context?: PushContext) {
   if (isAuthTeardownActive()) return;
-  if (registrationPromise && !context?.userId) return registrationPromise;
-  lastContext = context ?? lastContext;
+  lastContext = context ? { ...lastContext, ...context } : lastContext;
+
+  // AppContext atualiza este método quando perfil ou empresa mudam. O plugin
+  // nativo precisa ser registrado apenas uma vez por sessão; chamadas
+  // sobrepostas podem gerar callbacks de registro repetidos em alguns aparelhos.
+  if (registrationPromise) {
+    const activeContext = lastContext;
+    if (
+      cachedToken &&
+      activeContext.userId &&
+      auth.currentUser?.uid === activeContext.userId
+    ) {
+      await saveTokenToFirestore(activeContext, cachedToken);
+    }
+    return registrationPromise;
+  }
+
   const invocationGeneration = pushContextGeneration;
   console.log('[NVU PUSH BOOT] função iniciada', lastContext);
   
@@ -55,8 +70,15 @@ export async function registerDeviceForPush(context?: PushContext) {
       }
 
       if (!listenersAdded) {
-        listenersAdded = true;
         console.log('[NVU PUSH SETUP] Adicionando listeners do Capacitor PushNotifications...');
+
+        // O APK remoto pode recarregar o WebView quando um deploy troca os
+        // chunks hashados. O estado JavaScript é recriado nesse cenário,
+        // enquanto alguns bridges nativos ainda podem manter callbacks da
+        // página anterior. Limpar apenas os listeners deste plugin antes de
+        // registrar o conjunto canônico evita duplicação sem tocar em Auth,
+        // Firestore ou nos emissores das Cloud Functions.
+        await PushNotifications.removeAllListeners();
 
         PushNotifications.addListener('registration', async (token) => {
           if (isAuthTeardownActive()) return;
@@ -89,6 +111,7 @@ export async function registerDeviceForPush(context?: PushContext) {
           console.log('[NVU PUSH DEBUG] notificação clicada:', action);
           window.dispatchEvent(new CustomEvent('nvu-push-opened', { detail: action }));
         });
+        listenersAdded = true;
       }
 
       if (
@@ -141,21 +164,20 @@ async function saveTokenToFirestore(context: PushContext, tokenValue: string) {
   )
     return;
   try {
-    await setDoc(doc(db, 'userDevices', `${context.userId}_${tokenValue}`), {
-      userId: context.userId,
+    const registerPushDevice = httpsCallable(functions, 'registerPushDevice');
+    await registerPushDevice({
       token: tokenValue,
       platform: Capacitor.getPlatform(),
       companyId: context.companyId ?? null,
       activeProfile: context.activeProfile ?? null,
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-    console.log('[NVU PUSH REGISTER] Token salvo no Firestore para o usuário:', context.userId);
+    });
+    console.log('[NVU PUSH REGISTER] Token canônico salvo para o usuário:', context.userId);
   } catch (dbError) {
     if (
       !isAuthTeardownActive() &&
       auth.currentUser?.uid === context.userId
     ) {
-      console.warn('[NVU PUSH ERROR] Falha ao salvar token no Firestore:', dbError);
+      console.warn('[NVU PUSH ERROR] Falha ao registrar token canônico:', dbError);
     }
   }
 }

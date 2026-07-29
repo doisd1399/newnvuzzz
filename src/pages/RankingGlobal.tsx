@@ -1,111 +1,398 @@
-import { resolveSimulatorId } from "../lib/resolveSimulator";
-import React, { useState, useEffect, useMemo } from "react";
+import React, {
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { ChevronLeft, Trophy, ChevronDown, List as ListIcon, Building2, Users, Globe2, ChevronRight, Crown, Calendar, X } from "lucide-react";
-import { collection, onSnapshot } from "firebase/firestore";
-import { db } from "../lib/firebase";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { useOperationalStore, useRankingFilterStore, useSessionStore } from "../context/AppContext";
 import { useTripsRealtime } from "../hooks/useTripsRealtime";
-import { groupMetricsByCompany, getStartOfDay, getEndOfDay, getWeeklyRange, getMonthlyRange, getCustomRange } from "../lib/metricsEngine";
+import { groupMetricsByCompany, getStartOfDay, getEndOfDay, getWeeklyRange, getMonthlyRange, getCustomRange, filterTripsBySimulator } from "../lib/metricsEngine";
 import { preloadImages } from "../lib/imageCache";
 import { StableImage } from "../components/common/StableImage";
 import { cn } from "../lib/utils";
 import { buildDriverRankingPageData } from "../lib/rankingPageEngine";
-import { isAuthTeardownActive, onAuthTeardown } from "../lib/authLifecycle";
+import { useRankingUsersRealtime } from "../hooks/useRankingUsersRealtime";
+import { useLiveCalendarReference } from "../hooks/useLiveCalendarReference";
+import {
+  warmRankingPhotosForIds,
+  warmRankingUserProfiles,
+} from "../lib/rankingPhotoWarmup";
+import {
+  buildSimulatorSelectorOptions,
+  companyMatchesSimulatorOption,
+  findSimulatorOption,
+  resolveCompanySimulatorFilterValue,
+} from "../lib/simulatorOptions";
+
+const freezeRankingSnapshot = (items: any[]) =>
+  items.map((item) => ({ ...item }));
+
+const BRL_FORMATTER = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
+const ALL_SIMULATORS_VALUE = "all";
+const ALL_SIMULATORS_LABEL = "Todos os simuladores";
+// The first 60 rows cover the podium and the initial scroll window on both
+// desktop and mobile. They are decoded before a ranking snapshot is committed;
+// lower rows are warmed opportunistically after the atomic paint.
+const RANKING_CRITICAL_IMAGE_LIMIT = 60;
+const RANKING_IMAGE_CONCURRENCY = 8;
+
+type RankingSnapshotCacheEntry = {
+  cachedAt: number;
+  items: any[];
+};
+
+// Ranking data is intentionally kept only in memory. Persisting it in
+// localStorage allowed a browser, Preview iframe or WebView to display a
+// twelve-hour-old classification while the Firestore compatibility scan was
+// still running. The shared realtime trip cache already keeps route changes
+// instant without carrying stale totals across reloads, deploys or accounts.
+const RANKING_CACHE_TTL_MS = 2 * 60 * 1000;
+const RANKING_CACHE_LIMIT = 16;
+const rankingSnapshotCache = new Map<string, RankingSnapshotCacheEntry>();
+let lastRankingSnapshot: RankingSnapshotCacheEntry | null = null;
+
+const readRankingSnapshot = (key: string): any[] => {
+  const cached = rankingSnapshotCache.get(key);
+  if (!cached || Date.now() - cached.cachedAt > RANKING_CACHE_TTL_MS) {
+    rankingSnapshotCache.delete(key);
+    return [];
+  }
+  return cached.items;
+};
+
+const readLastRankingSnapshot = (): any[] => {
+  if (
+    !lastRankingSnapshot ||
+    Date.now() - lastRankingSnapshot.cachedAt > RANKING_CACHE_TTL_MS
+  ) {
+    lastRankingSnapshot = null;
+    return [];
+  }
+  return lastRankingSnapshot.items;
+};
+
+const writeRankingSnapshot = (key: string, items: any[]) => {
+  const compactItems = items.slice(0, 200).map((item) => ({
+    id: item.id,
+    name: item.name,
+    logo: item.logo,
+    val: item.val,
+    trips: item.trips,
+  }));
+  const entry = { cachedAt: Date.now(), items: compactItems };
+  rankingSnapshotCache.delete(key);
+  rankingSnapshotCache.set(key, entry);
+  lastRankingSnapshot = entry;
+
+  while (rankingSnapshotCache.size > RANKING_CACHE_LIMIT) {
+    const oldestKey = rankingSnapshotCache.keys().next().value;
+    if (!oldestKey) break;
+    rankingSnapshotCache.delete(oldestKey);
+  }
+};
+
+const rankingImageUrls = (items: any[], limit = RANKING_CRITICAL_IMAGE_LIMIT) =>
+  items
+    .slice(0, limit)
+    .map((item) => item?.logo)
+    .filter((url): url is string => typeof url === "string" && Boolean(url.trim()));
+
+const preloadRankingSnapshotImages = (items: any[]) =>
+  preloadImages(rankingImageUrls(items), RANKING_IMAGE_CONCURRENCY);
+
+export function preloadLastRankingSnapshotImages(): Promise<void> {
+  return preloadRankingSnapshotImages(readLastRankingSnapshot());
+}
 
 export default function RankingGlobal() {
   const navigate = useNavigate();
-  const { 
-    activeCompanyId, 
-    globalPeriodPreset: periodPreset, 
-    setGlobalPeriodPreset: setPeriodPreset, 
-    globalStartDateStr: startDateStr, 
-    setGlobalStartDateStr: setStartDateStr, 
+  const {
+    activeCompanyId,
+    allCompanies,
+    companiesLoading,
+    currentUser,
+  } = useSessionStore();
+  const {
+    simulators,
+    simulatorsLoading,
+    users: knownUsers,
+  } = useOperationalStore();
+  const {
+    globalPeriodPreset: periodPreset,
+    setGlobalPeriodPreset: setPeriodPreset,
+    globalStartDateStr: startDateStr,
+    setGlobalStartDateStr: setStartDateStr,
     globalEndDateStr: endDateStr,
     setGlobalEndDateStr: setEndDateStr,
-    allCompanies,
-  } = useAppStore();
+  } = useRankingFilterStore();
 
-  const { trips } = useTripsRealtime();
-  const [users, setUsers] = useState<any[]>([]);
-  const [simulator, setSimulator] = useState("Todos os simuladores");
+  const [simulator, setSimulator] = useState(ALL_SIMULATORS_VALUE);
   const [rankingType, setRankingType] = useState<"entre" | "interno" | "global">("entre");
   const [viewType, setViewType] = useState<"podio" | "lista">("podio");
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
 
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const companies = (allCompanies || []) as any[];
+  const referenceDate = useLiveCalendarReference();
+
+  const rankingRange = useMemo(() => {
+    if (periodPreset === "semana") return getWeeklyRange(referenceDate);
+    if (periodPreset === "mes") return getMonthlyRange(referenceDate);
+
+    if (startDateStr && endDateStr) {
+      return getCustomRange(startDateStr, endDateStr);
+    }
+
+    if (startDateStr || endDateStr) {
+      return {
+        start: startDateStr
+          ? getStartOfDay(startDateStr)
+          : getMonthlyRange(referenceDate).start,
+        end: endDateStr
+          ? getEndOfDay(endDateStr)
+          : getMonthlyRange(referenceDate).end,
+      };
+    }
+
+    return getMonthlyRange(referenceDate);
+  }, [endDateStr, periodPreset, referenceDate, startDateStr]);
+
+  const rankingCacheKey = useMemo(
+    () =>
+      [
+        currentUser?.id || "anonymous",
+        rankingType,
+        simulator,
+        rankingType === "interno" ? selectedCompanyId || activeCompanyId || "" : "",
+        rankingRange.start.getTime(),
+        rankingRange.end.getTime(),
+      ].join("|"),
+    [
+      activeCompanyId,
+      currentUser?.id,
+      rankingRange.end,
+      rankingRange.start,
+      rankingType,
+      selectedCompanyId,
+      simulator,
+    ],
+  );
+  const [visibleRankingSnapshot, setVisibleRankingSnapshot] = useState<{
+    key: string;
+    signature: string;
+    items: any[];
+  }>(() => {
+    return {
+      key: rankingCacheKey,
+      signature: "",
+      // Do not paint a cached ranking before its avatar URLs have been
+      // decoded. The previous implementation mounted this snapshot
+      // immediately, which is exactly the initials -> photo flash reported
+      // when switching between ranking modes.
+      items: [],
+    };
+  });
+  const visibleRankingKeyRef = useRef(rankingCacheKey);
+  const publishedRankingRef = useRef<{
+    key: string;
+    signature: string | null;
+  }>({
+    key: rankingCacheKey,
+    signature: null,
+  });
+
+  useEffect(() => {
+    const keyChanged = visibleRankingKeyRef.current !== rankingCacheKey;
+    if (keyChanged) {
+      // A snapshot from another simulator/period must never remain visible
+      // after the filter changes. Keep the stable empty podium until the exact
+      // snapshot (if any) has its critical photos ready.
+      visibleRankingKeyRef.current = rankingCacheKey;
+      publishedRankingRef.current = { key: rankingCacheKey, signature: null };
+      setVisibleRankingSnapshot({
+        key: rankingCacheKey,
+        signature: "",
+        items: [],
+      });
+    }
+
+    const exact = readRankingSnapshot(rankingCacheKey);
+    if (exact.length === 0) return;
+
+    let cancelled = false;
+    const snapshot = freezeRankingSnapshot(exact);
+    const signature = snapshot
+      .map((item) =>
+        [item.id, item.name, item.logo || "", item.val, item.trips].join("~"),
+      )
+      .join("|");
+
+    // Cached rows are subject to the same gate as live rows. This is
+    // important after a route/filter switch: a memory snapshot can exist even
+    // though its decoded bitmap was evicted by another page.
+    void preloadRankingSnapshotImages(snapshot).then(() => {
+      if (
+        cancelled ||
+        visibleRankingKeyRef.current !== rankingCacheKey ||
+        (publishedRankingRef.current.key === rankingCacheKey &&
+          publishedRankingRef.current.signature !== null)
+      ) {
+        return;
+      }
+      publishedRankingRef.current = {
+        key: rankingCacheKey,
+        signature,
+      };
+      setVisibleRankingSnapshot({
+        key: rankingCacheKey,
+        signature,
+        items: snapshot,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rankingCacheKey]);
+
+  const {
+    trips,
+    loading: tripsLoading,
+    refreshing: tripsRefreshing,
+  } = useTripsRealtime({
+    startDate: rankingRange.start,
+    endDate: rankingRange.end,
+    keepPreviousData: true,
+  });
+
+  const rankingComputationInput = useMemo(
+    () => ({
+      trips,
+      rankingType,
+      simulator,
+      selectedCompanyId,
+      startDate: rankingRange.start,
+      endDate: rankingRange.end,
+      companies,
+      simulators: simulators as Record<string, unknown>[],
+    }),
+    [
+      companies,
+      rankingRange.end,
+      rankingRange.start,
+      rankingType,
+      selectedCompanyId,
+      simulator,
+      simulators,
+      trips,
+    ],
+  );
+  // The cached/empty frame can commit immediately after the route click. Large
+  // trip aggregation then runs in React's interruptible background render
+  // instead of delaying the first visible ranking frame.
+  // The startup warm-up now hydrates the shared trip/user caches before this
+  // route is revealed. Use the current input on the first render instead of
+  // intentionally yielding an `undefined` frame, which used to create an
+  // empty podium before the already-ready photos could be attached.
+  const deferredRankingInput = useDeferredValue(rankingComputationInput);
+  const rankingComputationReady =
+    deferredRankingInput === rankingComputationInput;
+  const preparedRankingTrips = useMemo(() => {
+    if (!deferredRankingInput?.simulator) return [];
+    return filterTripsBySimulator(
+      deferredRankingInput.trips,
+      deferredRankingInput.simulator,
+      deferredRankingInput.companies,
+      deferredRankingInput.simulators,
+    );
+  }, [deferredRankingInput]);
+
+  const rankingParticipantIds = useMemo(() => {
+    if (
+      !deferredRankingInput?.simulator ||
+      deferredRankingInput.rankingType === "entre"
+    ) {
+      return [] as string[];
+    }
+
+    const ids = new Set<string>();
+    preparedRankingTrips.forEach((trip: any) => {
+      if (!trip.isValid) return;
+      const tripCompanyId = trip.empresaId || trip.companyId || trip.company_id;
+      if (
+        deferredRankingInput.rankingType === "interno" &&
+        deferredRankingInput.selectedCompanyId &&
+        tripCompanyId !== deferredRankingInput.selectedCompanyId
+      )
+        return;
+
+      const driverId = trip.motoristaId || trip.driverId;
+      if (driverId) ids.add(String(driverId));
+    });
+    return Array.from(ids).sort();
+  }, [deferredRankingInput, preparedRankingTrips]);
+
+  const {
+    users,
+    loading: usersLoading,
+    refreshing: usersRefreshing,
+  } = useRankingUsersRealtime(
+    rankingParticipantIds,
+    Boolean(
+      deferredRankingInput &&
+        deferredRankingInput.rankingType !== "entre",
+      ),
+  );
+
+  // AppContext already has the active company's users in most sessions. Warm
+  // those URLs immediately (rather than waiting for an idle callback), while
+  // the scoped ranking hook handles participants outside that company.
+  useEffect(() => {
+    void warmRankingUserProfiles(knownUsers as any[], 8);
+  }, [knownUsers]);
+
+  useEffect(() => {
+    void warmRankingPhotosForIds(rankingParticipantIds, 8);
+  }, [rankingParticipantIds]);
 
   // Initialize with current month for fallback
   useEffect(() => {
     if (!startDateStr && !endDateStr) {
-      const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const firstDay = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth(),
+        1,
+      );
+      const lastDay = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth() + 1,
+        0,
+      );
       
       const pad = (n: number) => n.toString().padStart(2, '0');
       setStartDateStr(`${firstDay.getFullYear()}-${pad(firstDay.getMonth() + 1)}-${pad(firstDay.getDate())}`);
       setEndDateStr(`${lastDay.getFullYear()}-${pad(lastDay.getMonth() + 1)}-${pad(lastDay.getDate())}`);
     }
-  }, [startDateStr, endDateStr, setStartDateStr, setEndDateStr]);
+  }, [
+    endDateStr,
+    referenceDate,
+    setEndDateStr,
+    setStartDateStr,
+    startDateStr,
+  ]);
 
   const formatDateBR = (isoString: string) => {
     if (!isoString) return "";
     const [year, month, day] = isoString.split("-");
     return `${day}/${month}/${year}`;
   };
-
-  const companies = (allCompanies || []) as any[];
-
-  useEffect(() => {
-    let stopped = false;
-    let unsubUsers: () => void = () => {};
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      try {
-        unsubUsers();
-      } catch {
-        // Listener cleanup is best-effort during logout.
-      }
-      setUsers([]);
-    };
-    const removeTeardownListener = onAuthTeardown(stop);
-
-    unsubUsers = onSnapshot(
-      collection(db, "users"),
-      (snap) => {
-        if (stopped || isAuthTeardownActive()) return;
-        setUsers(snap.docs.map((doc) => ({ ...doc.data(), id: doc.id })));
-      },
-      (error) => {
-        if (!stopped && !isAuthTeardownActive()) {
-          console.warn("Erro ao carregar usuários do ranking:", error);
-        }
-      },
-    );
-
-    return () => {
-      removeTeardownListener();
-      stop();
-    };
-  }, []);
-
-  useEffect(() => {
-    // Legacy company records can use any of these three fields. Warm all
-    // compatible variants so the cache always matches the URL later selected
-    // by metricsEngine.
-    void preloadImages(
-      companies
-        .slice(0, 20)
-        .flatMap((company) => [
-          company.logoUrl,
-          company.logoURL,
-          company.logo,
-        ]),
-      4,
-    );
-  }, [companies]);
-
 
   // When opening, if it's internal ranking, auto-select active company
   useEffect(() => {
@@ -114,18 +401,60 @@ export default function RankingGlobal() {
     }
   }, [rankingType, activeCompanyId, selectedCompanyId]);
 
-  const uniqueSimulators = useMemo(() => {
-    const sims = new Set<string>();
-    companies.forEach((c) => {
-      const id = resolveSimulatorId(c);
-      if (id) sims.add(id);
-    });
-    return Array.from(sims).sort();
-  }, [companies]);
+  const simulatorOptions = useMemo(
+    () => buildSimulatorSelectorOptions(simulators as Record<string, unknown>[], companies),
+    [companies, simulators],
+  );
+
+  const activeCompany = useMemo(
+    () => companies.find((company) => company.id === activeCompanyId),
+    [activeCompanyId, companies],
+  );
+
+  // The dedicated Ranking Global page supports a cross-simulator view.
+  // Company profiles remain independently restricted to their own simulator.
+  // For a specific selection, reconcile legacy ID/name aliases without ever
+  // exposing Firestore document IDs as labels.
+  useEffect(() => {
+    if (simulator === ALL_SIMULATORS_VALUE) return;
+
+    const resolvedOption = findSimulatorOption(simulator, simulatorOptions);
+    if (resolvedOption) {
+      if (resolvedOption.value !== simulator) setSimulator(resolvedOption.value);
+      return;
+    }
+
+    if (companiesLoading || simulatorsLoading) return;
+
+    const preferredFilter = resolveCompanySimulatorFilterValue(
+      activeCompany,
+      simulators as Record<string, unknown>[],
+      companies,
+    );
+    const preferredOption = findSimulatorOption(
+      preferredFilter,
+      simulatorOptions,
+    );
+    setSimulator(
+      preferredOption?.value || simulatorOptions[0]?.value || ALL_SIMULATORS_VALUE,
+    );
+  }, [
+    activeCompany,
+    companies,
+    companiesLoading,
+    simulator,
+    simulatorOptions,
+    simulators,
+    simulatorsLoading,
+  ]);
 
   const filteredCompaniesForDropdown = useMemo(() => {
-    return companies.filter(c => simulator === "Todos os simuladores" || resolveSimulatorId(c) === simulator);
-  }, [companies, simulator]);
+    if (!simulator) return [];
+    if (simulator === ALL_SIMULATORS_VALUE) return companies;
+    return companies.filter((company) =>
+      companyMatchesSimulatorOption(company, simulator, simulatorOptions),
+    );
+  }, [companies, simulator, simulatorOptions]);
 
   useEffect(() => {
     if (rankingType === "interno" && selectedCompanyId) {
@@ -136,62 +465,169 @@ export default function RankingGlobal() {
     }
   }, [simulator, rankingType, filteredCompaniesForDropdown, selectedCompanyId]);
 
-  const rankingData = useMemo(() => {
-    let sDate, eDate;
-
-    if (periodPreset === "semana") {
-      const { start, end } = getWeeklyRange();
-      sDate = start;
-      eDate = end;
-    } else if (periodPreset === "mes") {
-      const { start, end } = getMonthlyRange();
-      sDate = start;
-      eDate = end;
-    } else {
-      if (startDateStr && endDateStr) {
-        const { start, end } = getCustomRange(startDateStr, endDateStr);
-        sDate = start;
-        eDate = end;
-      } else {
-        sDate = startDateStr ? getStartOfDay(startDateStr) : undefined;
-        eDate = endDateStr ? getEndOfDay(endDateStr) : undefined;
-      }
-    }
-
-    if (rankingType === "entre") {
-      return groupMetricsByCompany(trips, sDate, eDate, simulator, companies);
+  const calculatedRankingData = useMemo(() => {
+    if (!deferredRankingInput?.simulator) return [];
+    if (deferredRankingInput.rankingType === "entre") {
+      return groupMetricsByCompany(
+        deferredRankingInput.trips,
+        deferredRankingInput.startDate,
+        deferredRankingInput.endDate,
+        deferredRankingInput.simulator,
+        deferredRankingInput.companies,
+        deferredRankingInput.simulators,
+      );
     }
 
     return buildDriverRankingPageData({
-      trips,
-      startDate: sDate,
-      endDate: eDate,
-      scope: rankingType === "interno" ? "internal" : "global",
-      companyId: rankingType === "interno" ? selectedCompanyId : undefined,
-      simulator,
-      companies,
+      trips: preparedRankingTrips,
+      startDate: deferredRankingInput.startDate,
+      endDate: deferredRankingInput.endDate,
+      scope:
+        deferredRankingInput.rankingType === "interno"
+          ? "internal"
+          : "global",
+      companyId:
+        deferredRankingInput.rankingType === "interno"
+          ? deferredRankingInput.selectedCompanyId
+          : undefined,
+      // `preparedRankingTrips` already applies this exact simulator identity.
+      simulatorId: undefined,
+      companies: deferredRankingInput.companies,
+      simulators: deferredRankingInput.simulators,
       users,
     });
-  }, [periodPreset, rankingType, trips, companies, simulator, selectedCompanyId, users, startDateStr, endDateStr]);
+  }, [deferredRankingInput, preparedRankingTrips, users]);
+
+  const internalSelectionReady =
+    rankingType !== "interno" ||
+    Boolean(selectedCompanyId) ||
+    filteredCompaniesForDropdown.length === 0;
+  const participantProfilesReady =
+    deferredRankingInput?.rankingType === "entre" ||
+    Boolean(
+      deferredRankingInput &&
+        !usersLoading &&
+        // A ranking section is not ready until its complete participant set
+        // exists. The shared users hook keeps a complete superset snapshot
+        // visible while a narrower listener refreshes, so this strict gate
+        // never exposes a chunk-sized subset or an initials-first frame.
+        !usersRefreshing,
+    );
+  const simulatorSelectionReady =
+    Boolean(simulator) ||
+    (!companiesLoading && !simulatorsLoading && simulatorOptions.length === 0);
+  const rankingSourcesReady =
+    rankingComputationReady &&
+    simulatorSelectionReady &&
+    !companiesLoading &&
+    !tripsLoading &&
+    !tripsRefreshing &&
+    internalSelectionReady &&
+    participantProfilesReady;
+  const preparedLiveRanking = rankingSourcesReady;
+  const liveRankingData = useMemo(
+    () => freezeRankingSnapshot(calculatedRankingData),
+    [calculatedRankingData],
+  );
+  const liveRankingSignature = useMemo(
+    () =>
+      liveRankingData
+        .map((item) =>
+          [item.id, item.name, item.logo || "", item.val, item.trips].join("~"),
+        )
+        .join("|"),
+    [liveRankingData],
+  );
+  const rankingData =
+    visibleRankingSnapshot.key === rankingCacheKey
+      ? visibleRankingSnapshot.items
+      : [];
+  // Render the stable ranking structure immediately. On a first-ever visit it
+  // starts empty rather than showing a loading page; cached/live data replaces
+  // it in one atomic update.
+  const rankingReady = true;
 
   useEffect(() => {
-    // The ranking order is not necessarily the Firestore order. Preload the
-    // exact logos that are about to be visible after all filters/sorting.
-    void preloadImages(
-      rankingData.slice(0, 20).map((item) => item.logo),
-      6,
-    );
-  }, [rankingData]);
+    if (!preparedLiveRanking) return;
+    if (
+      publishedRankingRef.current.key === rankingCacheKey &&
+      publishedRankingRef.current.signature === liveRankingSignature
+    ) {
+      return;
+    }
 
-  const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(val);
-  };
+    let cancelled = false;
+    const snapshot = freezeRankingSnapshot(liveRankingData);
+    // Publish the list once, after the profiles and visible bitmaps are ready.
+    // This avoids names/photos filling by chunks and podium cards changing
+    // after the user is already looking at the ranking. Cached snapshots use
+    // the same gate above, so every entry path has identical behavior.
+    void preloadRankingSnapshotImages(snapshot).finally(() => {
+      if (cancelled) return;
+      if (visibleRankingKeyRef.current !== rankingCacheKey) return;
+      publishedRankingRef.current = {
+        key: rankingCacheKey,
+        signature: liveRankingSignature,
+      };
+      visibleRankingKeyRef.current = rankingCacheKey;
+      setVisibleRankingSnapshot({
+        key: rankingCacheKey,
+        signature: liveRankingSignature,
+        items: snapshot,
+      });
+      writeRankingSnapshot(rankingCacheKey, snapshot);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    liveRankingData,
+    liveRankingSignature,
+    preparedLiveRanking,
+    rankingCacheKey,
+  ]);
+
+  useEffect(() => {
+    if (!rankingReady) return;
+    const deferredLogos = rankingData
+      .slice(RANKING_CRITICAL_IMAGE_LIMIT, 180)
+      .map((item) => item.logo)
+      .filter(Boolean) as string[];
+    if (deferredLogos.length === 0) return;
+
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (idleApi.requestIdleCallback) {
+      const idleId = idleApi.requestIdleCallback(
+        () => void preloadImages(deferredLogos, 3),
+        { timeout: 1400 },
+      );
+      return () => idleApi.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(
+      () => void preloadImages(deferredLogos, 3),
+      450,
+    );
+    return () => window.clearTimeout(timer);
+  }, [rankingData, rankingReady]);
+
+  const formatCurrency = (val: number) => BRL_FORMATTER.format(val);
 
   const getInitials = (name: string) => {
     return name?.substring(0, 2).toUpperCase() || "UN";
   };
 
-  const renderLogo = (item: any, size: "lg" | "md" | "sm" = "md") => {
+  const renderLogo = (
+    item: any,
+    size: "lg" | "md" | "sm" = "md",
+    critical = true,
+  ) => {
     const sizeClasses = {
       lg: "w-14 h-14 sm:w-16 sm:h-16",
       md: "w-11 h-11 sm:w-14 sm:h-14",
@@ -203,10 +639,12 @@ export default function RankingGlobal() {
         <StableImage
           src={item.logo}
           alt={item.name}
-          loading={size === "sm" ? "lazy" : "eager"}
+          loading={critical ? "eager" : "lazy"}
           decoding="async"
-          fetchPriority={size === "lg" ? "high" : "auto"}
-          preload={size !== "sm"}
+          fetchPriority={critical ? "high" : "low"}
+          preload={critical}
+          hideFallbackWhenCached
+          hideFallbackWhileLoading
           wrapperClassName={`${sizeClasses[size]} rounded-full bg-white shrink-0 shadow-sm border border-gray-100 dark:border-gray-800`}
           className="object-cover"
           fallback={
@@ -225,9 +663,9 @@ export default function RankingGlobal() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-[#0F1115] text-gray-900 dark:text-slate-200 font-sans pb-10 transition-colors">
+    <div className="min-h-screen bg-gray-50 dark:bg-[#0F1115] text-gray-900 dark:text-slate-200 font-sans pb-10">
       {/* Header */}
-      <div className="pt-10 pb-4 px-4 flex items-center justify-between sticky top-0 z-20 bg-gray-50/90 dark:bg-[#0F1115]/90 backdrop-blur-md border-b border-gray-200 dark:border-transparent transition-colors">
+      <div className="pt-10 pb-4 px-4 flex items-center justify-between sticky top-0 z-20 bg-gray-50 dark:bg-[#0F1115] border-b border-gray-200 dark:border-transparent transition-colors">
         <button onClick={() => navigate(-1)} className="p-2 -ml-2 rounded-full hover:bg-gray-200 dark:hover:bg-white/5 transition-colors">
           <ChevronLeft size={24} className="text-gray-600 dark:text-slate-300" />
         </button>
@@ -252,12 +690,19 @@ export default function RankingGlobal() {
               </div>
               <select
                 value={simulator}
-                onChange={(e) => setSimulator(e.target.value)}
+                onChange={(e) => {
+                  const nextSimulator = e.target.value;
+                  setSimulator(nextSimulator);
+                }}
                 className="w-full h-10 bg-white dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] text-gray-800 dark:text-slate-200 text-sm rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 block pl-9 pr-9 py-1 transition-colors outline-none appearance-none font-medium shadow-sm"
               >
-                <option value="Todos os simuladores">Todos os simuladores</option>
-                {uniqueSimulators.map(sim => (
-                  <option key={sim} value={sim}>{sim}</option>
+                <option value={ALL_SIMULATORS_VALUE}>
+                  {ALL_SIMULATORS_LABEL}
+                </option>
+                {simulatorOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
                 ))}
               </select>
               <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-gray-400 dark:text-slate-400">
@@ -287,7 +732,7 @@ export default function RankingGlobal() {
           <div className="flex bg-white dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] rounded-xl p-1 shadow-sm h-10">
             <button
               onClick={() => setRankingType("entre")}
-              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-colors ${
                 rankingType === "entre" ? "bg-gray-100 dark:bg-[#283142] text-blue-600 dark:text-blue-400 shadow-sm border border-gray-200 dark:border-transparent" : "text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200"
               }`}
             >
@@ -296,7 +741,7 @@ export default function RankingGlobal() {
             </button>
             <button
               onClick={() => setRankingType("interno")}
-              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-colors ${
                 rankingType === "interno" ? "bg-gray-100 dark:bg-[#283142] text-blue-600 dark:text-blue-400 shadow-sm border border-gray-200 dark:border-transparent" : "text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200"
               }`}
             >
@@ -305,7 +750,7 @@ export default function RankingGlobal() {
             </button>
             <button
               onClick={() => setRankingType("global")}
-              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-all ${
+              className={`flex-1 min-w-0 flex items-center justify-center gap-1 py-1 px-1 rounded-lg text-[10px] sm:text-xs font-bold transition-colors ${
                 rankingType === "global" ? "bg-gray-100 dark:bg-[#283142] text-blue-600 dark:text-blue-400 shadow-sm border border-gray-200 dark:border-transparent" : "text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200"
               }`}
             >
@@ -317,7 +762,7 @@ export default function RankingGlobal() {
 
         {/* Selected Company Dropdown when Interno */}
         {rankingType === "interno" && (
-          <div className="space-y-1.5 animate-in fade-in slide-in-from-top-2">
+          <div className="space-y-1.5">
             <label className="text-xs font-semibold text-gray-700 dark:text-slate-400 px-1">Selecione a empresa</label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400 dark:text-slate-400">
@@ -325,7 +770,10 @@ export default function RankingGlobal() {
               </div>
               <select
                 value={selectedCompanyId}
-                onChange={(e) => setSelectedCompanyId(e.target.value)}
+                onChange={(e) => {
+                  const companyId = e.target.value;
+                  setSelectedCompanyId(companyId);
+                }}
                 className="w-full h-10 bg-white dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] text-gray-800 dark:text-slate-200 text-sm rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 block pl-9 pr-9 py-1 transition-colors outline-none appearance-none font-medium shadow-sm"
               >
                 <option value="">Selecione...</option>
@@ -346,7 +794,7 @@ export default function RankingGlobal() {
           <div className="flex bg-white dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] rounded-xl p-1 shadow-sm h-10">
             <button
               onClick={() => setViewType("podio")}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1 rounded-lg text-xs font-bold transition-all ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1 rounded-lg text-xs font-bold transition-colors ${
                 viewType === "podio" ? "bg-gray-100 dark:bg-[#283142] text-yellow-600 dark:text-yellow-500 shadow-sm border border-gray-200 dark:border-transparent" : "text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200"
               }`}
             >
@@ -355,7 +803,7 @@ export default function RankingGlobal() {
             </button>
             <button
               onClick={() => setViewType("lista")}
-              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-all ${
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-bold transition-colors ${
                 viewType === "lista" ? "bg-gray-100 dark:bg-[#283142] text-gray-800 dark:text-slate-200 shadow-sm border border-gray-200 dark:border-transparent" : "text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200"
               }`}
             >
@@ -366,15 +814,23 @@ export default function RankingGlobal() {
         </div>
 
         <div className="mt-6 sm:mt-8">
+          {rankingReady ? (
+            <>
           {viewType === "podio" && (
             <div className="relative pt-6 pb-2 w-full max-w-full">
-              <div className="absolute inset-0 flex justify-center -translate-y-4 pointer-events-none opacity-20 dark:opacity-40">
-                <div className="w-48 h-48 sm:w-64 sm:h-64 bg-yellow-500/30 dark:bg-yellow-500/20 blur-[60px] sm:blur-[80px] rounded-full"></div>
+              <div className="absolute inset-0 flex justify-center -translate-y-4 pointer-events-none opacity-35 dark:opacity-45">
+                <div
+                  className="w-48 h-48 sm:w-64 sm:h-64 rounded-full"
+                  style={{
+                    background:
+                      "radial-gradient(circle, rgba(234,179,8,0.32) 0%, rgba(234,179,8,0.08) 48%, transparent 72%)",
+                  }}
+                />
               </div>
 
               <div className="flex items-end justify-center gap-1.5 sm:gap-3 relative z-10 mx-auto w-full px-1">
                 {/* 2nd Place */}
-                <div className="flex-1 flex flex-col items-center animate-in fade-in slide-in-from-bottom-4 duration-500 delay-100 max-w-[120px] sm:max-w-[140px]">
+                <div className="flex-1 flex flex-col items-center max-w-[120px] sm:max-w-[140px]">
                   <div className="bg-white dark:bg-[#1C2028] border border-gray-200 dark:border-[#3C475A] rounded-xl sm:rounded-2xl p-2 sm:p-3 w-full flex flex-col items-center shadow-md dark:shadow-lg dark:shadow-blue-900/10 relative overflow-hidden group min-h-[140px] sm:min-h-[160px]">
                     <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-slate-300 to-slate-500 opacity-80 dark:opacity-50"></div>
                     <div className="bg-slate-500 dark:bg-slate-700/80 text-white text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full mb-2 shadow-[0_0_10px_rgba(100,116,139,0.3)] dark:shadow-[0_0_10px_rgba(200,200,200,0.3)] border border-slate-300 dark:border-slate-500/50">2º</div>
@@ -401,7 +857,7 @@ export default function RankingGlobal() {
                 </div>
 
                 {/* 1st Place */}
-                <div className="flex-[1.1] sm:flex-[1.2] flex flex-col items-center animate-in fade-in slide-in-from-bottom-8 duration-500 z-20 min-w-[110px] sm:min-w-[130px] max-w-[130px] sm:max-w-[160px]">
+                <div className="flex-[1.1] sm:flex-[1.2] flex flex-col items-center z-20 min-w-[110px] sm:min-w-[130px] max-w-[130px] sm:max-w-[160px]">
                   {rankingData[0] ? (
                     <Crown size={36} className="text-yellow-500 dark:text-yellow-400 mb-1 fill-yellow-400/30 dark:fill-yellow-400/20 drop-shadow-[0_0_15px_rgba(234,179,8,0.5)] dark:drop-shadow-[0_0_15px_rgba(250,204,21,0.5)] sm:w-[44px] sm:h-[44px]" strokeWidth={1.5} />
                   ) : (
@@ -435,7 +891,7 @@ export default function RankingGlobal() {
                 </div>
 
                 {/* 3rd Place */}
-                <div className="flex-1 flex flex-col items-center animate-in fade-in slide-in-from-bottom-2 duration-500 delay-200 max-w-[120px] sm:max-w-[140px]">
+                <div className="flex-1 flex flex-col items-center max-w-[120px] sm:max-w-[140px]">
                   <div className="bg-white dark:bg-[#1C2028] border border-gray-200 dark:border-[#523A28] rounded-xl sm:rounded-2xl p-2 sm:p-3 w-full flex flex-col items-center shadow-md dark:shadow-lg dark:shadow-orange-900/10 relative overflow-hidden group min-h-[110px] sm:min-h-[140px]">
                     <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-orange-300 to-orange-500 opacity-80 dark:opacity-40"></div>
                     <div className="bg-orange-600 dark:bg-[#8A5A44]/80 text-white text-[10px] sm:text-xs font-bold px-2 py-0.5 rounded-full mb-2 shadow-[0_0_10px_rgba(234,88,12,0.3)] dark:shadow-[0_0_10px_rgba(138,90,68,0.3)] border border-orange-400 dark:border-orange-500/40">3º</div>
@@ -481,12 +937,20 @@ export default function RankingGlobal() {
               }
 
               return (
-                <div key={item.id} className={`flex items-center justify-between gap-3 p-3 sm:p-4 bg-white dark:bg-[#1A1D24] rounded-2xl hover:bg-gray-50 dark:hover:bg-[#1F232B] transition-colors border ${itemBorderColor} hover:border-gray-200 dark:hover:border-[#3A4050] shadow-sm group cursor-pointer animate-in fade-in slide-in-from-bottom-2`} style={{ animationDelay: `${index * 50}ms` }}>
+                <div
+                  key={item.id}
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "76px" }}
+                  className={`flex items-center justify-between gap-3 p-3 sm:p-4 bg-white dark:bg-[#1A1D24] rounded-2xl hover:bg-gray-50 dark:hover:bg-[#1F232B] transition-colors border ${itemBorderColor} hover:border-gray-200 dark:hover:border-[#3A4050] shadow-sm group cursor-pointer`}
+                >
                   <div className="flex items-center gap-3 w-full max-w-[65%]">
                     <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center text-[13px] sm:text-sm font-black shrink-0 ${rankStyle}`}>
                       {actualRank}º
                     </div>
-                    {renderLogo(item, "sm")}
+                    {renderLogo(
+                      item,
+                      "sm",
+                      actualRank <= RANKING_CRITICAL_IMAGE_LIMIT,
+                    )}
                     <div className="flex flex-col min-w-0 pr-1">
                       <p className="text-sm sm:text-base font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight">{item.name}</p>
                       <div className="mt-1">
@@ -509,6 +973,8 @@ export default function RankingGlobal() {
               </div>
             )}
           </div>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -527,7 +993,7 @@ export default function RankingGlobal() {
               <button
                 onClick={() => setPeriodPreset("semana")}
                 className={cn(
-                  "flex-1 rounded-[8px] text-[12px] font-bold transition-all hover:shadow-sm",
+                  "flex-1 rounded-[8px] text-[12px] font-bold transition-colors hover:shadow-sm",
                   periodPreset === "semana"
                     ? "bg-white dark:bg-[#283142] text-gray-900 dark:text-white shadow-sm"
                     : "text-gray-600 dark:text-slate-300 hover:bg-white/50"
@@ -538,7 +1004,7 @@ export default function RankingGlobal() {
               <button
                 onClick={() => setPeriodPreset("mes")}
                 className={cn(
-                  "flex-1 rounded-[8px] text-[12px] font-bold transition-all hover:shadow-sm",
+                  "flex-1 rounded-[8px] text-[12px] font-bold transition-colors hover:shadow-sm",
                   periodPreset === "mes"
                     ? "bg-white dark:bg-[#283142] text-gray-900 dark:text-white shadow-sm"
                     : "text-gray-600 dark:text-slate-300 hover:bg-white/50"
@@ -555,7 +1021,8 @@ export default function RankingGlobal() {
                   type="date" 
                   value={startDateStr}
                   onChange={(e) => {
-                    setStartDateStr(e.target.value);
+                    const value = e.target.value;
+                    setStartDateStr(value);
                     setPeriodPreset("custom");
                   }}
                   className="w-full h-11 bg-gray-50 dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] text-gray-900 dark:text-white rounded-xl px-3 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-medium"
@@ -567,7 +1034,8 @@ export default function RankingGlobal() {
                   type="date" 
                   value={endDateStr}
                   onChange={(e) => {
-                    setEndDateStr(e.target.value);
+                    const value = e.target.value;
+                    setEndDateStr(value);
                     setPeriodPreset("custom");
                   }}
                   className="w-full h-11 bg-gray-50 dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] text-gray-900 dark:text-white rounded-xl px-3 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-medium"

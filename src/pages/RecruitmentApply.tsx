@@ -1,7 +1,7 @@
 import { resolveSimulatorId } from "../lib/resolveSimulator";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useAppStore } from "../context/AppContext";
+import { useActivityStore, useOperationalStore, useSessionStore } from "../context/AppContext";
 import {
   CheckCircle2,
   ChevronRight,
@@ -29,42 +29,120 @@ import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import { auth, storage } from "../lib/firebase";
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
 
+const RECRUITMENT_PHOTO_MAX_BYTES = 280_000;
+const RECRUITMENT_PHOTO_TIMEOUT_MS = 30_000;
+
+const dataUrlByteLength = (dataUrl: string) => {
+  const base64 = dataUrl.split(",")[1] || "";
+  return Math.ceil((base64.length * 3) / 4);
+};
+
+const compressRecruitmentPhoto = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("Selecione um arquivo de imagem válido."));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () =>
+        reject(new Error("Não foi possível processar a imagem selecionada."));
+      image.onload = () => {
+        const maxDimension = 420;
+        const ratio = Math.min(
+          1,
+          maxDimension / Math.max(image.width, image.height),
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * ratio));
+        canvas.height = Math.max(1, Math.round(image.height * ratio));
+        const context = canvas.getContext("2d");
+        if (!context) {
+          reject(new Error("Não foi possível preparar a imagem."));
+          return;
+        }
+
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const qualities = [0.8, 0.7, 0.6, 0.5, 0.4];
+        let result = canvas.toDataURL("image/jpeg", qualities[0]);
+        for (const quality of qualities.slice(1)) {
+          if (dataUrlByteLength(result) <= RECRUITMENT_PHOTO_MAX_BYTES) break;
+          result = canvas.toDataURL("image/jpeg", quality);
+        }
+        if (dataUrlByteLength(result) > RECRUITMENT_PHOTO_MAX_BYTES) {
+          reject(new Error("A imagem ficou muito grande após a compactação."));
+          return;
+        }
+        resolve(result);
+      };
+      image.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  });
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("upload-timeout")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 export default function RecruitmentApply() {
   const { companyId } = useParams();
   const navigate = useNavigate();
   const {
     allCompanies,
+    companiesLoading,
+    authInitialized,
+    sessionReady,
+    currentUser,
+    memberships,
+  } = useSessionStore();
+  const {
     simulators,
     simulatorsLoading,
     simulatorsError,
-    companiesLoading,
     submitRecruitmentApplication,
-    authInitialized,
-    currentUser,
-    recruitmentApplications,
-    memberships,
-  } = useAppStore();
+  } = useOperationalStore();
+  const { recruitmentApplications } = useActivityStore();
 
   const [selectedSimulatorId, setSelectedSimulatorId] = useState("");
   // simulatorName is only for display; simulatorId is the canonical key.
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [company, setCompany] = useState<any>(null);
+  const verifiedCurrentUser =
+    sessionReady && auth.currentUser?.uid === currentUser?.id
+      ? currentUser
+      : null;
 
   const userApplicationStatus = React.useMemo(() => {
-    if (!currentUser || !company || !selectedSimulatorId) return 'eligible';
+    if (!verifiedCurrentUser || !company || !selectedSimulatorId) return 'eligible';
     
     // Check if owner
-    if (company.ownerId === currentUser.id) return 'owner';
+    if (company.ownerId === verifiedCurrentUser.id) return 'owner';
     
     // Check if member (is active)
-    const activeMembership = memberships.find(m => m.userId === currentUser.id && m.companyId === company.id && m.status === 'active');
+    const activeMembership = memberships.find(m => m.userId === verifiedCurrentUser.id && m.companyId === company.id && m.status === 'active');
     if (activeMembership) {
       return 'member';
     }
 
     // Check application status
     const existingApps = recruitmentApplications.filter(a => 
-      (a.userId === currentUser.id || a.email.toLowerCase() === currentUser.email?.toLowerCase()) &&
+      (a.userId === verifiedCurrentUser.id || String(a.email || "").toLowerCase() === verifiedCurrentUser.email?.toLowerCase()) &&
       a.companyId === company.id &&
       a.simulatorId === selectedSimulatorId
     );
@@ -83,7 +161,7 @@ export default function RecruitmentApply() {
     }
 
     return 'eligible';
-  }, [currentUser, company, selectedSimulatorId, memberships, recruitmentApplications]);
+  }, [verifiedCurrentUser, company, selectedSimulatorId, memberships, recruitmentApplications]);
 
   const [step, setStep] = useState(1); // 1 = info, 2 = form, 3 = success
   const [submitting, setSubmitting] = useState(false);
@@ -103,44 +181,59 @@ export default function RecruitmentApply() {
   const [googleUid, setGoogleUid] = useState<string | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const imageSelectionVersion = useRef(0);
+  const formIdentityUidRef = useRef<string | null>(null);
+  const activeIdentityUid =
+    verifiedCurrentUser?.id || auth.currentUser?.uid || null;
+
+  // A route can remain mounted while Firebase changes accounts. Never carry
+  // the previous applicant's name, e-mail or photo into the next account.
+  useEffect(() => {
+    const uid = activeIdentityUid;
+    const previousUid = formIdentityUidRef.current;
+    if (uid === previousUid) return;
+
+    formIdentityUidRef.current = uid;
+    setGoogleUid(uid);
+    setPhotoPreview(null);
+    setFormData((previous) => ({
+      ...previous,
+      fullName: uid ? verifiedCurrentUser?.name || "" : "",
+      email: uid ? verifiedCurrentUser?.email || "" : "",
+      whatsapp: uid ? verifiedCurrentUser?.whatsapp || "" : "",
+      applicationPhotoURL: "",
+    }));
+  }, [
+    activeIdentityUid,
+    verifiedCurrentUser?.id,
+    verifiedCurrentUser?.name,
+    verifiedCurrentUser?.email,
+    verifiedCurrentUser?.whatsapp,
+  ]);
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const input = e.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const MAX_WIDTH = 500;
-        const MAX_HEIGHT = 500;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        ctx?.drawImage(img, 0, 0, width, height);
-
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-        setPhotoPreview(dataUrl);
-      };
-    };
+    const selectionVersion = ++imageSelectionVersion.current;
+    setUploadingImage(true);
+    try {
+      const dataUrl = await compressRecruitmentPhoto(file);
+      if (selectionVersion !== imageSelectionVersion.current) return;
+      setPhotoPreview(dataUrl);
+      setFormData((previous) => ({
+        ...previous,
+        applicationPhotoURL: "",
+      }));
+    } catch (error: any) {
+      alert(error?.message || "Não foi possível processar a imagem.");
+    } finally {
+      if (selectionVersion === imageSelectionVersion.current) {
+        setUploadingImage(false);
+      }
+    }
   };
 
   // Fonte oficial de simuladores. Empresas são usadas somente depois da
@@ -203,7 +296,7 @@ export default function RecruitmentApply() {
   // Instead, the user may go to /status manually, or submit validation will catch duplicates.
   React.useEffect(() => {
     // No automatic redirection so the user can continue applying to other simulators if they wish.
-  }, [authInitialized, currentUser, recruitmentApplications, navigate]);
+  }, [authInitialized, verifiedCurrentUser, recruitmentApplications, navigate]);
 
   if (!formReady) {
     return (
@@ -316,7 +409,7 @@ export default function RecruitmentApply() {
       );
     }
 
-    const buttonLabel = !currentUser
+    const buttonLabel = !verifiedCurrentUser
       ? "Acessar com Google"
       : userApplicationStatus === 'rejected'
         ? "Enviar Nova Inscrição"
@@ -329,7 +422,7 @@ export default function RecruitmentApply() {
           isFullWidth ? "w-full mx-auto" : "w-full sm:w-auto"
         }`}
       >
-        {!currentUser && (
+        {!verifiedCurrentUser && (
           <svg
             className="w-5 h-5 bg-white dark:bg-[#1A1F26] rounded-full p-0.5"
             viewBox="0 0 24 24"
@@ -362,7 +455,7 @@ export default function RecruitmentApply() {
       alert("Selecione uma empresa primeiro.");
       return;
     }
-    if (currentUser) {
+    if (verifiedCurrentUser) {
       if (userApplicationStatus === 'owner') {
         alert("Você é proprietário desta empresa e não pode se inscrever como motorista.");
         return;
@@ -382,12 +475,14 @@ export default function RecruitmentApply() {
 
       setFormData((prev) => ({
         ...prev,
-        fullName: prev.fullName || currentUser.name || "",
-        email: prev.email || currentUser.email || "",
+        fullName: verifiedCurrentUser.name || "",
+        email: verifiedCurrentUser.email || "",
+        whatsapp: verifiedCurrentUser.whatsapp || "",
         applicationPhotoURL:
           prev.applicationPhotoURL,
       }));
-      setGoogleUid(currentUser.id);
+      setGoogleUid(verifiedCurrentUser.id);
+      formIdentityUidRef.current = verifiedCurrentUser.id;
       setPhotoPreview(null);
       setStep(2);
       return;
@@ -415,7 +510,7 @@ export default function RecruitmentApply() {
       const isOwner = company.ownerId === resultUser.uid;
       const isMember = memberships.find(m => m.userId === resultUser.uid && m.companyId === company.id && m.status === 'active');
       const existingApps = recruitmentApplications.filter(a => 
-        (a.userId === resultUser.uid || a.email.toLowerCase() === resultUser.email?.toLowerCase()) &&
+        (a.userId === resultUser.uid || String(a.email || "").toLowerCase() === resultUser.email?.toLowerCase()) &&
         a.companyId === company.id &&
         a.simulatorId === selectedSimulatorId
       );
@@ -443,9 +538,11 @@ export default function RecruitmentApply() {
         ...prev,
         fullName: resultUser.displayName || "",
         email: resultUser.email || "",
+        whatsapp: "",
         applicationPhotoURL: "",
       }));
       setGoogleUid(resultUser.uid);
+      formIdentityUidRef.current = resultUser.uid;
       setPhotoPreview(null);
       setStep(2);
     } catch (err: any) {
@@ -487,8 +584,23 @@ export default function RecruitmentApply() {
     if (!company) return;
 
     // Check on frontend to prevent duplicate applications early
-    const uid = googleUid || currentUser?.id;
-    const email = formData.email?.toLowerCase();
+    const authenticatedUser = auth.currentUser;
+    const uid = authenticatedUser?.uid || "";
+    if (
+      !uid ||
+      (googleUid && googleUid !== uid) ||
+      (currentUser?.id && currentUser.id !== uid)
+    ) {
+      alert(
+        "Sua sessão mudou durante a inscrição. Volte e confirme novamente a conta Google.",
+      );
+      setGoogleUid(null);
+      setStep(1);
+      return;
+    }
+    const email = String(authenticatedUser?.email || formData.email || "")
+      .trim()
+      .toLowerCase();
     
     if (company.ownerId === uid) {
       alert("Você é proprietário desta empresa e não pode se inscrever como motorista.");
@@ -502,7 +614,7 @@ export default function RecruitmentApply() {
     }
 
     const existingApps = recruitmentApplications.filter(a => 
-      (a.userId === uid || a.email.toLowerCase() === email) &&
+      (a.userId === uid || String(a.email || "").toLowerCase() === email) &&
       a.companyId === company.id &&
       a.simulatorId === selectedSimulatorId
     );
@@ -520,39 +632,40 @@ export default function RecruitmentApply() {
     setSubmitting(true);
     try {
       let uploadedPhotoUrl = formData.applicationPhotoURL;
+      let applicationPhotoTransport:
+        | "none"
+        | "storage"
+        | "firestore-data-url"
+        | "legacy" = uploadedPhotoUrl ? "legacy" : "none";
 
       if (photoPreview && photoPreview.startsWith("data:image")) {
         setUploadingImage(true);
         try {
           const imageRef = ref(
             storage,
-            `empresas/${company.id || "default"}/recruitment_photos/${Date.now()}.jpg`,
+            `empresas/${company.id || "default"}/recruitment_photos/${Date.now()}_${Math.random()
+              .toString(36)
+              .slice(2, 10)}.jpg`,
           );
-          // Mobile connections can take longer than a few seconds. Keep a
-          // generous guard so a transient delay does not silently discard the
-          // candidate's photo before the application is saved.
-          const uploadPromise = uploadString(
-            imageRef,
-            photoPreview,
-            "data_url",
-            {
+          await withTimeout(
+            uploadString(imageRef, photoPreview, "data_url", {
               contentType: "image/jpeg",
-              cacheControl: "public,max-age=3600",
-            },
+              cacheControl: "public,max-age=31536000,immutable",
+            }),
+            RECRUITMENT_PHOTO_TIMEOUT_MS,
           );
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("upload-timeout")), 30000),
+          uploadedPhotoUrl = await withTimeout(
+            getDownloadURL(imageRef),
+            RECRUITMENT_PHOTO_TIMEOUT_MS,
           );
-
-          await Promise.race([uploadPromise, timeoutPromise]);
-          uploadedPhotoUrl = await getDownloadURL(imageRef);
+          applicationPhotoTransport = "storage";
         } catch (uploadError) {
           console.warn(
-            "Falha no upload da foto. Cadastro continuará sem foto.",
+            "Falha no upload da foto. O cadastro usará a cópia compactada do Firestore.",
             uploadError,
           );
-          // Never fallback to authentication profilePhotoURL
-          uploadedPhotoUrl = "";
+          uploadedPhotoUrl = photoPreview;
+          applicationPhotoTransport = "firestore-data-url";
         } finally {
           setUploadingImage(false);
         }
@@ -561,11 +674,13 @@ export default function RecruitmentApply() {
       await submitRecruitmentApplication({
         companyId: company.id,
         simulatorId: selectedSimulatorId,
-        userId: googleUid || undefined,
         ...formData,
+        userId: uid,
+        email,
         applicationPhotoURL:
           uploadedPhotoUrl ||
           "",
+        applicationPhotoTransport,
       });
       // Redirect to the centralized status page instead of a generic success message
       navigate("/status", { replace: true });
@@ -953,6 +1068,7 @@ export default function RecruitmentApply() {
                               <button
                                 type="button"
                                 onClick={() => {
+                                  imageSelectionVersion.current += 1;
                                   setPhotoPreview(null);
                                   setFormData((f) => ({ ...f, applicationPhotoURL: "" }));
                                 }}

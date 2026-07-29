@@ -1,19 +1,20 @@
 import React, { useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { useTripsRealtime } from "../../../hooks/useTripsRealtime";
-import { useAppStore } from "../../../context/AppContext";
+import { useTripHistory } from "../../../hooks/useTripHistory";
+import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
 import { Button } from "../../../components/ui/Button";
+import { SafeSelect } from "../../../components/ui/SafeSelect";
 import {
   Pencil,
   Calendar,
-  ChevronDown,
   Check,
   Trash2,
   AlertTriangle,
-  RefreshCw,
   Camera,
+  LoaderCircle,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { PeriodSelector, DateRange } from "./PeriodSelector";
 import { CompanyPerformanceCard } from "../../../components/CompanyPerformanceCard";
 import {
@@ -24,8 +25,14 @@ import {
   subDays,
 } from "date-fns";
 import { convertFileToBase64, compressImage } from "../../../lib/utils";
+import {
+  buildSimulatorSelectorOptions,
+  findSimulatorOption,
+  resolveCompanySimulatorFilterValue,
+} from "../../../lib/simulatorOptions";
+import { uploadService } from "../../../services/uploadService";
 
-export default function CompanyTab({
+function CompanyTab({
   isEditingProp,
   setIsEditingProp,
   isViewingProp,
@@ -38,18 +45,37 @@ export default function CompanyTab({
 } = {}) {
   const {
     companies,
+    allCompanies,
+    companiesLoading,
     currentUser,
     activeCompanyId,
+    memberships,
+  } = useSessionStore();
+  const {
     updateCompany,
     createCompany,
     deleteCompany,
     jobs,
     contracts,
-    memberships,
-  } = useAppStore();
-  const activeCompany = companies.find((c) => c.id === activeCompanyId);
-  const { trips: historicoTrips = [] } = useTripsRealtime();
+    simulators,
+  } = useOperationalStore();
+  const [performanceReady, setPerformanceReady] = useState(false);
+  const activeCompany =
+    companies.find((company) => company.id === activeCompanyId) ||
+    allCompanies.find((company) => company.id === activeCompanyId);
+  const { historicoTrips = [] } = useTripHistory(activeCompanyId, {
+    enabled: performanceReady,
+  });
   const [internalIsEditing, setInternalIsEditing] = useState(false);
+
+  // Let the company identity/header paint first. The analytical card performs
+  // the heaviest calculations on this page, so mounting it one frame later
+  // keeps the profile responsive without introducing a visible timeout.
+  React.useEffect(() => {
+    setPerformanceReady(false);
+    const frame = window.requestAnimationFrame(() => setPerformanceReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeCompanyId]);
   
   const isEditing =
     isEditingProp !== undefined ? isEditingProp : internalIsEditing;
@@ -70,20 +96,86 @@ export default function CompanyTab({
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [pendingLogoFile, setPendingLogoFile] = useState<File | null>(null);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
+  const [isProcessingLogo, setIsProcessingLogo] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [logoUploadProgress, setLogoUploadProgress] = useState(0);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     companyName: "",
+    simulatorId: "",
     simulatorName: "",
     ownerName: "",
     whatsapp: "",
     logoUrl: "",
   });
 
+  const simulatorOptions = useMemo(
+    () =>
+      buildSimulatorSelectorOptions(
+        (Array.isArray(simulators) ? simulators : []).filter(
+          (simulator: Record<string, unknown>) => simulator.active !== false,
+        ),
+        allCompanies,
+      ),
+    [allCompanies, simulators],
+  );
+
+  const activeCompanySimulatorOption = useMemo(() => {
+    if (!activeCompany) return undefined;
+    return findSimulatorOption(
+      resolveCompanySimulatorFilterValue(
+        activeCompany,
+        simulators as Record<string, unknown>[],
+        allCompanies,
+      ),
+      simulatorOptions,
+    );
+  }, [activeCompany, allCompanies, simulatorOptions, simulators]);
+
+  const selectedSimulatorValue = useMemo(() => {
+    const selected = findSimulatorOption(
+      resolveCompanySimulatorFilterValue(
+        formData,
+        simulators as Record<string, unknown>[],
+        allCompanies,
+      ),
+      simulatorOptions,
+    );
+    return selected?.canonicalId || selected?.value || "";
+  }, [allCompanies, formData, simulatorOptions, simulators]);
+
+  const safeSimulatorOptions = useMemo(
+    () =>
+      simulatorOptions.map((option) => ({
+        value: option.canonicalId || option.value,
+        label: option.label,
+      })),
+    [simulatorOptions],
+  );
+
+  React.useEffect(() => {
+    setPendingLogoFile(null);
+    setLogoPreviewUrl(null);
+    setLogoUploadProgress(0);
+    setSaveError(null);
+  }, [activeCompany?.id]);
+
   React.useEffect(() => {
     if (activeCompany) {
       setFormData({
         companyName: activeCompany.companyName,
-        simulatorName: activeCompany.simulatorName,
+        simulatorId:
+          activeCompanySimulatorOption?.canonicalId ||
+          activeCompany.simulatorId ||
+          activeCompanySimulatorOption?.value ||
+          "",
+        simulatorName:
+          activeCompanySimulatorOption?.label ||
+          activeCompany.simulatorName ||
+          "",
         ownerName: activeCompany.ownerName || "",
         whatsapp: activeCompany.whatsapp || "",
         logoUrl: activeCompany.logoUrl || "",
@@ -99,21 +191,76 @@ export default function CompanyTab({
         setIsAddingNew(true);
       }
     }
-  }, [activeCompany, activeCompanyId, currentUser, memberships]);
+  }, [
+    activeCompany,
+    activeCompanyId,
+    activeCompanySimulatorOption,
+    currentUser,
+    memberships,
+  ]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isEditing && activeCompany && !isAddingNew) {
-      await updateCompany(activeCompany.id, formData);
-      setIsEditing(false);
-    } else if (isAddingNew) {
-      await createCompany(formData);
-      setIsAddingNew(false);
+    if (isProcessingLogo || isSaving) return;
+
+    setIsSaving(true);
+    setSaveError(null);
+    setLogoUploadProgress(0);
+
+    try {
+      let logoUrl = formData.logoUrl;
+
+      if (pendingLogoFile) {
+        if (!currentUser?.id) {
+          throw new Error("Sua sessão expirou. Entre novamente para alterar a logo.");
+        }
+
+        logoUrl = await uploadService.uploadImage({
+          file: pendingLogoFile,
+          companyId: activeCompany?.id || `draft-${currentUser.id}`,
+          userId: currentUser.id,
+          folder: "company-logos",
+          compressionMaxSizeMB: 0.4,
+          maxWidthOrHeight: 800,
+          // storage.rules accepts image objects smaller than 500,000 bytes.
+          maxOutputBytes: 480_000,
+          onProgress: setLogoUploadProgress,
+        });
+        setPendingLogoFile(null);
+        setLogoPreviewUrl(logoUrl);
+        setFormData((current) => ({ ...current, logoUrl }));
+      }
+
+      const companyData = { ...formData, logoUrl };
+
+      if (isEditing && activeCompany && !isAddingNew) {
+        await updateCompany(activeCompany.id, companyData);
+        setFormData(companyData);
+        setPendingLogoFile(null);
+        setLogoPreviewUrl(null);
+        setIsEditing(false);
+        toast.success("Dados da empresa atualizados.");
+      } else if (isAddingNew) {
+        await createCompany(companyData);
+        setPendingLogoFile(null);
+        setLogoPreviewUrl(null);
+        setIsAddingNew(false);
+        toast.success("Empresa criada com sucesso.");
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Não foi possível salvar os dados da empresa.";
+      setSaveError(message);
+    } finally {
+      setIsSaving(false);
+      setLogoUploadProgress(0);
     }
   };
 
   const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
+    e: React.ChangeEvent<HTMLInputElement>,
   ) => {
     setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
@@ -122,16 +269,35 @@ export default function CompanyTab({
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 10 * 1024 * 1024) {
-        alert("A imagem é muito grande. Tamanho máximo 10MB.");
+        const message = "A imagem é muito grande. Tamanho máximo: 10 MB.";
+        setSaveError(message);
+        toast.error(message);
+        e.target.value = "";
         return;
       }
+      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+        const message = "Formato inválido. Use uma imagem JPG, PNG ou WEBP.";
+        setSaveError(message);
+        toast.error(message);
+        e.target.value = "";
+        return;
+      }
+
+      setIsProcessingLogo(true);
+      setSaveError(null);
       try {
         const base64 = await convertFileToBase64(file);
         const compressed = await compressImage(base64, 400, 400, 0.8);
-        setFormData((prev) => ({ ...prev, logoUrl: compressed }));
+        setLogoPreviewUrl(compressed);
+        setPendingLogoFile(file);
       } catch (err) {
-        console.error("Error compressing logo:", err);
-        alert("Erro ao processar imagem.");
+        console.error("Erro ao processar logo:", err);
+        const message = "Não foi possível processar a imagem selecionada.";
+        setSaveError(message);
+        toast.error(message);
+      } finally {
+        setIsProcessingLogo(false);
+        e.target.value = "";
       }
     }
   };
@@ -188,14 +354,30 @@ export default function CompanyTab({
             {isEditing ? "Editar Empresa" : "Nova Empresa"}
           </h3>
           <Button
-            type="button"
-            onClick={() => handleSubmit({ preventDefault: () => {} } as any)}
+            type="submit"
+            form="company-profile-form"
+            disabled={isProcessingLogo || isSaving}
             className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-9 text-[14px] font-semibold px-4 flex items-center gap-1.5"
           >
-            <Check size={16} /> Salvar
+            {isProcessingLogo || isSaving ? (
+              <LoaderCircle size={16} className="animate-spin" />
+            ) : (
+              <Check size={16} />
+            )}
+            {isProcessingLogo
+              ? "Processando"
+              : isSaving
+                ? logoUploadProgress > 0 && logoUploadProgress < 100
+                  ? `${Math.round(logoUploadProgress)}%`
+                  : "Salvando"
+                : "Salvar"}
           </Button>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form
+          id="company-profile-form"
+          onSubmit={handleSubmit}
+          className="space-y-4"
+        >
           <div className="space-y-4">
             <div>
               <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
@@ -213,27 +395,23 @@ export default function CompanyTab({
               <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
                 Simulador Padrão
               </label>
-              <div className="relative">
-                <select
-                  name="simulatorName"
-                  value={formData.simulatorName}
-                  onChange={handleChange}
-                  className="w-full bg-slate-50 dark:bg-[#09090b] border border-slate-200 dark:border-[#2A2F3A] rounded-xl pl-4 pr-10 h-12 text-[15px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:text-white transition-all shadow-sm appearance-none"
-                  required
-                >
-                  <option value="" disabled>
-                    Selecione um simulador
-                  </option>
-                  <option value="Wtds">Wtds</option>
-                  <option value="Wbds">Wbds</option>
-                  <option value="Gto">Gto</option>
-                  <option value="Toe 3">Toe 3</option>
-                </select>
-                <ChevronDown
-                  size={18}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-                />
-              </div>
+              <SafeSelect
+                title="Selecionar simulador"
+                placeholder="Selecione um simulador"
+                value={selectedSimulatorValue}
+                options={safeSimulatorOptions}
+                onChange={(simulatorId) => {
+                  const option = simulatorOptions.find(
+                    (item) => (item.canonicalId || item.value) === simulatorId,
+                  );
+                  setFormData((current) => ({
+                    ...current,
+                    simulatorId,
+                    simulatorName: option?.label || "",
+                  }));
+                }}
+                emptyMessage="Nenhum simulador ativo disponível."
+              />
             </div>
             <div>
               <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
@@ -265,12 +443,20 @@ export default function CompanyTab({
               </label>
               <div className="flex items-center gap-4">
                 <div
-                  className="w-16 h-16 rounded-xl bg-slate-100 dark:bg-[#2A2F3A] border border-slate-200 dark:border-[#3A3F4A] overflow-hidden flex flex-col items-center justify-center relative cursor-pointer group shrink-0"
-                  onClick={() => fileInputRef.current?.click()}
+                  className={`w-16 h-16 rounded-xl bg-slate-100 dark:bg-[#2A2F3A] border border-slate-200 dark:border-[#3A3F4A] overflow-hidden flex flex-col items-center justify-center relative group shrink-0 ${
+                    isProcessingLogo || isSaving
+                      ? "cursor-wait opacity-70"
+                      : "cursor-pointer"
+                  }`}
+                  onClick={() => {
+                    if (!isProcessingLogo && !isSaving) {
+                      fileInputRef.current?.click();
+                    }
+                  }}
                 >
-                  {formData.logoUrl ? (
+                  {logoPreviewUrl || formData.logoUrl ? (
                     <img
-                      src={formData.logoUrl}
+                      src={logoPreviewUrl || formData.logoUrl}
                       alt="Logo"
                       className="w-full h-full object-cover"
                     />
@@ -286,20 +472,33 @@ export default function CompanyTab({
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[13px] text-slate-500 dark:text-slate-400">
-                    Clique para enviar uma imagem
+                    {isProcessingLogo
+                      ? "Processando a imagem..."
+                      : pendingLogoFile
+                        ? "Nova logo pronta para salvar"
+                        : "Clique para enviar uma imagem"}
                   </span>
                   <span className="text-[12px] text-slate-400 dark:text-slate-500">
-                    Tamanho máximo: 10MB
+                    JPG, PNG ou WEBP • máximo de 10 MB
                   </span>
                 </div>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   ref={fileInputRef}
                   onChange={handlePhotoUpload}
+                  disabled={isProcessingLogo || isSaving}
                 />
               </div>
+              {saveError && (
+                <p
+                  className="mt-2 text-[12px] font-medium text-rose-600 dark:text-rose-400"
+                  role="alert"
+                >
+                  {saveError}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center justify-between pt-6 mt-4 border-t border-slate-100 dark:border-[#2A2F3A]">
@@ -318,9 +517,13 @@ export default function CompanyTab({
               <button
                 type="button"
                 onClick={() => {
+                  setPendingLogoFile(null);
+                  setLogoPreviewUrl(null);
+                  setSaveError(null);
                   setIsEditing(false);
                   setIsAddingNew(false);
                 }}
+                disabled={isSaving}
                 className="text-slate-500 dark:text-slate-400 font-semibold px-4 py-2 hover:bg-slate-100 dark:hover:bg-[#2A2F3A] rounded-xl transition-colors"
               >
                 Cancelar
@@ -376,11 +579,19 @@ export default function CompanyTab({
 
   if (isStillLoading) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[20px] shadow-sm mt-4">
-        <RefreshCw className="animate-spin text-blue-500 mb-3" size={32} />
-        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
-          Carregando dados da frota...
-        </p>
+      <div
+        className="flex min-h-[220px] items-center justify-center"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="text-center">
+          <div className="mx-auto mb-3 h-1 w-24 overflow-hidden rounded-full bg-blue-100 dark:bg-blue-500/10">
+            <div className="h-full w-1/3 rounded-full bg-blue-500 motion-safe:animate-[nvu-progress_900ms_ease-in-out_infinite]" />
+          </div>
+          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+            Sincronizando empresa
+          </p>
+        </div>
       </div>
     );
   }
@@ -443,7 +654,9 @@ export default function CompanyTab({
                   Simulador Padrão
                 </span>
                 <span className="font-semibold text-slate-900 dark:text-white text-right ml-4">
-                  {activeCompany.simulatorName || "Global Truck"}
+                  {activeCompanySimulatorOption?.label ||
+                    activeCompany.simulatorName ||
+                    "Simulador não identificado"}
                 </span>
               </div>
             </div>
@@ -461,12 +674,24 @@ export default function CompanyTab({
         document.body
       )}
 
-      <CompanyPerformanceCard
-        historicoTrips={historicoTrips}
-        companyId={activeCompanyId!}
-        allCompanies={companies}
-        simulatorName={activeCompany.simulatorName}
-      />
+      {performanceReady ? (
+        <CompanyPerformanceCard
+          historicoTrips={historicoTrips}
+          companyId={activeCompanyId!}
+          allCompanies={allCompanies}
+          companiesLoading={companiesLoading}
+          simulatorId={resolveCompanySimulatorFilterValue(
+            activeCompany,
+            simulators as Record<string, unknown>[],
+            allCompanies as Record<string, unknown>[],
+          )}
+          simulators={simulators as Record<string, unknown>[]}
+        />
+      ) : (
+        <div className="min-h-[220px]" aria-hidden="true" />
+      )}
     </div>
   );
 }
+
+export default React.memo(CompanyTab);

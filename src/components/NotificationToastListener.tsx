@@ -1,21 +1,19 @@
 import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { useAppStore } from "../context/AppContext";
+import { useNotificationStore, useSessionStore } from "../context/AppContext";
 import { shouldDisplayNotificationPopup } from "../lib/notificationScope";
 
 const MAX_POPUP_AGE_MS = 60_000;
 
 export default function NotificationToastListener() {
+  const { currentUser, activeRole, activeCompanyId } = useSessionStore();
   const {
-    currentUser,
-    activeRole,
-    activeCompanyId,
     notifications,
     notificationsHydrated,
     markNotificationAsRead,
     markNotificationPopupShown,
-  } = useAppStore();
+  } = useNotificationStore();
   const location = useLocation();
   const seen = useRef(new Set<string>());
   const baselineReady = useRef(false);
