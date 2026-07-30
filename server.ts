@@ -4,10 +4,7 @@ import { createServer as createViteServer } from "vite";
 
 async function startServer() {
   const app = express();
-  const injectedPort = Number.parseInt(process.env.PORT || "", 10);
-  const port = Number.isFinite(injectedPort) && injectedPort > 0
-    ? injectedPort
-    : 3000;
+  const PORT = 3000;
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
@@ -24,8 +21,8 @@ async function startServer() {
     });
   }
 
-  app.listen(port, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${port}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 
   app.use((err: any, req: any, res: any, next: any) => {

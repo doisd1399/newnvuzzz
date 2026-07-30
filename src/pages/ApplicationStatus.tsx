@@ -147,9 +147,15 @@ export default function ApplicationStatus() {
                 Inscrição Não Aprovada
               </h2>
               <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm">
-                Sua candidatura não foi aprovada pela empresa no momento.
-                Agradecemos o interesse.
+                Seu vínculo foi encerrado pela empresa. Envie uma nova
+                inscrição para voltar à análise.
               </p>
+              <Button
+                onClick={handleApply}
+                className="w-full h-12 rounded-xl font-semibold mb-3"
+              >
+                Enviar Nova Inscrição
+              </Button>
               <Button
                 onClick={handleLogout}
                 variant="outline"

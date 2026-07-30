@@ -21,8 +21,7 @@ import {
   Activity,
   Gamepad2,
   Navigation,
-
-
+  ShieldCheck,
 
   Filter,
   Search,
@@ -943,45 +942,57 @@ export default function SeniorPanel() {
   return (
     <div className="max-w-[1000px] mx-auto px-3 sm:px-5 lg:px-6 pt-1 sm:pt-2 pb-6 space-y-2.5 sm:space-y-4">
       {/* Corporate Banner Header */}
-      <img
-        src="/assets/nvu-banner-painel-senior-referencia.png"
-        alt="Banner Painel Sênior NVU"
-        loading="eager"
-        decoding="async"
-        className="w-full h-auto block object-contain rounded-[17px] sm:rounded-[22px] shadow-none"
-      />
+      <div className="relative overflow-hidden bg-white/70 dark:bg-[#121213]/70 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-[18px] sm:rounded-[22px] px-5 sm:px-8 py-5 sm:py-6 shadow-[0_4px_24px_-12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_24px_-12px_rgba(0,0,0,0.5)] flex items-center justify-between">
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 to-slate-100/30 dark:from-white/[0.02] dark:to-transparent pointer-events-none" />
+        
+        <div className="relative z-10 flex-1 min-w-0">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100/80 dark:bg-slate-800/80 backdrop-blur-md border border-slate-200/80 dark:border-slate-700/80 rounded-md mb-2.5 shadow-sm">
+            <ShieldCheck size={12} className="text-slate-600 dark:text-slate-300" />
+            <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest">ADMINISTRAÇÃO</span>
+          </div>
+          <h1 className="text-[20px] sm:text-[24px] font-semibold text-slate-900 dark:text-white leading-tight tracking-tight mb-0.5">
+            Painel Sênior NVU
+          </h1>
+          <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium truncate">
+            Gestão suprema de empresas parceiras
+          </p>
+        </div>
+        <div className="absolute right-0 top-0 bottom-0 w-1/2 sm:w-1/3 opacity-[0.03] dark:opacity-[0.07] pointer-events-none flex items-center justify-end pr-4 sm:pr-8">
+          <ShieldCheck size={120} className="text-slate-900 dark:text-white translate-x-1/4 sm:translate-x-0" strokeWidth={1} />
+        </div>
+      </div>
 
       {/* Resumo real da plataforma */}
-      <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
+      <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
         <button
           type="button"
           onClick={() => selectSeniorTab("requests")}
-          className="min-w-0 min-h-[104px] sm:min-h-[132px] bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] sm:rounded-[22px] px-3 py-3.5 sm:p-5 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)] flex items-center gap-2.5 sm:gap-5 text-left overflow-hidden"
+          className="min-w-0 bg-white/80 dark:bg-[#121213]/80 backdrop-blur-lg border border-slate-200/60 dark:border-slate-800/60 rounded-[14px] sm:rounded-[16px] px-3 py-2.5 sm:px-3.5 sm:py-3 shadow-sm flex items-center gap-2.5 sm:gap-3 text-left overflow-hidden hover:bg-slate-50/90 dark:hover:bg-[#18181a]/90 transition-all active:scale-[0.98]"
         >
-          <span className="w-11 h-11 sm:w-16 sm:h-16 rounded-[14px] sm:rounded-[16px] bg-slate-100 dark:bg-slate-900 flex items-center justify-center shrink-0">
-            <Activity size={24} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={1.5} />
-            <Activity size={28} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={1.5} />
+          <span className="w-8 h-8 sm:w-10 sm:h-10 rounded-[10px] bg-slate-100/80 dark:bg-slate-800/80 flex items-center justify-center shrink-0 border border-slate-200/50 dark:border-slate-700/50">
+            <Activity size={16} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={2} />
+            <Activity size={18} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={2} />
           </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[12px] sm:text-[15px] font-bold text-slate-600 dark:text-slate-300 leading-tight">Pendentes</span>
-            <span className="block text-[27px] sm:text-[36px] font-bold text-slate-950 dark:text-white leading-none mt-1">{pendingRequests.length}</span>
-            <span className="block text-[10px] sm:text-[13px] text-slate-400 mt-1.5 leading-tight line-clamp-2">Aguardando análise</span>
+          <span className="min-w-0 flex-1 flex flex-col justify-center">
+            <span className="block text-[10px] sm:text-[11px] font-semibold text-slate-500 dark:text-slate-400 leading-none uppercase tracking-wider mb-0.5">Pendentes</span>
+            <span className="block text-[20px] sm:text-[24px] font-bold text-slate-900 dark:text-white leading-none tracking-tight mb-0.5">{pendingRequests.length}</span>
+            <span className="block text-[9px] sm:text-[10px] text-slate-400 leading-none line-clamp-1 sm:truncate">Aguardando análise</span>
           </span>
         </button>
 
         <button
           type="button"
           onClick={() => selectSeniorTab("approved")}
-          className="min-w-0 min-h-[104px] sm:min-h-[132px] bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] sm:rounded-[22px] px-3 py-3.5 sm:p-5 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)] flex items-center gap-2.5 sm:gap-5 text-left overflow-hidden"
+          className="min-w-0 bg-white/80 dark:bg-[#121213]/80 backdrop-blur-lg border border-slate-200/60 dark:border-slate-800/60 rounded-[14px] sm:rounded-[16px] px-3 py-2.5 sm:px-3.5 sm:py-3 shadow-sm flex items-center gap-2.5 sm:gap-3 text-left overflow-hidden hover:bg-slate-50/90 dark:hover:bg-[#18181a]/90 transition-all active:scale-[0.98]"
         >
-          <span className="w-11 h-11 sm:w-16 sm:h-16 rounded-[14px] sm:rounded-[16px] bg-slate-100 dark:bg-slate-900 flex items-center justify-center shrink-0">
-            <Building2 size={24} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={1.5} />
-            <Building2 size={28} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={1.5} />
+          <span className="w-8 h-8 sm:w-10 sm:h-10 rounded-[10px] bg-slate-100/80 dark:bg-slate-800/80 flex items-center justify-center shrink-0 border border-slate-200/50 dark:border-slate-700/50">
+            <Building2 size={16} className="text-slate-600 dark:text-slate-300 sm:hidden" strokeWidth={2} />
+            <Building2 size={18} className="text-slate-600 dark:text-slate-300 hidden sm:block" strokeWidth={2} />
           </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[12px] sm:text-[15px] font-bold text-slate-600 dark:text-slate-300 leading-tight">Empresas Ativas</span>
-            <span className="block text-[27px] sm:text-[36px] font-bold text-slate-950 dark:text-white leading-none mt-1">{activeCompaniesCount}</span>
-            <span className="block text-[10px] sm:text-[13px] text-slate-400 mt-1.5 leading-tight line-clamp-2">Homologadas na plataforma</span>
+          <span className="min-w-0 flex-1 flex flex-col justify-center">
+            <span className="block text-[10px] sm:text-[11px] font-semibold text-slate-500 dark:text-slate-400 leading-none uppercase tracking-wider mb-0.5">Empresas Ativas</span>
+            <span className="block text-[20px] sm:text-[24px] font-bold text-slate-900 dark:text-white leading-none tracking-tight mb-0.5">{activeCompaniesCount}</span>
+            <span className="block text-[9px] sm:text-[10px] text-slate-400 leading-none line-clamp-1 sm:truncate">Ativas na plataforma</span>
           </span>
         </button>
       </div>

@@ -332,12 +332,36 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     .where("userId", "==", uid)
     .where("companyId", "==", companyId)
     .get();
+  const membershipRefs = membershipQuery.docs.map((document) => document.ref);
 
   await db.runTransaction(async (transaction) => {
+    const [applicationSnapshot, ...membershipSnapshots] = await Promise.all([
+      transaction.get(applicationDoc.ref),
+      ...membershipRefs.map((ref) => transaction.get(ref)),
+    ]);
     const userSnapshot = await transaction.get(userRef);
     const existingUser = userSnapshot.exists ? userSnapshot.data() || {} : {};
     const existingRoles = Array.isArray(existingUser.roles) ? existingUser.roles : [];
     const roles = Array.from(new Set([...existingRoles, "driver"]));
+
+    if (!applicationSnapshot.exists) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "A inscrição aprovada não está mais disponível.",
+      );
+    }
+
+    const currentApplication = applicationSnapshot.data() || {};
+    if (
+      currentApplication.status !== "approved" ||
+      currentApplication.accessRevokedAt ||
+      currentApplication.accessRevokedReason === "removed_from_fleet"
+    ) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "A inscrição foi revogada e precisa ser reenviada.",
+      );
+    }
 
     transaction.set(
       userRef,
@@ -357,7 +381,7 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
       { merge: true },
     );
 
-    if (membershipQuery.empty) {
+    if (membershipRefs.length === 0) {
       transaction.set(db.collection("companyMembers").doc(), {
         userId: uid,
         companyId,
@@ -368,11 +392,12 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
         updatedAt: now,
       });
     } else {
-      membershipQuery.docs.forEach((membershipDoc) => {
-        const membership = membershipDoc.data();
+      membershipRefs.forEach((membershipRef, index) => {
+        const membershipSnapshot = membershipSnapshots[index];
+        const membership = membershipSnapshot.exists ? membershipSnapshot.data() || {} : {};
         const currentRoles = Array.isArray(membership.roles) ? membership.roles : [];
         transaction.set(
-          membershipDoc.ref,
+          membershipRef,
           {
             userId: uid,
             companyId,
@@ -400,4 +425,3 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
   });
 
   return { success: true, userId: uid, companyId, applicationId: applicationDoc.id };
-});

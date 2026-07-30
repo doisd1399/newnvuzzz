@@ -583,6 +583,11 @@ export default function RecruitmentApply() {
     e.preventDefault();
     if (!company) return;
 
+    if (!photoPreview) {
+      alert("A foto do motorista é obrigatória.");
+      return;
+    }
+
     // Check on frontend to prevent duplicate applications early
     const authenticatedUser = auth.currentUser;
     const uid = authenticatedUser?.uid || "";

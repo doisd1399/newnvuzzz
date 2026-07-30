@@ -230,6 +230,14 @@ export default function RegisterCompany() {
       toast.info("Aguarde o processamento da imagem terminar.");
       return;
     }
+    if (!photoPreview) {
+      toast.error("A foto da logo da empresa é obrigatória.");
+      return;
+    }
+    if (!ownerPhotoPreview) {
+      toast.error("A foto do proprietário é obrigatória.");
+      return;
+    }
     const authenticatedUid = auth.currentUser?.uid || null;
     if (
       authenticatedUid &&

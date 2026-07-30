@@ -4219,29 +4219,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       getCurrentUserId();
       if (!activeCompanyId) return;
 
+      const removalTimestamp = new Date().toISOString();
+
       const memberQuery = query(
         collection(db, "companyMembers"),
         where("userId", "==", driverId),
         where("companyId", "==", activeCompanyId),
       );
-      const qs = await getDocs(memberQuery);
-      if (!qs.empty) {
-        // A legacy migration can leave more than one membership document for
-        // the same driver/company. Remove every matching document so the
-        // driver cannot reappear in the fleet after the next snapshot.
-        const membershipBatch = writeBatch(db);
-        qs.docs.forEach((memberDoc) => membershipBatch.delete(memberDoc.ref));
-        await membershipBatch.commit();
-      }
-      // Keep the simulator roster in sync even when the Firestore membership
-      // was already missing (for example after a partially completed removal).
-      await removeSimulatorMember(driverId, activeCompanyId);
+      const memberSnapshot = await getDocs(memberQuery);
 
       const driverRef = doc(db, "users", driverId);
       const driverDoc = await getDoc(driverRef);
+      const driverEmail = driverDoc.exists()
+        ? String(driverDoc.data().email || "").trim().toLowerCase()
+        : "";
+
+      const recruitmentQuery = query(
+        collection(db, "recruitment_applications"),
+        where("companyId", "==", activeCompanyId),
+      );
+      const recruitmentSnapshot = await getDocs(recruitmentQuery);
+      const recruitmentUpdates = recruitmentSnapshot.docs.filter((applicationDoc) => {
+        const application = applicationDoc.data() as Record<string, unknown>;
+        const applicationUserId = String(application.userId || "").trim();
+        const applicationEmail = String(application.email || "")
+          .trim()
+          .toLowerCase();
+        return (
+          applicationUserId === driverId ||
+          Boolean(driverEmail && applicationEmail === driverEmail)
+        );
+      });
+
+      const removalBatch = writeBatch(db);
+      memberSnapshot.docs.forEach((memberDoc) => {
+        // A legacy migration can leave more than one membership document for
+        // the same driver/company. Remove every matching document in the same
+        // commit that revokes the recruitment history.
+        removalBatch.delete(memberDoc.ref);
+      });
+      removalBatch.delete(
+        doc(db, "simulator_members", `${driverId}_${activeCompanyId}`),
+      );
+      recruitmentUpdates.forEach((applicationDoc) => {
+        removalBatch.update(applicationDoc.ref, {
+          status: "rejected",
+          updatedAt: removalTimestamp,
+          accessRevokedAt: removalTimestamp,
+          accessRevokedReason: "removed_from_fleet",
+        });
+      });
 
       if (driverDoc.exists()) {
-        const updates: any = { updatedAt: new Date().toISOString() };
+        const updates: any = { updatedAt: removalTimestamp };
 
         // Remove legacy membership
         updates[`memberships.${activeCompanyId}`] = deleteField();
@@ -4254,9 +4284,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           updates.roles = ["driver"];
         }
 
-        await updateDoc(driverRef, updates);
-        console.log("Driver removido com sucesso!");
+        removalBatch.update(driverRef, updates);
       }
+
+      await removalBatch.commit();
+      console.log("Driver removido com sucesso!");
     } catch (e) {
       console.error("Erro ao remover driver:", e);
       handleFirebaseError(e);

@@ -247,14 +247,26 @@ exports.repairApprovedMembership = functions.https.onCall(async (_data, context)
         .where("userId", "==", uid)
         .where("companyId", "==", companyId)
         .get();
+    const membershipRefs = membershipQuery.docs.map((document) => document.ref);
     await db.runTransaction(async (transaction) => {
         var _a;
+        const [applicationSnapshot, ...membershipSnapshots] = await Promise.all([
+            transaction.get(applicationDoc.ref),
+            ...membershipRefs.map((ref) => transaction.get(ref)),
+        ]);
         const userSnapshot = await transaction.get(userRef);
         const existingUser = userSnapshot.exists ? userSnapshot.data() || {} : {};
         const existingRoles = Array.isArray(existingUser.roles) ? existingUser.roles : [];
         const roles = Array.from(new Set([...existingRoles, "driver"]));
+        if (!applicationSnapshot.exists) {
+            throw new functions.https.HttpsError("failed-precondition", "A inscrição aprovada não está mais disponível.");
+        }
+        const currentApplication = applicationSnapshot.data() || {};
+        if (currentApplication.status !== "approved" || currentApplication.accessRevokedAt || currentApplication.accessRevokedReason === "removed_from_fleet") {
+            throw new functions.https.HttpsError("failed-precondition", "A inscrição foi revogada e precisa ser reenviada.");
+        }
         transaction.set(userRef, Object.assign({ id: uid, email: email || String(application.email || existingUser.email || "").trim().toLowerCase(), name: application.fullName || existingUser.name || ((_a = context.auth) === null || _a === void 0 ? void 0 : _a.token.name) || "Usuário", whatsapp: application.whatsapp || existingUser.whatsapp || "", profilePhotoURL: application.applicationPhotoURL || existingUser.profilePhotoURL || "", companyId, status: "active", role: existingUser.role === "admin" ? "admin" : "driver", roles, updatedAt: now }, (!userSnapshot.exists ? { createdAt: now } : {})), { merge: true });
-        if (membershipQuery.empty) {
+        if (membershipRefs.length === 0) {
             transaction.set(db.collection("companyMembers").doc(), {
                 userId: uid,
                 companyId,
@@ -266,10 +278,11 @@ exports.repairApprovedMembership = functions.https.onCall(async (_data, context)
             });
         }
         else {
-            membershipQuery.docs.forEach((membershipDoc) => {
-                const membership = membershipDoc.data();
+            membershipRefs.forEach((membershipRef, index) => {
+                const membershipSnapshot = membershipSnapshots[index];
+                const membership = membershipSnapshot.exists ? membershipSnapshot.data() || {} : {};
                 const currentRoles = Array.isArray(membership.roles) ? membership.roles : [];
-                transaction.set(membershipDoc.ref, {
+                transaction.set(membershipRef, {
                     userId: uid,
                     companyId,
                     roles: Array.from(new Set([...currentRoles, "driver"])),
