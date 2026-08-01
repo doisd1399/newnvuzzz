@@ -27,7 +27,7 @@ import { useTripHistory } from "../../../hooks/useTripHistory";
 
 function DriversTab() {
   const navigate = useNavigate();
-  const { activeCompanyId, currentUser } = useSessionStore();
+  const { activeCompanyId, currentUser, isSeniorAuthenticated } = useSessionStore();
   const {
     users,
     jobs,
@@ -42,6 +42,7 @@ function DriversTab() {
   } = useOperationalStore();
   const { driverRequests } = useActivityStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
+  const hasSeniorRole = Boolean((currentUser as any)?.role === "senior" || (Array.isArray((currentUser as any)?.roles) && (currentUser as any).roles.includes("senior"))) || isSeniorAuthenticated;
   const [driverToRemove, setDriverToRemove] = useState<string | null>(null);
 
   const [processingRoleChangeId, setProcessingRoleChangeId] = useState<
@@ -400,7 +401,7 @@ function DriversTab() {
                                     <Briefcase size={14} className="text-gray-400" /> Designar Trabalho
                                   </button>
                                   
-                                  {getDriverRoles(currentUser).includes("admin") && (
+                                  { (getDriverRoles(currentUser).includes("admin") || hasSeniorRole) && (
                                     <>
                                       <button 
                                         disabled={processingRoleChangeId === driver.id}
@@ -445,7 +446,7 @@ function DriversTab() {
                                         {getDriverRoles(driver).includes("admin") ? "Remover de Admin" : "Promover a Admin"}
                                       </button>
 
-                                      {driver.id !== currentUser.id && (
+                                      { (driver.id !== currentUser.id || hasSeniorRole) && (
                                         <button 
                                           onClick={() => {
                                             setOpenDropdownId(null);

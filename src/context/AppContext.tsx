@@ -461,7 +461,7 @@ export interface AppContextType {
   switchRole: (role: Role, newCompanyId?: string) => Promise<void>;
   promoteDriverToAdmin: (driverId: string) => Promise<void>;
   demoteAdminToDriver: (driverId: string) => Promise<void>;
-  removeDriverFromFleet: (driverId: string) => Promise<void>;
+  removeDriverFromFleet: (driverId: string, companyIdOverride?: string) => Promise<void>;
   updateUserOnlineStatus: (isOnline: boolean) => Promise<void>;
   authInitialized: boolean;
   membershipsLoaded: boolean;
@@ -4176,18 +4176,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const removeDriverFromFleet = async (driverId: string) => {
+  const removeDriverFromFleet = async (driverId: string, companyIdOverride?: string) => {
     try {
       console.log("Removendo driver com ID:", driverId);
       getCurrentUserId();
-      if (!activeCompanyId) return;
+      
+      const targetCompanyId = companyIdOverride || activeCompanyId;
+      if (!targetCompanyId) return;
 
       const removalTimestamp = new Date().toISOString();
-
       const memberQuery = query(
         collection(db, "companyMembers"),
         where("userId", "==", driverId),
-        where("companyId", "==", activeCompanyId),
+        where("companyId", "==", targetCompanyId),
       );
       const memberSnapshot = await getDocs(memberQuery);
 
@@ -4199,7 +4200,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const recruitmentQuery = query(
         collection(db, "recruitment_applications"),
-        where("companyId", "==", activeCompanyId),
+        where("companyId", "==", targetCompanyId),
       );
       const recruitmentSnapshot = await getDocs(recruitmentQuery);
       const recruitmentUpdates = recruitmentSnapshot.docs.filter((applicationDoc) => {
@@ -4222,7 +4223,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         removalBatch.delete(memberDoc.ref);
       });
       removalBatch.delete(
-        doc(db, "simulator_members", `${driverId}_${activeCompanyId}`),
+        doc(db, "simulator_members", `${driverId}_${targetCompanyId}`),
       );
       recruitmentUpdates.forEach((applicationDoc) => {
         removalBatch.update(applicationDoc.ref, {
@@ -4237,10 +4238,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         const updates: any = { updatedAt: removalTimestamp };
 
         // Remove legacy membership
-        updates[`memberships.${activeCompanyId}`] = deleteField();
+        updates[`memberships.${targetCompanyId}`] = deleteField();
 
         // If legacy match, fallback
-        if (driverDoc.data().companyId === activeCompanyId) {
+        if (driverDoc.data().companyId === targetCompanyId) {
           updates.companyId = null;
           updates.status = "pending";
           updates.role = "driver";
@@ -4250,7 +4251,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         // A remoção encerra a referência de recrutamento daquela empresa. Sem
         // limpar esse ponteiro, o login poderia voltar a abrir uma aprovação
         // antiga antes de o motorista enviar um novo formulário.
-        if (driverDoc.data().currentRecruitmentCompanyId === activeCompanyId) {
+        if (driverDoc.data().currentRecruitmentCompanyId === targetCompanyId) {
           updates.currentRecruitmentApplicationId = deleteField();
           updates.currentRecruitmentCompanyId = deleteField();
           updates.currentRecruitmentSimulatorId = deleteField();

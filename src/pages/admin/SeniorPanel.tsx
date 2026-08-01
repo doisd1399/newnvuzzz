@@ -104,7 +104,7 @@ export default function SeniorPanel() {
     switchRole,
     setSeniorCompanyId,
   } = useSessionStore();
-  const { simulators } = useOperationalStore();
+  const { simulators, removeDriverFromFleet } = useOperationalStore();
   const [loadingAction, setLoadingAction] = useState(false);
   const [password, setPassword] = useState("");
   const hasSeniorRole = Boolean(
@@ -1234,6 +1234,43 @@ export default function SeniorPanel() {
                       </span>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="mt-10 space-y-4">
+                <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase px-1 border-b border-gray-100 dark:border-gray-800 pb-2">
+                  Membros / Motoristas da Empresa
+                </h3>
+                <div className="space-y-3">
+                  {(() => {
+                    const companyMembers = allMembers.filter(m => m.companyId === selectedCompany.id);
+                    if (companyMembers.length === 0) {
+                      return <p className="text-[13px] text-gray-500 dark:text-gray-400 px-1">Nenhum membro encontrado na base.</p>;
+                    }
+                    return companyMembers.map(member => {
+                      const user = allUsers.find(u => u.id === member.userId);
+                      const name = user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "Usuário Desconhecido";
+                      return (
+                        <div key={member.id} className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between bg-gray-50 dark:bg-[#09090b] p-3 rounded-xl border border-gray-100 dark:border-[#2A2F3A]">
+                          <div>
+                            <p className="text-[13px] font-bold text-gray-900 dark:text-white">{name}</p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400 font-mono mt-0.5">{user?.email || "Sem e-mail"} • ID: {member.userId}</p>
+                          </div>
+                          <Button 
+                            variant="danger" 
+                            className="h-8 text-[11px] px-4 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-400 dark:hover:bg-red-900/50 border-0 shadow-none w-full sm:w-auto"
+                            onClick={() => {
+                              if(window.confirm(`ATENÇÃO SENIOR: Tem certeza que deseja remover definitivamente o motorista ${name} desta empresa? Essa ação revogará todo o acesso dele.`)) {
+                                removeDriverFromFleet(member.userId, selectedCompany.id);
+                              }
+                            }}
+                          >
+                            Remover Acesso
+                          </Button>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             </CardContent>
