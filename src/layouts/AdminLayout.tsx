@@ -141,7 +141,7 @@ export default function AdminLayout() {
 
   const pendingHrCount = React.useMemo(() => {
     return (
-      recruitmentApplications?.filter((a) => a.status === "pending").length || 0
+      recruitmentApplications?.filter((a) => a.status === "pending" && a.isCurrent !== false).length || 0
     );
   }, [recruitmentApplications]);
 

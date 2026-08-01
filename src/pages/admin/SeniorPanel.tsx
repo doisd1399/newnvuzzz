@@ -379,7 +379,7 @@ export default function SeniorPanel() {
 
       return {
         ...c,
-        ownerEmail: owner?.email || "N/A",
+        ownerEmail: c.email || c.ownerEmail || owner?.email || "N/A",
         totalEmployees: members.length,
         totalDrivers: members.filter((m) => m.roles.includes("driver")).length,
         totalAdmins: members.filter((m) => m.roles.includes("admin")).length,
@@ -483,6 +483,9 @@ export default function SeniorPanel() {
       const canonicalSimulatorId =
         matchingSimulator?.id || resolveSimulatorId(normalizedRegistration, simulators);
       const companyCreatedAt = new Date().toISOString();
+      const registrationEmail = String(normalizedRegistration.email || "")
+        .trim()
+        .toLowerCase();
 
       const batch = writeBatch(db);
       const newCompanyRef = doc(collection(db, "frotas"));
@@ -490,6 +493,8 @@ export default function SeniorPanel() {
       const companyPayload = {
         companyName: normalizedRegistration.companyName,
         ownerName: normalizedRegistration.ownerName,
+        email: registrationEmail,
+        ownerEmail: registrationEmail,
         simulatorId: canonicalSimulatorId,
         simulatorName: normalizedRegistration.simulatorName || "Euro Truck Simulator 2",
         cnpj: normalizedRegistration.cnpj,
@@ -509,9 +514,6 @@ export default function SeniorPanel() {
       };
 
       let finalUserId = "";
-      const registrationEmail = String(normalizedRegistration.email || "")
-        .trim()
-        .toLowerCase();
 
       // 1. Use the submitted UID only when it belongs to the same e-mail.
       // Older forms could retain another account's UID while the visible

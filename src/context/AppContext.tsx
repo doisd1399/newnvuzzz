@@ -82,6 +82,11 @@ export interface User {
   profilePhotoURL?: string;
   whatsapp?: string;
   applicationSubmitted?: boolean;
+  /** Documento da inscrição que está sendo acompanhada nesta sessão/conta. */
+  currentRecruitmentApplicationId?: string;
+  currentRecruitmentCompanyId?: string;
+  currentRecruitmentSimulatorId?: string;
+  currentRecruitmentStatus?: "pending" | "approved" | "rejected";
   status: "active" | "pending" | "rejected";
   isOnline?: boolean;
   level?: number;
@@ -138,6 +143,7 @@ export interface RecruitmentSettings {
 
 export interface RecruitmentApplication {
   id: string;
+  type?: "company_registration" | "driver_application";
   userId?: string;
   companyId: string;
   simulatorId?: string;
@@ -153,6 +159,11 @@ export interface RecruitmentApplication {
   primaryVehicle: string;
   secondaryVehicle: string;
   status: "pending" | "approved" | "rejected";
+  flowVersion?: number;
+  isCurrent?: boolean;
+  supersededAt?: string;
+  accessRevokedAt?: string;
+  accessRevokedReason?: string;
   createdAt: string;
 }
 
@@ -175,6 +186,8 @@ export interface CompanyProfile {
   simulatorName: string;
   simulatorId?: string;
   ownerName: string;
+  email?: string;
+  ownerEmail?: string;
   cnpj: string;
   whatsapp?: string;
   logoUrl?: string;
@@ -488,7 +501,7 @@ export interface AppContextType {
   ) => Promise<void>;
   submitRecruitmentApplication: (
     data: Omit<RecruitmentApplication, "id" | "status" | "createdAt">,
-  ) => Promise<void>;
+  ) => Promise<string>;
   approveRecruitmentApplication: (applicationId: string) => Promise<void>;
   rejectRecruitmentApplication: (applicationId: string) => Promise<void>;
   deleteRecruitmentApplication: (applicationId: string) => Promise<void>;
@@ -1730,154 +1743,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
         setSessionRecovering(false);
 
-        // Auto-migration for legacy relationships
-        if (
-          fetchedMemberships.length === 0 &&
-          (currentUser.memberships || currentUser.companyId)
-        ) {
-          console.log(
-            "Auto-migrating legacy memberships to companyMembers collection...",
-          );
-          const batch = writeBatch(db);
-          if (currentUser.memberships) {
-            Object.entries(currentUser.memberships).forEach(
-              ([compId, membershipData]) => {
-                const rolesList =
-                  resolveMembershipRoles({
-                    ...membershipData,
-                    companyId: compId,
-                  }) as Role[];
-                const docRef = doc(collection(db, "companyMembers"));
-                batch.set(docRef, {
-                  companyId: compId,
-                  userId: currentUser.id,
-                  roles: rolesList,
-                  status: membershipData.status || "active",
-                  permissions: rolesList.includes("admin")
-                    ? ["admin", "owner", "manage_fleet", "all"]
-                    : [],
-                  joinedAt: new Date().toISOString(),
-                });
-              },
-            );
-          }
-
-          if (
-            currentUser.companyId &&
-            (!currentUser.memberships ||
-              !currentUser.memberships[currentUser.companyId])
-          ) {
-            const rolesList = resolveMembershipRoles(
-              null,
-              currentUser,
-            ) as Role[];
-            const docRef = doc(collection(db, "companyMembers"));
-            batch.set(docRef, {
-              companyId: currentUser.companyId,
-              userId: currentUser.id,
-              roles: rolesList,
-              status: "active",
-              permissions: rolesList.includes("admin")
-                ? ["admin", "owner", "manage_fleet", "all"]
-                : [],
-              joinedAt: new Date().toISOString(),
-            });
-          }
-          if (!canProcessAuthenticatedCallback(currentUser.id)) return;
-          await batch
-            .commit()
-            .then(() => {
-              if (
-                isLoggingOutRef.current ||
-                isAuthTeardownActive() ||
-                !auth.currentUser
-              ) return;
-
-              // Snapshot listener should pick up the newly created docs shortly.
-              if (currentUser.memberships) {
-                Object.entries(currentUser.memberships).forEach(([compId, membershipData]) => {
-                  const rolesList = resolveMembershipRoles({
-                    ...membershipData,
-                    companyId: compId,
-                  }) as Role[];
-                  syncSingleSimulatorMember(currentUser.id, compId, membershipData.status || "active", rolesList);
-                });
-              }
-              if (currentUser.companyId && (!currentUser.memberships || !currentUser.memberships[currentUser.companyId])) {
-                const rolesList = resolveMembershipRoles(
-                  null,
-                  currentUser,
-                ) as Role[];
-                syncSingleSimulatorMember(currentUser.id, currentUser.companyId, "active", rolesList);
-              }
-            })
-            .catch((e) => {
-              if (
-                isLoggingOutRef.current ||
-                isAuthTeardownActive() ||
-                !auth.currentUser
-              ) return;
-
-              console.error("Auto-migration failed:", e.message);
-
-              // Fallback: Populate local memberships so the app doesn't break
-              const mockMemberships: CompanyMember[] = [];
-              if (currentUser.memberships) {
-                Object.entries(currentUser.memberships).forEach(
-                  ([compId, membershipData]) => {
-                    const rolesList = resolveMembershipRoles({
-                      ...membershipData,
-                      companyId: compId,
-                    }) as Role[];
-                    mockMemberships.push({
-                      id: "mock-" + compId,
-                      companyId: compId,
-                      userId: currentUser.id,
-                      roles: rolesList,
-                      status: (membershipData.status as any) || "active",
-                      permissions: rolesList.includes("admin")
-                        ? ["admin", "owner", "manage_fleet", "all"]
-                        : [],
-                      joinedAt: new Date().toISOString(),
-                    });
-                  },
-                );
-              }
-
-              if (
-                currentUser.companyId &&
-                (!currentUser.memberships ||
-                  !currentUser.memberships[currentUser.companyId])
-              ) {
-                const rolesList = resolveMembershipRoles(
-                  null,
-                  currentUser,
-                ) as Role[];
-                mockMemberships.push({
-                  id: "mock-" + currentUser.companyId,
-                  companyId: currentUser.companyId,
-                  userId: currentUser.id,
-                  roles: rolesList,
-                  status: "active",
-                  permissions: rolesList.includes("admin")
-                    ? ["admin", "owner", "manage_fleet", "all"]
-                    : [],
-                  joinedAt: new Date().toISOString(),
-                });
-              }
-              membershipsRef.current = mockMemberships;
-              setMemberships(mockMemberships);
-              writeCachedMemberships(currentUser.id, mockMemberships);
-              setMembershipsLoaded(true);
-              setSessionRecovering(false);
-            });
-        } else {
-          membershipsRef.current = fetchedMemberships;
-          setMemberships(fetchedMemberships);
-          writeCachedMemberships(currentUser.id, fetchedMemberships);
-          setMembershipsLoaded(true);
-          setSessionRecovering(false);
-        }
+        // companyMembers é a única fonte de autorização. Nunca recrie um
+        // vínculo ativo a partir de companyId/memberships legados do usuário:
+        // após uma remoção, esses campos podem estar em cache ou pertencer a
+        // uma inscrição anterior e não podem devolver acesso silenciosamente.
+        membershipsRef.current = fetchedMemberships;
+        setMemberships(fetchedMemberships);
+        writeCachedMemberships(currentUser.id, fetchedMemberships);
+        setMembershipsLoaded(true);
+        setSessionRecovering(false);
       },
       (err) => {
         if (
@@ -2838,83 +2712,97 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         const membershipUserIds = new Set<string>();
         if (data.userId) membershipUserIds.add(data.userId);
         if (!data.userId && normalizedEmail) {
-          const usersByEmail = await getDocs(
-            query(collection(db, "users"), where("email", "==", normalizedEmail)),
-          );
-          usersByEmail.docs.forEach((userDoc) => membershipUserIds.add(userDoc.id));
+          try {
+            const usersByEmail = await getDocs(
+              query(collection(db, "users"), where("email", "==", normalizedEmail)),
+            );
+            usersByEmail.docs.forEach((userDoc) => membershipUserIds.add(userDoc.id));
+          } catch (err) {
+            console.warn("Could not fetch user by email query (likely permissions):", err);
+          }
         }
 
         const membershipSnapshots = await Promise.all(
-          Array.from(membershipUserIds).map((userId) =>
-            getDocs(
-              query(
-                collection(db, "companyMembers"),
-                where("userId", "==", userId),
-                where("companyId", "==", data.companyId),
-                where("status", "==", "active"),
-              ),
-            ),
-          ),
+          Array.from(membershipUserIds).map(async (userId) => {
+            try {
+              return await getDocs(
+                query(
+                  collection(db, "companyMembers"),
+                  where("userId", "==", userId),
+                  where("companyId", "==", data.companyId),
+                  where("status", "==", "active"),
+                ),
+              );
+            } catch (err) {
+              console.warn("Could not fetch membership query (likely permissions):", err);
+              return null;
+            }
+          }),
         );
-        if (membershipSnapshots.some((snapshot) => !snapshot.empty)) {
+        if (membershipSnapshots.filter(Boolean).some((snapshot) => !snapshot!.empty)) {
           throw new Error("Você já faz parte desta empresa e não precisa enviar uma nova inscrição.");
         }
 
-        // Check both identifiers when available so a legacy e-mail-only
-        // application cannot be duplicated after a Google/Auth UID is added.
-        const applicationQueries = [
-          data.userId
-            ? query(
-                collection(db, "recruitment_applications"),
-                where("userId", "==", data.userId),
-                where("companyId", "==", data.companyId),
-                where("status", "in", ["pending", "approved"]),
-              )
-            : null,
-          normalizedEmail
-            ? query(
-                collection(db, "recruitment_applications"),
-                where("email", "==", normalizedEmail),
-                where("companyId", "==", data.companyId),
-                where("status", "in", ["pending", "approved"]),
-              )
-            : null,
-        ].filter(Boolean) as ReturnType<typeof query>[];
-        const applicationSnapshots = await Promise.all(
-          applicationQueries.map((applicationQuery) => getDocs(applicationQuery)),
-        );
-        const existingAppsById = new Map<string, RecruitmentApplication>();
-        applicationSnapshots.forEach((snapshot) => {
-          snapshot.docs.forEach((applicationDoc) => {
-            existingAppsById.set(applicationDoc.id, {
-              id: applicationDoc.id,
-              ...(applicationDoc.data() as Record<string, unknown>),
-            } as RecruitmentApplication);
-          });
-        });
-        const targetSimulatorId = resolveSimulatorId(data, simulators);
-        const existingApps = Array.from(existingAppsById.values()).filter((application) => {
-          const existingSimulatorId = resolveSimulatorId(application, simulators);
-          return targetSimulatorId
-            ? existingSimulatorId === targetSimulatorId
-            : application.simulatorId === data.simulatorId;
-        });
-
-        if (existingApps.length > 0) {
-          throw new Error("Você já enviou uma inscrição para esta empresa neste simulador.");
-        }
       }
 
-      // Don't enforce current user auth - this is a public form
-      const applicationRef = await addDoc(
-        collection(db, "recruitment_applications"),
-        {
+      // Cada envio é uma nova instância do fluxo. O histórico continua visível
+      // ao RH, mas nunca bloqueia ou é reutilizado para montar esta inscrição.
+      const createdAt = new Date().toISOString();
+      if (data.userId || normalizedEmail) {
+        try {
+          const previousQueries = [
+            data.userId
+              ? query(
+                  collection(db, "recruitment_applications"),
+                  where("userId", "==", data.userId),
+                )
+              : null,
+            normalizedEmail
+              ? query(
+                  collection(db, "recruitment_applications"),
+                  where("email", "==", normalizedEmail),
+                )
+              : null,
+          ].filter(Boolean) as ReturnType<typeof query>[];
+          const previousSnapshots = await Promise.all(
+            previousQueries.map((previousQuery) => getDocs(previousQuery)),
+          );
+          const previousRefs = new Map<string, any>();
+          previousSnapshots.forEach((snapshot) =>
+            snapshot.docs.forEach((previousApplication) =>
+              previousRefs.set(previousApplication.id, previousApplication.ref),
+            ),
+          );
+          await Promise.all(
+            Array.from(previousRefs.values()).map((previousRef) =>
+              updateDoc(previousRef, {
+                isCurrent: false,
+                supersededAt: createdAt,
+              }),
+            ),
+          );
+        } catch (historyError) {
+          console.warn(
+            "Não foi possível marcar todo o histórico como substituído; a nova inscrição continuará independente.",
+            historyError,
+          );
+        }
+      }
+      const applicationRef = doc(collection(db, "recruitment_applications"));
+      try {
+        await setDoc(applicationRef, {
           ...data,
+          type: "driver_application",
           email: normalizedEmail,
           status: "pending",
-          createdAt: new Date().toISOString(),
-        },
-      );
+          flowVersion: 2,
+          isCurrent: true,
+          createdAt,
+        });
+      } catch (err) {
+        console.error("addDoc recruitment_applications failed:", err);
+        throw new Error("addDoc recruitment_applications failed: " + err.message);
+      }
 
       try {
         await createCorporateNotifications({
@@ -2934,15 +2822,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (auth.currentUser) {
         // Use setDoc with merge: true instead of updateDoc to ensure it doesn't fail if the user doc hasn't been created yet
-        await setDoc(
-          doc(db, "users", auth.currentUser.uid),
-          {
-            applicationSubmitted: true,
-            status: "pending", // Update their own user status
-          },
-          { merge: true },
-        );
+        try {
+          await setDoc(
+            doc(db, "users", auth.currentUser.uid),
+            {
+              applicationSubmitted: true,
+              currentRecruitmentApplicationId: applicationRef.id,
+              currentRecruitmentCompanyId: data.companyId,
+              currentRecruitmentSimulatorId: resolveSimulatorId(data, simulators) || data.simulatorId || "",
+              currentRecruitmentStatus: "pending",
+              // A nova inscrição substitui qualquer aprovação antiga como
+              // referência de acesso/identidade do fluxo.
+              approvedIdentityApplicationId: deleteField(),
+              approvedIdentityName: deleteField(),
+            },
+            { merge: true },
+          );
+        } catch (err) {
+          console.error("setDoc users failed:", err);
+          throw new Error("setDoc users failed: " + err.message);
+        }
       }
+
+      setRecruitmentApplications((current) => {
+        const optimisticApplication: RecruitmentApplication = {
+          id: applicationRef.id,
+          type: "driver_application",
+          userId: data.userId,
+          companyId: data.companyId,
+          simulatorId: data.simulatorId,
+          applicationPhotoURL: data.applicationPhotoURL,
+          applicationPhotoTransport: data.applicationPhotoTransport,
+          fullName: data.fullName,
+          whatsapp: data.whatsapp,
+          email: normalizedEmail,
+          reason: data.reason,
+          objective: data.objective,
+          deliveriesPerWeek: data.deliveriesPerWeek,
+          hasExperience: data.hasExperience,
+          primaryVehicle: data.primaryVehicle,
+          secondaryVehicle: data.secondaryVehicle,
+          status: "pending",
+          flowVersion: 2,
+          isCurrent: true,
+          createdAt,
+        };
+        return [
+          optimisticApplication,
+          ...current.filter((application) => application.id !== applicationRef.id),
+        ];
+      });
+
+      return applicationRef.id;
     } catch (e) {
       console.error(e);
       throw e;
@@ -2970,7 +2901,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             ...applicationSnapshot.data(),
           } as RecruitmentApplication)
         : stateApplication;
-      if (app.status !== "pending") return;
+      // Allow approving applications that are pending or rejected, but not already approved
+      if (app.status === "approved") return;
+
+      if (
+        app.isCurrent === false ||
+        app.accessRevokedAt ||
+        app.accessRevokedReason === "removed_from_fleet"
+      ) {
+        throw new Error("Esta inscrição pertence ao histórico e não pode liberar acesso. O motorista precisa enviar uma nova inscrição.");
+      }
+
+      // Uma inscrição nova torna as anteriores apenas histórico. Mesmo que o
+      // RH abra uma linha antiga, ela não pode criar vínculo nem substituir a
+      // empresa da inscrição corrente.
+      const submittedUserId = String(app.userId || "").trim();
+      if (submittedUserId) {
+        const submittedUserSnapshot = await getDoc(doc(db, "users", submittedUserId));
+        const currentApplicationId = String(
+          submittedUserSnapshot.data()?.currentRecruitmentApplicationId || "",
+        ).trim();
+        if (currentApplicationId && currentApplicationId !== applicationId) {
+          throw new Error("Esta inscrição foi substituída por uma inscrição mais recente e não pode liberar acesso.");
+        }
+      }
 
       // O UID informado pela própria inscrição é a identidade canônica.
       // O e-mail é usado apenas como fallback para inscrições legadas. Isso
@@ -3030,6 +2984,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           approvedIdentityName: app.fullName,
           approvedIdentityApplicationId: applicationId,
           status: "active",
+          currentRecruitmentApplicationId: applicationId,
+          currentRecruitmentCompanyId: app.companyId,
+          currentRecruitmentSimulatorId: resolveSimulatorId(app, simulators),
+          currentRecruitmentStatus: "approved",
           companyId: app.companyId,
           role: currentUserData.role === "admin" ? "admin" : "driver",
           roles: canonicalRoles,
@@ -3089,6 +3047,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
       await updateDoc(doc(db, "recruitment_applications", applicationId), {
         status: "approved",
+        isCurrent: true,
         userId,
         email: normalizedEmail,
         updatedAt: new Date().toISOString(),
@@ -3147,22 +3106,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
 
-      if (app && app.userId) {
-        const u = await getDoc(doc(db, "users", app.userId));
-        if (u.exists() && u.data().status === "pending") {
-          await updateDoc(doc(db, "users", app.userId), { status: "rejected" });
-        }
-      } else if (app && app.email) {
-        const q = query(
-          collection(db, "users"),
-          where("email", "==", app.email.trim().toLowerCase()),
-        );
-        const qs = await getDocs(q);
-        if (!qs.empty && qs.docs[0].data().status === "pending") {
-          await updateDoc(doc(db, "users", qs.docs[0].id), {
-            status: "rejected",
+      if (app?.userId) {
+        const userRef = doc(db, "users", app.userId);
+        const userSnapshot = await getDoc(userRef);
+        const currentApplicationId = String(
+          userSnapshot.data()?.currentRecruitmentApplicationId || "",
+        ).trim();
+        if (userSnapshot.exists() && currentApplicationId === applicationId) {
+          await updateDoc(userRef, {
+            currentRecruitmentStatus: "rejected",
+            updatedAt: new Date().toISOString(),
           });
-
         }
       }
     } catch (e) {
@@ -3186,8 +3140,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const uid = getCurrentUserId();
       console.log("[DEBUG] createCompany -> UID:", uid, "Data:", data);
       const cnpj = generateCnpj();
+      const ownerEmail = String(
+        data.email || data.ownerEmail || currentUserRef.current?.email || "",
+      )
+        .trim()
+        .toLowerCase();
       const payload = {
         ...data,
+        ...(ownerEmail && {
+          email: ownerEmail,
+          ownerEmail,
+        }),
         userId: uid,
         ownerId: uid,
         cnpj,
@@ -4282,6 +4245,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           updates.status = "pending";
           updates.role = "driver";
           updates.roles = ["driver"];
+        }
+
+        // A remoção encerra a referência de recrutamento daquela empresa. Sem
+        // limpar esse ponteiro, o login poderia voltar a abrir uma aprovação
+        // antiga antes de o motorista enviar um novo formulário.
+        if (driverDoc.data().currentRecruitmentCompanyId === activeCompanyId) {
+          updates.currentRecruitmentApplicationId = deleteField();
+          updates.currentRecruitmentCompanyId = deleteField();
+          updates.currentRecruitmentSimulatorId = deleteField();
+          updates.currentRecruitmentStatus = deleteField();
+          updates.approvedIdentityApplicationId = deleteField();
+          updates.approvedIdentityName = deleteField();
         }
 
         removalBatch.update(driverRef, updates);

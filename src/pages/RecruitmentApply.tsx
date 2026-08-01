@@ -1,7 +1,7 @@
 import { resolveSimulatorId } from "../lib/resolveSimulator";
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useActivityStore, useOperationalStore, useSessionStore } from "../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../context/AppContext";
 import {
   CheckCircle2,
   ChevronRight,
@@ -100,13 +100,50 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number) => {
   }
 };
 
+type RecruitmentFormData = {
+  applicationPhotoURL: string;
+  fullName: string;
+  whatsapp: string;
+  email: string;
+  reason: string;
+  objective: string;
+  deliveriesPerWeek: string;
+  hasExperience: boolean;
+  primaryVehicle: string;
+  secondaryVehicle: string;
+};
+
+type RecruitmentIdentityLike = {
+  displayName?: string | null;
+  email?: string | null;
+} | null;
+
+const buildRecruitmentDraft = (
+  identity: RecruitmentIdentityLike,
+): RecruitmentFormData => ({
+  applicationPhotoURL: "",
+  // Nome, WhatsApp, foto e respostas pertencem exclusivamente ao novo
+  // formulário; não herdar identidade de uma inscrição anterior.
+  fullName: "",
+  whatsapp: "",
+  email: identity?.email?.trim() || "",
+  reason: "",
+  objective: "",
+  deliveriesPerWeek: "",
+  hasExperience: false,
+  primaryVehicle: "",
+  secondaryVehicle: "",
+});
+
+const PENDING_RECRUITMENT_APPLICATION_ID_KEY =
+  "nvu.pendingRecruitmentApplicationId";
+
 export default function RecruitmentApply() {
   const { companyId } = useParams();
   const navigate = useNavigate();
   const {
     allCompanies,
     companiesLoading,
-    authInitialized,
     sessionReady,
     currentUser,
     memberships,
@@ -117,7 +154,6 @@ export default function RecruitmentApply() {
     simulatorsError,
     submitRecruitmentApplication,
   } = useOperationalStore();
-  const { recruitmentApplications } = useActivityStore();
 
   const [selectedSimulatorId, setSelectedSimulatorId] = useState("");
   // simulatorName is only for display; simulatorId is the canonical key.
@@ -140,75 +176,43 @@ export default function RecruitmentApply() {
       return 'member';
     }
 
-    // Check application status
-    const existingApps = recruitmentApplications.filter(a => 
-      (a.userId === verifiedCurrentUser.id || String(a.email || "").toLowerCase() === verifiedCurrentUser.email?.toLowerCase()) &&
-      a.companyId === company.id &&
-      a.simulatorId === selectedSimulatorId
-    );
-    
-    if (existingApps.length > 0) {
-      const pendingOrApproved = existingApps.find(a => a.status === "pending" || a.status === "approved");
-      if (pendingOrApproved) {
-        if (pendingOrApproved.status === "approved") return "approved";
-        return "pending";
-      }
-      
-      const rejectedOrCanceled = existingApps.find(a => a.status === "rejected" || (a.status as any) === "cancelled" || (a.status as any) === "rejected" || (a.status as any) === "cancelado");
-      if (rejectedOrCanceled) {
-         return "rejected"; 
-      }
-    }
-
     return 'eligible';
-  }, [verifiedCurrentUser, company, selectedSimulatorId, memberships, recruitmentApplications]);
+  }, [verifiedCurrentUser, company, selectedSimulatorId, memberships]);
 
   const [step, setStep] = useState(1); // 1 = info, 2 = form, 3 = success
   const [submitting, setSubmitting] = useState(false);
 
-  const [formData, setFormData] = useState({
-    applicationPhotoURL: "",
-    fullName: "",
-    whatsapp: "",
-    email: "",
-    reason: "",
-    objective: "",
-    deliveriesPerWeek: "",
-    hasExperience: false,
-    primaryVehicle: "",
-    secondaryVehicle: "",
-  });
+  const [formData, setFormData] = useState<RecruitmentFormData>(() =>
+    buildRecruitmentDraft(null),
+  );
   const [googleUid, setGoogleUid] = useState<string | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const imageSelectionVersion = useRef(0);
-  const formIdentityUidRef = useRef<string | null>(null);
   const activeIdentityUid =
     verifiedCurrentUser?.id || auth.currentUser?.uid || null;
+  const formScope = `${activeIdentityUid || ""}::${selectedCompanyId || companyId || ""}::${selectedSimulatorId || ""}`;
+  const formScopeRef = useRef("");
 
-  // A route can remain mounted while Firebase changes accounts. Never carry
-  // the previous applicant's name, e-mail or photo into the next account.
+  // A route can remain mounted while Firebase changes accounts or companies.
+  // Never carry the previous applicant's data into the next draft.
   useEffect(() => {
-    const uid = activeIdentityUid;
-    const previousUid = formIdentityUidRef.current;
-    if (uid === previousUid) return;
-
-    formIdentityUidRef.current = uid;
-    setGoogleUid(uid);
+    if (formScopeRef.current === formScope) return;
+    formScopeRef.current = formScope;
+    setGoogleUid(activeIdentityUid);
+    setSubmitting(false);
+    setUploadingImage(false);
     setPhotoPreview(null);
-    setFormData((previous) => ({
-      ...previous,
-      fullName: uid ? verifiedCurrentUser?.name || "" : "",
-      email: uid ? verifiedCurrentUser?.email || "" : "",
-      whatsapp: uid ? verifiedCurrentUser?.whatsapp || "" : "",
-      applicationPhotoURL: "",
-    }));
+    imageSelectionVersion.current += 1;
+    setFormData(buildRecruitmentDraft(null));
+    setStep(1);
   }, [
     activeIdentityUid,
-    verifiedCurrentUser?.id,
-    verifiedCurrentUser?.name,
-    verifiedCurrentUser?.email,
-    verifiedCurrentUser?.whatsapp,
+    auth.currentUser,
+    companyId,
+    formScope,
+    selectedCompanyId,
+    selectedSimulatorId,
   ]);
 
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -291,12 +295,6 @@ export default function RecruitmentApply() {
       setCompany(null);
     }
   }, [selectedCompanyId, allCompanies]);
-
-  // We no longer strictly redirect user to /status here to allow applications to different simulators.
-  // Instead, the user may go to /status manually, or submit validation will catch duplicates.
-  React.useEffect(() => {
-    // No automatic redirection so the user can continue applying to other simulators if they wish.
-  }, [authInitialized, verifiedCurrentUser, recruitmentApplications, navigate]);
 
   if (!formReady) {
     return (
@@ -384,36 +382,9 @@ export default function RecruitmentApply() {
         </div>
       );
     }
-    if (userApplicationStatus === 'pending') {
-      return (
-        <div className="flex flex-col gap-3 w-full">
-          <div className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 p-3 rounded-xl border border-emerald-500/20 text-center font-medium w-full flex items-center justify-center gap-2 text-[15px]">
-            Inscrição enviada. Aguarde análise.
-          </div>
-          <Button onClick={handleReturnToCompanies} variant="outline" className={`w-full font-medium ${isFullWidth ? "" : "sm:mx-auto sm:max-w-xs"}`}>
-            Voltar para Empresas
-          </Button>
-        </div>
-      );
-    }
-    if (userApplicationStatus === 'approved') {
-      return (
-        <div className="flex flex-col gap-3 w-full">
-          <div className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 p-3 rounded-xl border border-emerald-500/20 text-center font-medium w-full flex items-center justify-center gap-2 text-[15px]">
-            Sua inscrição já foi aprovada.
-          </div>
-          <Button onClick={handleReturnToCompanies} variant="outline" className={`w-full font-medium ${isFullWidth ? "" : "sm:mx-auto sm:max-w-xs"}`}>
-            Voltar para Empresas
-          </Button>
-        </div>
-      );
-    }
-
     const buttonLabel = !verifiedCurrentUser
       ? "Acessar com Google"
-      : userApplicationStatus === 'rejected'
-        ? "Enviar Nova Inscrição"
-        : "Continuar Inscrição";
+      : "Continuar Inscrição";
 
     return (
       <Button
@@ -464,25 +435,8 @@ export default function RecruitmentApply() {
         alert("Você já faz parte desta empresa e não precisa enviar uma nova inscrição.");
         return;
       }
-      if (userApplicationStatus === 'pending') {
-        alert("Você já possui uma inscrição em análise para esta empresa neste simulador.");
-        return;
-      }
-      if (userApplicationStatus === 'approved') {
-        alert("Você já possui uma inscrição aprovada para esta empresa neste simulador.");
-        return;
-      }
-
-      setFormData((prev) => ({
-        ...prev,
-        fullName: verifiedCurrentUser.name || "",
-        email: verifiedCurrentUser.email || "",
-        whatsapp: verifiedCurrentUser.whatsapp || "",
-        applicationPhotoURL:
-          prev.applicationPhotoURL,
-      }));
-      setGoogleUid(verifiedCurrentUser.id);
-      formIdentityUidRef.current = verifiedCurrentUser.id;
+      setFormData(buildRecruitmentDraft(null));
+      setGoogleUid(auth.currentUser?.uid || verifiedCurrentUser.id);
       setPhotoPreview(null);
       setStep(2);
       return;
@@ -505,17 +459,10 @@ export default function RecruitmentApply() {
         resultUser = result.user;
       }
 
-      // Check after successful sign-in
-      // We need to re-evaluate based on the new uid, but since the new user might be loaded later to currentUser, let's do a local check
+      // Depois do login, valide somente a empresa e o vínculo atual. O
+      // histórico de inscrições não participa da abertura deste formulário.
       const isOwner = company.ownerId === resultUser.uid;
       const isMember = memberships.find(m => m.userId === resultUser.uid && m.companyId === company.id && m.status === 'active');
-      const existingApps = recruitmentApplications.filter(a => 
-        (a.userId === resultUser.uid || String(a.email || "").toLowerCase() === resultUser.email?.toLowerCase()) &&
-        a.companyId === company.id &&
-        a.simulatorId === selectedSimulatorId
-      );
-      
-      const pendingOrApproved = existingApps.find(a => a.status === "pending" || a.status === "approved");
 
       if (isOwner) {
         alert("Você é proprietário desta empresa e não pode se inscrever como motorista.");
@@ -525,24 +472,8 @@ export default function RecruitmentApply() {
         alert("Você já faz parte desta empresa e não precisa enviar uma nova inscrição.");
         return;
       }
-      if (pendingOrApproved) {
-        if (pendingOrApproved.status === "pending") {
-          alert("Você já possui uma inscrição em análise para esta empresa neste simulador.");
-        } else {
-          alert("Você já possui uma inscrição aprovada para esta empresa neste simulador.");
-        }
-        return; // Halt and stay on step 1
-      }
-
-      setFormData((prev) => ({
-        ...prev,
-        fullName: resultUser.displayName || "",
-        email: resultUser.email || "",
-        whatsapp: "",
-        applicationPhotoURL: "",
-      }));
+      setFormData(buildRecruitmentDraft(null));
       setGoogleUid(resultUser.uid);
-      formIdentityUidRef.current = resultUser.uid;
       setPhotoPreview(null);
       setStep(2);
     } catch (err: any) {
@@ -588,7 +519,6 @@ export default function RecruitmentApply() {
       return;
     }
 
-    // Check on frontend to prevent duplicate applications early
     const authenticatedUser = auth.currentUser;
     const uid = authenticatedUser?.uid || "";
     if (
@@ -615,22 +545,6 @@ export default function RecruitmentApply() {
     const isMember = memberships.find(m => m.userId === uid && m.companyId === company.id && m.status === 'active');
     if (isMember) {
       alert("Você já faz parte desta empresa e não precisa enviar uma nova inscrição.");
-      return;
-    }
-
-    const existingApps = recruitmentApplications.filter(a => 
-      (a.userId === uid || String(a.email || "").toLowerCase() === email) &&
-      a.companyId === company.id &&
-      a.simulatorId === selectedSimulatorId
-    );
-    const pendingOrApproved = existingApps.find(a => a.status === "pending" || a.status === "approved");
-
-    if (pendingOrApproved) {
-      if (pendingOrApproved.status === "pending") {
-        alert("Você já possui uma inscrição em análise para esta empresa neste simulador.");
-      } else {
-        alert("Você já possui uma inscrição aprovada para esta empresa neste simulador.");
-      }
       return;
     }
 
@@ -676,7 +590,7 @@ export default function RecruitmentApply() {
         }
       }
 
-      await submitRecruitmentApplication({
+      const applicationId = await submitRecruitmentApplication({
         companyId: company.id,
         simulatorId: selectedSimulatorId,
         ...formData,
@@ -687,8 +601,14 @@ export default function RecruitmentApply() {
           "",
         applicationPhotoTransport,
       });
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(
+          PENDING_RECRUITMENT_APPLICATION_ID_KEY,
+          applicationId,
+        );
+      }
       // Redirect to the centralized status page instead of a generic success message
-      navigate("/status", { replace: true });
+      navigate("/status", { replace: true, state: { applicationId } });
     } catch (e: any) {
       alert("Erro ao enviar solicitação: " + (e?.message || e));
     } finally {

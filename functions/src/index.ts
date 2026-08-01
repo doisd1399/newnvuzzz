@@ -280,44 +280,53 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     );
   }
 
-  const uid = context.auth.uid;
-  const email = String(context.auth.token.email || "").trim().toLowerCase();
-  const candidates = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
-
-  const byUid = await db.collection("recruitment_applications").where("userId", "==", uid).get();
-  byUid.forEach((document) => candidates.set(document.id, document));
-
-  if (email) {
-    const byEmail = await db.collection("recruitment_applications").where("email", "==", email).get();
-    byEmail.forEach((document) => candidates.set(document.id, document));
-  }
-
-  const approved = Array.from(candidates.values())
-    .filter((document) => document.data().status === "approved")
-    .sort((a, b) => {
-      const toMillis = (value: unknown): number => {
-        if (value instanceof admin.firestore.Timestamp) return value.toMillis();
-        if (typeof value === "string") {
-          const parsed = Date.parse(value);
-          return Number.isNaN(parsed) ? 0 : parsed;
-        }
-        return 0;
-      };
-      const aData = a.data();
-      const bData = b.data();
-      return toMillis(bData.updatedAt || bData.createdAt) - toMillis(aData.updatedAt || aData.createdAt);
-    });
-
-  if (approved.length === 0) {
+  const applicationId = String(
+    (_data as { applicationId?: unknown } | undefined)?.applicationId || "",
+  ).trim();
+  if (!applicationId) {
     throw new functions.https.HttpsError(
-      "failed-precondition",
-      "Nenhuma inscrição aprovada foi encontrada para esta conta.",
+      "invalid-argument",
+      "O applicationId é obrigatório para reparar o acesso.",
     );
   }
 
-  const applicationDoc = approved[0];
-  const application = applicationDoc.data();
+  const uid = context.auth.uid;
+  const email = String(context.auth.token.email || "").trim().toLowerCase();
+  const applicationRef = db.collection("recruitment_applications").doc(applicationId);
+  const applicationSnapshot = await applicationRef.get();
+
+  if (!applicationSnapshot.exists) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "A inscrição aprovada não está mais disponível.",
+    );
+  }
+
+  const application = applicationSnapshot.data() || {};
+  const applicationUserId = String(application.userId || "").trim();
+  const applicationEmail = String(application.email || "").trim().toLowerCase();
   const companyId = String(application.companyId || "").trim();
+  const identityMatches =
+    applicationUserId === uid || Boolean(email && applicationEmail && applicationEmail === email);
+
+  if (!identityMatches) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "A inscrição não pertence à conta autenticada.",
+    );
+  }
+
+  const userRef = db.collection("users").doc(uid);
+  const userBeforeRepair = await userRef.get();
+  const currentApplicationId = String(
+    userBeforeRepair.data()?.currentRecruitmentApplicationId || "",
+  ).trim();
+  if (currentApplicationId && currentApplicationId !== applicationId) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "Esta aprovação pertence a uma inscrição anterior e não pode liberar acesso.",
+    );
+  }
 
   if (!companyId) {
     throw new functions.https.HttpsError(
@@ -326,17 +335,28 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     );
   }
 
+  if (
+    application.status !== "approved" ||
+    application.accessRevokedAt ||
+    application.accessRevokedReason === "removed_from_fleet"
+  ) {
+    throw new functions.https.HttpsError(
+      "failed-precondition",
+      "A inscrição foi revogada e precisa ser reenviada.",
+    );
+  }
+
   const now = admin.firestore.FieldValue.serverTimestamp();
-  const userRef = db.collection("users").doc(uid);
-  const membershipQuery = await db.collection("companyMembers")
+  const membershipQuery = await db
+    .collection("companyMembers")
     .where("userId", "==", uid)
     .where("companyId", "==", companyId)
     .get();
   const membershipRefs = membershipQuery.docs.map((document) => document.ref);
 
   await db.runTransaction(async (transaction) => {
-    const [applicationSnapshot, ...membershipSnapshots] = await Promise.all([
-      transaction.get(applicationDoc.ref),
+    const [freshApplicationSnapshot, ...membershipSnapshots] = await Promise.all([
+      transaction.get(applicationRef),
       ...membershipRefs.map((ref) => transaction.get(ref)),
     ]);
     const userSnapshot = await transaction.get(userRef);
@@ -344,14 +364,40 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     const existingRoles = Array.isArray(existingUser.roles) ? existingUser.roles : [];
     const roles = Array.from(new Set([...existingRoles, "driver"]));
 
-    if (!applicationSnapshot.exists) {
+    if (!freshApplicationSnapshot.exists) {
       throw new functions.https.HttpsError(
         "failed-precondition",
         "A inscrição aprovada não está mais disponível.",
       );
     }
 
-    const currentApplication = applicationSnapshot.data() || {};
+    const currentApplication = freshApplicationSnapshot.data() || {};
+    const currentApplicationEmail = String(currentApplication.email || "").trim().toLowerCase();
+    const currentApplicationUserId = String(currentApplication.userId || "").trim();
+    const currentIdentityMatches =
+      currentApplicationUserId === uid ||
+      Boolean(email && currentApplicationEmail && currentApplicationEmail === email);
+
+    if (!currentIdentityMatches) {
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        "A inscrição não pertence à conta autenticada.",
+      );
+    }
+
+    const transactionCurrentApplicationId = String(
+      existingUser.currentRecruitmentApplicationId || "",
+    ).trim();
+    if (
+      transactionCurrentApplicationId &&
+      transactionCurrentApplicationId !== applicationId
+    ) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Esta aprovação pertence a uma inscrição anterior e não pode liberar acesso.",
+      );
+    }
+
     if (
       currentApplication.status !== "approved" ||
       currentApplication.accessRevokedAt ||
@@ -367,12 +413,22 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
       userRef,
       {
         id: uid,
-        email: email || String(application.email || existingUser.email || "").trim().toLowerCase(),
-        name: application.fullName || existingUser.name || context.auth?.token.name || "Usuário",
-        whatsapp: application.whatsapp || existingUser.whatsapp || "",
-        profilePhotoURL: application.applicationPhotoURL || existingUser.profilePhotoURL || "",
+        email:
+          email ||
+          String(currentApplication.email || existingUser.email || "").trim().toLowerCase(),
+        name:
+          currentApplication.fullName ||
+          existingUser.name ||
+          context.auth?.token.name ||
+          "Usuário",
+        whatsapp: currentApplication.whatsapp || existingUser.whatsapp || "",
+        profilePhotoURL:
+          currentApplication.applicationPhotoURL || existingUser.profilePhotoURL || "",
         companyId,
         status: "active",
+        currentRecruitmentApplicationId: applicationId,
+        currentRecruitmentCompanyId: companyId,
+        currentRecruitmentStatus: "approved",
         role: existingUser.role === "admin" ? "admin" : "driver",
         roles,
         updatedAt: now,
@@ -412,10 +468,11 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     }
 
     transaction.set(
-      applicationDoc.ref,
+      applicationRef,
       {
         userId: uid,
-        email: email || String(application.email || "").trim().toLowerCase(),
+        email:
+          email || String(currentApplication.email || "").trim().toLowerCase(),
         status: "approved",
         accessRepairedAt: now,
         updatedAt: now,
@@ -424,4 +481,5 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
     );
   });
 
-  return { success: true, userId: uid, companyId, applicationId: applicationDoc.id };
+  return { success: true, userId: uid, companyId, applicationId };
+});

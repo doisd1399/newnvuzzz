@@ -3,12 +3,11 @@ import { Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useSessionStore } from "../context/AppContext";
 import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { auth, db } from "../lib/firebase";
+import { auth } from "../lib/firebase";
 import { unifyUserDocument } from "../services/userIdentityService";
 import { GoogleAuthProvider, signInWithPopup, signInWithCredential } from "firebase/auth";
 import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
-import { query, collection, where, getDocs, or } from "firebase/firestore";
 import { preloadRoute } from "../lib/routePreload";
 
 export default function Login() {
@@ -63,32 +62,23 @@ export default function Login() {
             return;
           }
 
-          // 2. Include legacy applications that were saved by e-mail only.
-          const normalizedEmail = currentUser.email?.trim().toLowerCase();
-          const reqQuery = normalizedEmail
-            ? query(
-                collection(db, "recruitment_applications"),
-                or(
-                  where("userId", "==", currentUser.id),
-                  where("email", "==", normalizedEmail),
-                ),
-              )
-            : query(
-                collection(db, "recruitment_applications"),
-                where("userId", "==", currentUser.id),
-              );
-          const reqSnap = await getDocs(reqQuery);
-          const hasApplication = reqSnap.docs.some((applicationDocument) => {
-            const status = applicationDocument.data().status;
-            return status === "pending" || status === "approved";
-          });
-
-          if (hasApplication) {
-            if (active) navigate("/status", { replace: true });
+          // Só a inscrição corrente, gravada no documento canônico do usuário,
+          // pode abrir o acompanhamento. O histórico por e-mail não decide rota.
+          const currentApplicationId = String(
+            (currentUser as any).currentRecruitmentApplicationId || "",
+          ).trim();
+          if (currentApplicationId) {
+            if (active) {
+              navigate("/status", {
+                replace: true,
+                state: { applicationId: currentApplicationId },
+              });
+            }
             return;
           }
 
-          // 3. No membership and no applications, return to portal
+          // Sem vínculo e sem uma inscrição corrente, o usuário inicia o fluxo
+          // limpo pelo portal, sem ser enviado para uma inscrição antiga.
           if (active) navigate("/", { replace: true });
         }
       } catch (err) {

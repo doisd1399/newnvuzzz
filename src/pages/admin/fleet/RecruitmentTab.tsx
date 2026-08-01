@@ -333,13 +333,13 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
   };
 
   const pendingApps = applications
-    .filter((a) => a.status === "pending" && filterFn(a))
+    .filter((a) => a.status === "pending" && a.isCurrent !== false && filterFn(a))
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
   const historyApps = applications
-    .filter((a) => a.status !== "pending" && filterFn(a))
+    .filter((a) => (a.status !== "pending" || a.isCurrent === false) && filterFn(a))
     .sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -722,7 +722,7 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
                     {selectedHistoryApp.status === "pending" && (
                       <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 dark:bg-amber-500/10 text-amber-700 border border-amber-200 dark:border-amber-500/30/50">
-                        Pendente
+                        {selectedHistoryApp.isCurrent === false ? "Substituída" : "Pendente"}
                       </span>
                     )}
                     {selectedHistoryApp.status === "approved" && (
@@ -879,7 +879,7 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
 
             {/* Modal Footer / Actions */}
             <div className="p-4 border-t border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] flex flex-col sm:flex-row gap-2">
-              {selectedHistoryApp.status === "pending" ? (
+              {selectedHistoryApp.status === "pending" && selectedHistoryApp.isCurrent !== false ? (
                 <>
                   <Button
                     onClick={() => {

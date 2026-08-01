@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTripHistory } from "../../../hooks/useTripHistory";
 import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { doc, getDoc } from "firebase/firestore";
 import { PeriodSelector, DateRange } from "./PeriodSelector";
 import { CompanyPerformanceCard } from "../../../components/CompanyPerformanceCard";
 import {
@@ -31,6 +32,7 @@ import {
   resolveCompanySimulatorFilterValue,
 } from "../../../lib/simulatorOptions";
 import { uploadService } from "../../../services/uploadService";
+import { db } from "../../../lib/firebase";
 
 function CompanyTab({
   isEditingProp,
@@ -63,6 +65,23 @@ function CompanyTab({
   const activeCompany =
     companies.find((company) => company.id === activeCompanyId) ||
     allCompanies.find((company) => company.id === activeCompanyId);
+  const [resolvedCompanyEmail, setResolvedCompanyEmail] = useState("");
+  const companyDirectEmail = useMemo(() => {
+    if (!activeCompany) return "";
+    const emailCandidates = [
+      activeCompany.email,
+      activeCompany.ownerEmail,
+      activeCompany.contactEmail,
+      activeCompany.companyEmail,
+    ];
+
+    return (
+      emailCandidates
+        .map((value) => String(value || "").trim())
+        .find(Boolean) || ""
+    );
+  }, [activeCompany]);
+  const companyInfoEmail = companyDirectEmail || resolvedCompanyEmail || "-";
   const { historicoTrips = [] } = useTripHistory(activeCompanyId, {
     enabled: performanceReady,
   });
@@ -76,6 +95,55 @@ function CompanyTab({
     const frame = window.requestAnimationFrame(() => setPerformanceReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, [activeCompanyId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setResolvedCompanyEmail("");
+    if (!activeCompany || companyDirectEmail) return;
+
+    const ownerId = String(activeCompany.ownerId || activeCompany.userId || "").trim();
+    const sourceRegistrationId = String(activeCompany.sourceRegistrationId || "").trim();
+
+    const resolveCompanyEmail = async () => {
+      try {
+        if (ownerId) {
+          const ownerSnapshot = await getDoc(doc(db, "users", ownerId));
+          const ownerEmail = String(ownerSnapshot.data()?.email || "").trim();
+          if (!cancelled && ownerEmail) {
+            setResolvedCompanyEmail(ownerEmail);
+            return;
+          }
+        }
+
+        if (sourceRegistrationId) {
+          const registrationSnapshot = await getDoc(
+            doc(db, "recruitment_applications", sourceRegistrationId),
+          );
+          const registrationEmail = String(
+            registrationSnapshot.data()?.email || "",
+          ).trim();
+          if (!cancelled && registrationEmail) {
+            setResolvedCompanyEmail(registrationEmail);
+          }
+        }
+      } catch (error) {
+        console.warn("[NVU Company] Falha ao resolver email da empresa:", error);
+      }
+    };
+
+    void resolveCompanyEmail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeCompany?.id,
+    activeCompany?.ownerId,
+    activeCompany?.sourceRegistrationId,
+    activeCompany?.userId,
+    companyDirectEmail,
+  ]);
   
   const isEditing =
     isEditingProp !== undefined ? isEditingProp : internalIsEditing;
@@ -638,7 +706,7 @@ function CompanyTab({
                   Email
                 </span>
                 <span className="font-semibold text-slate-900 dark:text-white text-right break-all ml-4">
-                  {currentUser?.email || "-"}
+                  {companyInfoEmail}
                 </span>
               </div>
               <div className="flex items-center justify-between border-b border-slate-100 dark:border-[#2A2F3A] py-3.5">

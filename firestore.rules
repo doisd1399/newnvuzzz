@@ -30,6 +30,11 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function isCompanyOwner(companyId) {
+      let company = get(/databases/$(database)/documents/frotas/$(companyId)).data;
+      return company != null && company.userId == request.auth.uid;
+    }
+
     // TEMPORARY COMPATIBILITY MODE (legacy Senior password 9173).
     // Firestore Rules cannot inspect the browser's password or sessionStorage.
     // Until the shared password is replaced with Firebase custom claims, the
@@ -50,19 +55,23 @@ service cloud.firestore {
         (resource.data.userId is string &&
           resource.data.userId == request.auth.uid) ||
         (resource.data.email is string &&
+          request.auth.token.email != null &&
+          resource.data.email == request.auth.token.email) ||
+        (resource.data.email is string &&
           hasUserEmail() &&
           resource.data.email == getUserData().email)
       );
     }
 
     function validCompanyRegistration() {
-      return request.resource.data.type == 'company_registration' &&
-        request.resource.data.companyName is string &&
-        request.resource.data.ownerName is string &&
-        request.resource.data.email is string &&
-        (request.resource.data.simulatorId is string ||
-          request.resource.data.simulatorName is string) &&
-        request.resource.data.status == 'pending';
+      return 'type' in request.resource.data &&
+        request.resource.data.type == 'company_registration' &&
+        'companyName' in request.resource.data && request.resource.data.companyName is string &&
+        'ownerName' in request.resource.data && request.resource.data.ownerName is string &&
+        'email' in request.resource.data && request.resource.data.email is string &&
+        (('simulatorId' in request.resource.data && request.resource.data.simulatorId is string) ||
+          ('simulatorName' in request.resource.data && request.resource.data.simulatorName is string)) &&
+        'status' in request.resource.data && request.resource.data.status == 'pending';
     }
 
     // 1. users
@@ -176,14 +185,14 @@ service cloud.firestore {
       // Company registration is the only intentionally public create flow.
       // Driver applications must come from an authenticated candidate.
       allow create: if validCompanyRegistration() ||
-        (isAuthenticated() && request.resource.data.type != 'company_registration');
+        (isAuthenticated() && (!('type' in request.resource.data) || request.resource.data.type != 'company_registration'));
       // The temporary legacy access function keeps the Senior panel usable
       // while the shared password mode is active. Replace it with a custom
       // claim before tightening these mixed-collection queries again.
       allow read: if hasLegacySeniorPanelAccess() || isAdmin() || isRegistrationOwner();
       allow update, delete: if hasLegacySeniorPanelAccess() || (
-        (resource.data.type == 'company_registration' && isSenior()) ||
-        (resource.data.type != 'company_registration' && isAdmin())
+        ('type' in resource.data && resource.data.type == 'company_registration' && isSenior()) ||
+        ((!('type' in resource.data) || resource.data.type != 'company_registration') && isAdmin())
       );
     }
 
@@ -207,19 +216,14 @@ service cloud.firestore {
     match /historico_viagens/{tripId} {
       allow read: if true;
       allow create: if request.auth != null;
-      allow update: if request.auth != null && (
-        (request.auth.token.role in ["admin", "owner"] &&
-         request.auth.token.empresaId == resource.data.empresaId)
-        ||
-        (request.auth.token.role == "driver" &&
-         request.auth.uid == resource.data.motoristaId)
-      );
-      allow delete: if request.auth != null && (
-        (request.auth.token.role in ["admin", "owner"] &&
-         request.auth.token.empresaId == resource.data.empresaId)
-        ||
-        (request.auth.token.role == "driver" &&
-         request.auth.uid == resource.data.motoristaId)
+      allow update, delete: if request.auth != null && (
+        request.auth.uid == resource.data.motoristaId ||
+        request.auth.uid == resource.data.criadoPor ||
+        isCompanyOwner(resource.data.empresaId) ||
+        isSenior() ||
+        isAdmin() ||
+        (request.auth.token.role != null && request.auth.token.role in ["admin", "owner"] && request.auth.token.empresaId == resource.data.empresaId) ||
+        hasLegacySeniorPanelAccess()
       );
     }
     

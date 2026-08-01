@@ -87,6 +87,9 @@ export interface TripRecord {
   [key: string]: any;
   valor: number;
   comprovanteUrl: string;
+  comprovanteTituloOriginal?: string;
+  comprovanteNomeOriginal?: string;
+  receiptOriginalName?: string;
   status: string;
   criadoPor: string;
   dataLancamento: any;
@@ -95,6 +98,30 @@ export interface TripRecord {
   dataFechamento?: any;
   date?: any;
 }
+
+const getTripReceiptOriginalTitle = (trip: TripRecord | null | undefined) => {
+  if (!trip) return "";
+
+  const candidates = [
+    trip.comprovanteTituloOriginal,
+    trip.comprovanteNomeOriginal,
+    trip.receiptOriginalName,
+    (trip as any).comprovanteOriginalName,
+    (trip as any).receiptFileName,
+    (trip as any).receiptTitle,
+    (trip as any).imageOriginalName,
+    (trip as any).imageTitle,
+    (trip as any).originalFileName,
+    (trip as any).originalImageTitle,
+  ];
+
+  for (const candidate of candidates) {
+    const text = String(candidate ?? "").trim();
+    if (text) return text;
+  }
+
+  return "";
+};
 
 
 // --- Trip receipt image cache & progressive preloading ---
@@ -891,12 +918,26 @@ export default function TripHistory({
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
   const [editingTripValorDisplay, setEditingTripValorDisplay] = useState("");
   const [deletingTrip, setDeletingTrip] = useState<TripRecord | null>(null);
+  const [deletedTripIds, setDeletedTripIds] = useState<Set<string>>(new Set());
   const [selectedTripOptionsOpen, setSelectedTripOptionsOpen] = useState(false);
+  const [selectedTripTransition, setSelectedTripTransition] = useState<{
+    direction: -1 | 1;
+    token: number;
+  } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(false);
   const [expandedTrips, setExpandedTrips] = useState<Set<string>>(new Set());
   const [visibleTripCount, setVisibleTripCount] = useState(30);
   const selectedTripOptionsRef = React.useRef<HTMLDivElement | null>(null);
+  const selectedTripSwipeRef = React.useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+  }>({
+    active: false,
+    startX: 0,
+    startY: 0,
+  });
   const observerTarget = React.useRef<HTMLDivElement>(null);
   const imagePrefetchBatchesRef = React.useRef<Set<string>>(new Set());
   const imagePrefetchScopeRef = React.useRef("");
@@ -920,7 +961,9 @@ export default function TripHistory({
   // hide or relabel the current user's trips.
   const identityNormalizedHistoryTrips = React.useMemo(
     () =>
-      companyHistoryTrips.map((trip: any) => {
+      companyHistoryTrips
+        .filter((trip: any) => !deletedTripIds.has(trip.id))
+        .map((trip: any) => {
         const driverId = getCanonicalTripDriverId(trip);
         const canonicalName = driverId
           ? canonicalDriverNames.get(driverId)
@@ -929,7 +972,7 @@ export default function TripHistory({
           ? { ...trip, motoristaNome: canonicalName, driverName: canonicalName }
           : trip;
       }),
-    [canonicalDriverNames, companyHistoryTrips],
+    [canonicalDriverNames, companyHistoryTrips, deletedTripIds],
   );
 
   const toggleExpand = React.useCallback((tripId: string) => {
@@ -1013,6 +1056,7 @@ export default function TripHistory({
       appliedFilters.periodoPreset,
       embeddedJob,
       identityNormalizedHistoryTrips,
+      deletedTripIds,
     ],
   );
 
@@ -1279,6 +1323,24 @@ export default function TripHistory({
   const selectedTripDistance = selectedTrip
     ? getVisibleTripDistance(selectedTrip)
     : undefined;
+  const selectedTripReceiptTitle = React.useMemo(
+    () => getTripReceiptOriginalTitle(selectedTrip),
+    [selectedTrip],
+  );
+  const selectedTripIndex = React.useMemo(
+    () =>
+      selectedTrip
+        ? canonicalHistoryTrips.findIndex((trip) => trip.id === selectedTrip.id)
+        : -1,
+    [canonicalHistoryTrips, selectedTrip],
+  );
+  const selectedTripProgress =
+    canonicalHistoryTrips.length > 0 && selectedTripIndex >= 0
+      ? Math.min(
+          100,
+          Math.max(0, ((selectedTripIndex + 1) / canonicalHistoryTrips.length) * 100),
+        )
+      : 0;
   const editingTripRequiresDistance = editingTrip
     ? requiresTripDistance(
         resolveTripSimulatorCode(editingTrip as any, simulators as any[])
@@ -1311,6 +1373,16 @@ export default function TripHistory({
   useEffect(() => {
     setSelectedTripOptionsOpen(false);
   }, [selectedTrip?.id]);
+
+  useEffect(() => {
+    if (!selectedTripTransition || typeof window === "undefined") return;
+
+    const timer = window.setTimeout(() => {
+      setSelectedTripTransition(null);
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedTripTransition]);
 
   useEffect(() => {
     if (!selectedTripOptionsOpen) return;
@@ -1406,6 +1478,7 @@ export default function TripHistory({
 
   const canEditTrip = React.useCallback((trip: TripRecord) => {
     if (!currentUser) return false;
+    if ((activeRole as string) === "senior") return true;
     if (activeRole === "admin") {
       return getCanonicalTripCompanyId(trip) === activeCompanyId;
     }
@@ -1431,31 +1504,71 @@ export default function TripHistory({
     setDeletingTrip(selectedTrip);
   }, [canDeleteTrip, selectedTrip]);
 
+  const handleSelectedTripStep = React.useCallback(
+    (direction: -1 | 1) => {
+      if (selectedTripIndex === -1) return;
+
+      const nextIndex = selectedTripIndex + direction;
+      if (nextIndex < 0 || nextIndex >= canonicalHistoryTrips.length) return;
+
+      setSelectedTripOptionsOpen(false);
+      setSelectedTripTransition((current) => ({
+        direction,
+        token: (current?.token || 0) + 1,
+      }));
+      setSelectedTrip(canonicalHistoryTrips[nextIndex] as any);
+    },
+    [canonicalHistoryTrips, selectedTripIndex],
+  );
+
+  const isTripSwipeIgnoredTarget = React.useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+
+    return Boolean(
+      target.closest(
+        "button, [role='button'], a, input, textarea, select, [contenteditable='true'], [data-no-swipe='true']",
+      ),
+    );
+  }, []);
+
   const confirmDeleteTrip = async () => {
     if (!deletingTrip) return;
+    
+    const tripToDelete = deletingTrip;
+    
+    // Optimistic UI updates - execute immediately for responsive UX
+    setDeletedTripIds((prev) => new Set(prev).add(tripToDelete.id));
+    setDeletingTrip(null);
+    setSelectedTrip(null);
+    setSelectedTripTransition(null);
+
     try {
       console.log(`[DIAGNOSTIC] Ao clicar excluir:`);
-      console.log(`- deletingTrip.id: ${deletingTrip.id}`);
-      console.log(`- deletingTrip.jobId: ${deletingTrip.jobId || "undefined"}`);
-      console.log(`- deletingTrip.contractId: ${deletingTrip.contratoId || "undefined"}`);
+      console.log(`- tripToDelete.id: ${tripToDelete.id}`);
+      console.log(`- tripToDelete.jobId: ${tripToDelete.jobId || "undefined"}`);
+      console.log(`- tripToDelete.contractId: ${tripToDelete.contratoId || "undefined"}`);
 
-      if (deletingTrip.jobId && deletingTrip.contratoId) {
+      if (tripToDelete.jobId && tripToDelete.contratoId) {
         await runTransaction(db, async (transaction) => {
-          const tripRef = doc(db, "historico_viagens", deletingTrip.id);
+          const tripRef = doc(db, "historico_viagens", tripToDelete.id);
           transaction.delete(tripRef);
         });
 
         // Never decrement a cached counter. Rebuild the exact job progress
         // from the remaining valid trips and reconcile its operational status.
-        await TripsRepository.syncJobProgress(deletingTrip.jobId);
+        await TripsRepository.syncJobProgress(tripToDelete.jobId);
       } else {
         console.log(`[DIAGNOSTIC] Deletando trip sem transacao de job`);
-        await TripsRepository.deleteTrip(deletingTrip.id);
+        await TripsRepository.deleteTrip(tripToDelete.id);
       }
-
-      setDeletingTrip(null);
     } catch (error) {
       console.error("Erro ao deletar viagem:", error);
+      // Revert optimistic update on failure
+      setDeletedTripIds((prev) => {
+        const next = new Set(prev);
+        next.delete(tripToDelete.id);
+        return next;
+      });
       alert("Erro ao remover a viagem. Verifique suas permissões.");
     }
   };
@@ -1751,32 +1864,67 @@ export default function TripHistory({
       {/* Modal Detailed View */}
       {selectedTrip &&
         (() => {
-          const selectedIndex = canonicalHistoryTrips.findIndex(t => t.id === selectedTrip.id);
           const selectedTripNumber = tripNumberById.get(String(selectedTrip.id));
           const selectedOperationCounter = operationCounterById.get(String(selectedTrip.id));
           const canEditSelectedTrip = canEditTrip(selectedTrip);
           const canDeleteSelectedTrip = canDeleteTrip(selectedTrip);
           const canManageSelectedTrip = canEditSelectedTrip || canDeleteSelectedTrip;
-          
-          const handlePrevTrip = () => {
-            if (selectedIndex > 0) {
-              setSelectedTripOptionsOpen(false);
-              setSelectedTrip(canonicalHistoryTrips[selectedIndex - 1] as any);
+
+          const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
+            if (event.touches.length !== 1) return;
+            if (isTripSwipeIgnoredTarget(event.target)) return;
+
+            const touch = event.touches[0];
+            selectedTripSwipeRef.current = {
+              active: true,
+              startX: touch.clientX,
+              startY: touch.clientY,
+            };
+          };
+
+          const handleTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
+            if (!selectedTripSwipeRef.current.active || event.touches.length !== 1) return;
+
+            const touch = event.touches[0];
+            const deltaX = touch.clientX - selectedTripSwipeRef.current.startX;
+            const deltaY = touch.clientY - selectedTripSwipeRef.current.startY;
+
+            if (Math.abs(deltaY) > Math.abs(deltaX) * 1.25) {
+              selectedTripSwipeRef.current.active = false;
             }
           };
 
-          const handleNextTrip = () => {
-            if (selectedIndex !== -1 && selectedIndex < canonicalHistoryTrips.length - 1) {
-              setSelectedTripOptionsOpen(false);
-              setSelectedTrip(canonicalHistoryTrips[selectedIndex + 1] as any);
-            }
+          const handleTouchEnd = (event: React.TouchEvent<HTMLDivElement>) => {
+            if (!selectedTripSwipeRef.current.active) return;
+
+            const touch = event.changedTouches[0];
+            selectedTripSwipeRef.current.active = false;
+            if (!touch) return;
+
+            const deltaX = touch.clientX - selectedTripSwipeRef.current.startX;
+            const deltaY = touch.clientY - selectedTripSwipeRef.current.startY;
+
+            if (Math.abs(deltaX) < 60 || Math.abs(deltaX) < Math.abs(deltaY) * 1.25) return;
+            handleSelectedTripStep(deltaX < 0 ? 1 : -1);
+          };
+
+          const handleTouchCancel = () => {
+            selectedTripSwipeRef.current.active = false;
           };
 
           return (
             <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 md:p-4 bg-gray-900/40 backdrop-blur-sm sm:pb-8">
-              <div className="bg-white dark:bg-[#121213] w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]">
-                <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between sticky top-0 bg-white dark:bg-[#121213] z-10">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div
+                className="bg-white dark:bg-[#121213] w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]"
+                style={{ touchAction: "pan-y" }}
+                onTouchStart={handleTouchStart}
+                onTouchMove={handleTouchMove}
+                onTouchEnd={handleTouchEnd}
+                onTouchCancel={handleTouchCancel}
+              >
+                <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 sticky top-0 bg-white dark:bg-[#121213] z-10">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
                     <h3 className="font-bold text-gray-900 dark:text-white text-[14px] sm:text-[15px] shrink-0">
                       Detalhes da Viagem
                     </h3>
@@ -1836,13 +1984,13 @@ export default function TripHistory({
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                    <div className="flex items-center gap-1.5 shrink-0">
                     <button
-                      onClick={handlePrevTrip}
-                      disabled={selectedIndex <= 0}
+                      onClick={() => handleSelectedTripStep(-1)}
+                      disabled={selectedTripIndex <= 0}
                       className={cn(
                         "p-1.5 rounded-lg border transition-colors",
-                        selectedIndex <= 0
+                        selectedTripIndex <= 0
                           ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
                           : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                       )}
@@ -1850,11 +1998,11 @@ export default function TripHistory({
                       <ChevronLeft size={16} />
                     </button>
                     <button
-                      onClick={handleNextTrip}
-                      disabled={selectedIndex === -1 || selectedIndex >= canonicalHistoryTrips.length - 1}
+                      onClick={() => handleSelectedTripStep(1)}
+                      disabled={selectedTripIndex === -1 || selectedTripIndex >= canonicalHistoryTrips.length - 1}
                       className={cn(
                         "p-1.5 rounded-lg border transition-colors",
-                        selectedIndex === -1 || selectedIndex >= canonicalHistoryTrips.length - 1
+                        selectedTripIndex === -1 || selectedTripIndex >= canonicalHistoryTrips.length - 1
                           ? "text-gray-300 border-gray-100 bg-gray-50/50 dark:border-gray-800/50 dark:text-gray-700" 
                           : "text-gray-600 border-gray-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                       )}
@@ -1864,6 +2012,7 @@ export default function TripHistory({
                     <button
                       onClick={() => {
                         setSelectedTripOptionsOpen(false);
+                        setSelectedTripTransition(null);
                         setSelectedTrip(null);
                       }}
                       className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-full transition-colors"
@@ -1871,6 +2020,43 @@ export default function TripHistory({
                       <X size={20} />
                     </button>
                   </div>
+                  </div>
+                  {canonicalHistoryTrips.length > 1 && selectedTripIndex >= 0 && (
+                    <div className="mt-3" aria-live="polite">
+                      <div className="flex items-center justify-between gap-3 text-[10px] font-bold uppercase tracking-[0.14em] text-gray-400 dark:text-gray-500">
+                        <span
+                          className={cn(
+                            "inline-flex items-center gap-1 transition-colors duration-200",
+                            selectedTripTransition
+                              ? "text-gray-700 dark:text-gray-200"
+                              : "text-gray-400 dark:text-gray-500",
+                          )}
+                        >
+                          {selectedTripTransition?.direction === -1 && <ChevronLeft size={12} />}
+                          {selectedTripTransition
+                            ? selectedTripTransition.direction === 1
+                              ? "Avançou"
+                              : "Voltou"
+                            : "Navegação"}
+                          {selectedTripTransition?.direction === 1 && <ChevronRight size={12} />}
+                        </span>
+                        <span>
+                          Viagem {selectedTripIndex + 1} de {canonicalHistoryTrips.length}
+                        </span>
+                      </div>
+                      <div className="relative mt-2 h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-[width,background-color] duration-300 ease-out",
+                            selectedTripTransition
+                              ? "bg-gray-900 dark:bg-gray-100"
+                              : "bg-gray-400/70 dark:bg-gray-600",
+                          )}
+                          style={{ width: `${selectedTripProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-3 sm:p-4 overflow-y-auto w-full">
@@ -2038,12 +2224,20 @@ export default function TripHistory({
                   {/* Receipt Image */}
                   {selectedTrip.comprovanteUrl && (
                     <div className="mt-4 mb-2">
-                      <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 block mb-2">
-                        Comprovante de Entrega
-                      </span>
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 mb-2">
+                        <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-200">
+                          Comprovante da Viagem
+                        </span>
+                        {selectedTripReceiptTitle && (
+                          <span className="text-[10px] sm:text-[11px] font-medium text-gray-500 dark:text-gray-400 leading-tight break-all">
+                            {selectedTripReceiptTitle}
+                          </span>
+                        )}
+                      </div>
                       <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 z-0 relative flex justify-center items-center min-h-[180px]">
                         <CachedImageViewer 
                           url={selectedTrip.comprovanteUrl} 
+                          alt={selectedTripReceiptTitle || "Comprovante da Viagem"}
                           className="w-full h-auto object-contain max-h-[180px] cursor-pointer" 
                         />
                       </div>

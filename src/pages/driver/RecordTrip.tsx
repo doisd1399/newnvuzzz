@@ -76,6 +76,7 @@ export default function RecordTrip() {
   const [isNavigating, setIsNavigating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const ocrRequestIdRef = useRef(0);
+  const receiptOriginalNameRef = useRef("");
 
   useEffect(() => {
     let id = localStorage.getItem("deviceId");
@@ -289,6 +290,7 @@ export default function RecordTrip() {
 
       const requestId = ++ocrRequestIdRef.current;
       const localPreviewUrl = URL.createObjectURL(file);
+      receiptOriginalNameRef.current = file.name.trim();
       setImagePreview(localPreviewUrl);
 
       const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
@@ -345,6 +347,7 @@ export default function RecordTrip() {
           setIsReadingValue(false);
           setIsUploading(false);
           setImagePreview(null);
+          receiptOriginalNameRef.current = "";
           URL.revokeObjectURL(localPreviewUrl);
           if (fileInputRef.current) fileInputRef.current.value = "";
           return;
@@ -370,6 +373,7 @@ export default function RecordTrip() {
         ocrRequestIdRef.current += 1;
         setIsReadingValue(false);
         setImagePreview(null);
+        receiptOriginalNameRef.current = "";
         URL.revokeObjectURL(localPreviewUrl);
         toast.error(
           `Falha no envio da imagem. Tente novamente. ${err.message}`,
@@ -458,6 +462,7 @@ export default function RecordTrip() {
           ? { distanciaPercorrida: distanciaNumerica }
           : {}),
         comprovanteUrl: imagePreview,
+        comprovanteTituloOriginal: receiptOriginalNameRef.current || "",
         status: "concluida",
         criadoPor: currentUser.id,
         dataLancamento: new Date(),
@@ -498,6 +503,7 @@ export default function RecordTrip() {
       setDistanciaPercorrida("");
       setImagePreview(null);
       setImageHash(null);
+      receiptOriginalNameRef.current = "";
       if (fileInputRef.current) fileInputRef.current.value = "";
 
       setIsNavigating(true);
@@ -803,7 +809,7 @@ export default function RecordTrip() {
           {/* Comprovante */}
           <div>
             <label className="text-[12px] font-semibold text-gray-800 dark:text-gray-200 mb-1 block">
-              {receiptFieldNumber}. Comprovante da Entrega*
+              {receiptFieldNumber}. Comprovante da Viagem*
             </label>
             <div className="flex items-center flex-wrap gap-2 mb-2">
               <input

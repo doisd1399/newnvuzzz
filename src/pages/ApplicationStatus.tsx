@@ -1,5 +1,5 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useActivityStore, useSessionStore } from "../context/AppContext";
 import { Button } from "../components/ui/Button";
 import { repairApprovedMembership } from "../services/recruitmentAccessService";
@@ -11,6 +11,9 @@ import {
   ChevronLeft,
 } from "lucide-react";
 
+const PENDING_RECRUITMENT_APPLICATION_ID_KEY =
+  "nvu.pendingRecruitmentApplicationId";
+
 export default function ApplicationStatus() {
   const {
     currentUser,
@@ -21,47 +24,54 @@ export default function ApplicationStatus() {
     logOutApp,
   } = useSessionStore();
   const { recruitmentApplications } = useActivityStore();
+  const location = useLocation();
   const navigate = useNavigate();
   const [repairingAccess, setRepairingAccess] = React.useState(false);
   const repairAttemptedRef = React.useRef(false);
 
-  const applicationTimestamp = (application: any) => {
-    const raw =
-      application.updatedAt ??
-      application.createdAt ??
-      application.dataHora ??
-      application.submittedAt;
-    if (!raw) return 0;
-    if (typeof raw === "string") {
-      const parsed = Date.parse(raw);
-      return Number.isNaN(parsed) ? 0 : parsed;
-    }
-    if (typeof raw?.toMillis === "function") return raw.toMillis();
-    if (typeof raw?.seconds === "number") return raw.seconds * 1000;
-    return 0;
-  };
+  const requestedApplicationId = React.useMemo(() => {
+    const routeState = location.state as { applicationId?: unknown } | null;
+    const routeApplicationId =
+      typeof routeState?.applicationId === "string"
+        ? routeState.applicationId.trim()
+        : "";
+    if (routeApplicationId) return routeApplicationId;
+    const currentApplicationId = String(
+      (currentUser as any)?.currentRecruitmentApplicationId || "",
+    ).trim();
+    if (currentApplicationId) return currentApplicationId;
+    if (typeof window === "undefined") return "";
+    return window.sessionStorage.getItem(PENDING_RECRUITMENT_APPLICATION_ID_KEY)?.trim() || "";
+  }, [location.state, currentUser]);
 
-  // Uma inscrição pendente é sempre a situação operacional relevante. Se não
-  // houver pendência, usa o registro mais recente para exibir aprovação/recusa.
-  const myApp = React.useMemo(() => {
-    const email = currentUser?.email?.trim().toLowerCase();
-    const matchingApplications = recruitmentApplications
-      .filter((application) => {
-        const applicationEmail = application.email?.trim().toLowerCase();
-        return (
-          application.userId === currentUser?.id ||
-          Boolean(email && applicationEmail === email)
-        );
-      })
-      .sort((a, b) => applicationTimestamp(b) - applicationTimestamp(a));
-
-    return (
-      matchingApplications.find((application) => application.status === "pending") ??
-      matchingApplications[0]
+  React.useEffect(() => {
+    if (!requestedApplicationId || typeof window === "undefined") return;
+    window.sessionStorage.setItem(
+      PENDING_RECRUITMENT_APPLICATION_ID_KEY,
+      requestedApplicationId,
     );
-  }, [currentUser?.email, currentUser?.id, recruitmentApplications]);
+  }, [requestedApplicationId]);
+
+  const myApp = React.useMemo(() => {
+    if (!requestedApplicationId || !currentUser?.id) return null;
+    // A tela nunca escolhe "a mais recente" por e-mail. Ela só aceita o
+    // documento que a sessão acabou de criar (ou que o usuário canônico aponta)
+    // e cuja identidade pertence à conta autenticada.
+    return recruitmentApplications.find(
+      (application) =>
+        application.id === requestedApplicationId &&
+        application.userId === currentUser.id,
+    ) ?? null;
+  }, [
+    currentUser?.id,
+    recruitmentApplications,
+    requestedApplicationId,
+  ]);
 
   const handleLogout = async () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(PENDING_RECRUITMENT_APPLICATION_ID_KEY);
+    }
     await logOutApp();
     navigate("/");
   };
@@ -74,8 +84,14 @@ export default function ApplicationStatus() {
     if (repairingAccess) return;
     setRepairingAccess(true);
     try {
-      await repairApprovedMembership();
+      if (!myApp) {
+        throw new Error("Inscrição de referência não encontrada.");
+      }
+      await repairApprovedMembership(myApp.id);
       toast.success("Acesso sincronizado com sucesso.");
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem(PENDING_RECRUITMENT_APPLICATION_ID_KEY);
+      }
       // Recarrega a sessão para que os listeners de usuário e vínculo partam
       // de um estado limpo antes de entrar na seleção de perfil.
       window.location.replace("/select-profile");
@@ -87,7 +103,7 @@ export default function ApplicationStatus() {
       );
       setRepairingAccess(false);
     }
-  }, [repairingAccess]);
+  }, [myApp, repairingAccess]);
 
   React.useEffect(() => {
     if (
@@ -113,6 +129,14 @@ export default function ApplicationStatus() {
   }, [sessionReady, currentUser, membershipsLoaded, memberships, navigate]);
 
   if (!sessionReady || !currentUser || !membershipsLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#09090b]">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-800 dark:border-slate-400"></div>
+      </div>
+    );
+  }
+
+  if (requestedApplicationId && !myApp) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#09090b]">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-800 dark:border-slate-400"></div>
