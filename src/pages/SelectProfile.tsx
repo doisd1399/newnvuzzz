@@ -63,19 +63,8 @@ export default function SelectProfile() {
   useEffect(() => {
     if (sessionReady && !currentUser) {
       navigate("/", { replace: true });
-    } else if (sessionReady && currentUser && membershipsLoaded) {
-      const hasActiveMembership = memberships.some((m) => m.status === "active");
-      if (!hasActiveMembership) {
-        const applicationId = String(
-          (currentUser as any).currentRecruitmentApplicationId || "",
-        ).trim();
-        navigate(applicationId ? "/status" : "/apply", {
-          replace: true,
-          ...(applicationId ? { state: { applicationId } } : {}),
-        });
-      }
     }
-  }, [sessionReady, currentUser, membershipsLoaded, memberships, navigate]);
+  }, [sessionReady, currentUser, navigate]);
 
   const availableCompanies = useMemo(() => {
     const list: { companyId: string; companyName: string; roles: string[] }[] =
