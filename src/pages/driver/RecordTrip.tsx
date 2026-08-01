@@ -358,9 +358,13 @@ export default function RecordTrip() {
           companyId: currentCompany?.id || "Geral",
           userId: currentUser.id,
           folder: "receipts",
+          compressionMaxSizeMB: 1,
+          maxWidthOrHeight: 1920,
+          // Keep the client output below the authenticated 2 MB Storage rule.
+          maxOutputBytes: 1_800_000,
           onProgress: (progress) => {
             setUploadProgress(progress);
-          }
+          },
         });
 
         setUploadCountMinute([...recentUploads, now]);

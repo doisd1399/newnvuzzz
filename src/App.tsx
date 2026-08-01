@@ -18,6 +18,7 @@ import { db } from "./lib/firebase";
 
 // Placeholders for Pages
 const Portal = lazy(() => import("./pages/Portal"));
+const NewsFeed = lazy(() => import("./pages/NewsFeed"));
 const AdminLayout = lazy(() => import("./layouts/AdminLayout"));
 const DriverLayout = lazy(() => import("./layouts/DriverLayout"));
 
@@ -471,6 +472,7 @@ function AppRouteContent() {
           <Route path="senior" element={<LazyRoute><SeniorPanel /></LazyRoute>} />
           <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
           <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
+          <Route path="news" element={<LazyRoute><NewsFeed /></LazyRoute>} />
           <Route path="driver/:id" element={<LazyRoute><DriverProfileIsolated /></LazyRoute>} />
         </Route>
 
@@ -489,6 +491,7 @@ function AppRouteContent() {
           <Route path="join" element={<LazyRoute><JoinCompany /></LazyRoute>} />
           <Route path="trip" element={<LazyRoute><RecordTrip /></LazyRoute>} />
           <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
+          <Route path="news" element={<LazyRoute><NewsFeed /></LazyRoute>} />
           <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

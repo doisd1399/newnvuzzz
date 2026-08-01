@@ -1,26 +1,32 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    function isImageUpload() {
-      return request.resource != null &&
-        request.resource.contentType.matches('image/.*') &&
-        request.resource.size < 500000;
-    }
-
-    // Registration is intentionally public, but only accepts small images.
-    match /empresas/company_registrations/recruitment_photos/{fileName} {
-      allow read: if true;
-      allow write: if isImageUpload();
-    }
-
-    // Driver and company uploads require an authenticated Firebase user.
-    match /empresas/{allPaths=**} {
-      allow read: if true;
-      allow write: if isAuthenticated() && isImageUpload();
-    }
-
     function isAuthenticated() {
       return request.auth != null;
+    }
+
+    function isImageUpload(maxSizeBytes) {
+      return request.resource != null &&
+        request.resource.contentType != null &&
+        request.resource.contentType.matches('image/.*') &&
+        request.resource.size < maxSizeBytes;
+    }
+
+    // Public company registration flow. Keep this path intentionally small
+    // because it can be written before a Firebase session exists.
+    match /empresas/company_registrations/recruitment_photos/{fileName} {
+      allow read: if true;
+      allow write: if isImageUpload(500000);
+    }
+
+    // Authenticated app uploads are compressed on the client. The previous
+    // 500 KB global limit conflicted with the 1 MB receipt compressor and
+    // caused valid trip images to be rejected with storage/unauthorized.
+    match /empresas/{companyId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if companyId != "company_registrations" &&
+        isAuthenticated() &&
+        isImageUpload(2000000);
     }
   }
 }

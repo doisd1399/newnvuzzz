@@ -1,7 +1,9 @@
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
-import { storage } from "../lib/firebase";
-
+import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import imageCompression from "browser-image-compression";
+import { auth, storage } from "../lib/firebase";
+
+export const AUTHENTICATED_STORAGE_RULE_MAX_BYTES = 2_000_000;
+export const DEFAULT_UPLOAD_MAX_BYTES = 1_800_000;
 
 export interface UploadOptions {
   file: File;
@@ -15,11 +17,71 @@ export interface UploadOptions {
 }
 
 export class UploadError extends Error {
-  constructor(message: string) {
+  code?: string;
+
+  constructor(message: string, code?: string) {
     super(message);
     this.name = "UploadError";
+    this.code = code;
   }
 }
+
+const inferImageType = (file: File): string => {
+  const declaredType = String(file.type || "").trim().toLowerCase();
+  if (declaredType) return declaredType;
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "png") return "image/png";
+  if (extension === "webp") return "image/webp";
+  if (extension === "heic") return "image/heic";
+  if (extension === "heif") return "image/heif";
+  return "";
+};
+
+const supportedSourceTypes = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+const normalizeFirebaseStorageError = (error: unknown): UploadError => {
+  const rawError = error as {
+    code?: unknown;
+    message?: unknown;
+    serverResponse?: unknown;
+  };
+  const code = typeof rawError?.code === "string" ? rawError.code : "";
+
+  const messages: Record<string, string> = {
+    "storage/unauthenticated":
+      "Sua sessão do Firebase não está ativa. Entre novamente e tente enviar a imagem.",
+    "storage/unauthorized":
+      "O Firebase Storage recusou o envio pelas regras publicadas. Publique o arquivo storage.rules deste projeto e tente novamente.",
+    "storage/quota-exceeded":
+      "A cota ou o faturamento do Firebase Storage impediu o envio.",
+    "storage/retry-limit-exceeded":
+      "O envio excedeu o tempo de tentativa. Verifique a conexão e tente novamente.",
+    "storage/canceled": "O envio da imagem foi cancelado.",
+    "storage/bucket-not-found":
+      "O bucket do Firebase Storage não foi encontrado. Verifique a configuração do projeto.",
+    "storage/project-not-found":
+      "O projeto Firebase configurado no aplicativo não foi encontrado.",
+  };
+
+  const fallbackMessage =
+    typeof rawError?.message === "string" && rawError.message.trim()
+      ? rawError.message.trim()
+      : "Falha ao enviar a imagem para o Firebase Storage.";
+  const message = messages[code] || fallbackMessage;
+
+  return new UploadError(
+    code ? `${message} (${code})` : message,
+    code || undefined,
+  );
+};
 
 /**
  * Service to upload files to Firebase Storage with a standardized structure.
@@ -39,96 +101,129 @@ export const uploadService = {
     onProgress,
     compressionMaxSizeMB = 1,
     maxWidthOrHeight = 1920,
-    maxOutputBytes,
+    maxOutputBytes = DEFAULT_UPLOAD_MAX_BYTES,
   }: UploadOptions): Promise<string> {
-    // 1. Validate file type
-    const validTypes = ["image/jpeg", "image/png", "image/webp"];
-    if (!validTypes.includes(file.type)) {
+    const sourceType = inferImageType(file);
+    if (!supportedSourceTypes.has(sourceType)) {
       throw new UploadError(
-        "Formato de arquivo inválido. Apenas JPG, PNG e WEBP são aceitos.",
+        "Formato de arquivo inválido. Use JPG, PNG, WEBP, HEIC ou HEIF.",
       );
     }
 
-    // 2. Validate the source before attempting local compression.
-    const MAX_SIZE_MB = 10;
-    const maxSize = MAX_SIZE_MB * 1024 * 1024;
-    if (file.size > maxSize) {
+    const maxSourceSizeBytes = 10 * 1024 * 1024;
+    if (file.size > maxSourceSizeBytes) {
       throw new UploadError(
-        `Arquivo original muito grande. O limite máximo é de ${MAX_SIZE_MB}MB.`,
+        "Arquivo original muito grande. O limite máximo é de 10 MB.",
       );
     }
 
-    // Compress the image locally. Callers can provide a stricter limit when
-    // the Firebase Storage rule for that media type is smaller.
+    if (
+      !Number.isFinite(maxOutputBytes) ||
+      maxOutputBytes <= 0 ||
+      maxOutputBytes >= AUTHENTICATED_STORAGE_RULE_MAX_BYTES
+    ) {
+      throw new UploadError(
+        "O limite interno do upload está incompatível com as regras do Firebase Storage.",
+      );
+    }
+
+    // Wait for Firebase Auth to finish restoring the native/web session before
+    // starting an authenticated Storage request.
+    await auth.authStateReady();
+    if (!auth.currentUser) {
+      throw new UploadError(
+        "Sua sessão do Firebase não está ativa. Entre novamente e tente enviar a imagem.",
+        "storage/unauthenticated",
+      );
+    }
+
     let finalFile = file;
     try {
-      const options = {
+      const compressedBlob = await imageCompression(file, {
         maxSizeMB: compressionMaxSizeMB,
         maxWidthOrHeight,
         useWebWorker: true,
-        fileType: "image/webp" as string,
-      };
-      
-      const compressedBlob = await imageCompression(file, options);
-      // Create a File out of Blob
-      finalFile = new File([compressedBlob], file.name.replace(/\.[^/.]+$/, ".webp"), {
-        type: "image/webp",
+        fileType: "image/webp",
       });
+
+      finalFile = new File(
+        [compressedBlob],
+        file.name.replace(/\.[^/.]+$/, ".webp"),
+        { type: "image/webp" },
+      );
     } catch (error) {
-      console.warn("Image compression failed, using original file", error);
+      // A small original file can still be uploaded safely. A large original
+      // must never be sent after compression failure because Storage will deny
+      // it and the user would only see a generic upload failure.
+      if (file.size >= maxOutputBytes) {
+        console.error("Image compression failed", error);
+        throw new UploadError(
+          "Não foi possível compactar a imagem para o tamanho permitido. Escolha outra imagem ou tente novamente.",
+        );
+      }
+      console.warn("Image compression failed; using the small original file", error);
     }
 
-    if (maxOutputBytes && finalFile.size >= maxOutputBytes) {
+    if (finalFile.size >= maxOutputBytes) {
       throw new UploadError(
         "Não foi possível reduzir a imagem para o tamanho permitido. Escolha outra imagem e tente novamente.",
       );
     }
 
-    // 3. Generate structured file path
-    // Format: empresas / companyId / folder / userId / timestamp_filename
     const timestamp = Date.now();
-    const cleanFileName = finalFile.name.replace(/[^a-zA-Z0-9.\-_]/g, ""); // Basic sanitization
-    const path = `empresas/${companyId}/${folder}/${userId}/${timestamp}_${cleanFileName}`;
-
-    // 4. Create storage reference
+    const sanitizedName = finalFile.name.replace(/[^a-zA-Z0-9.\-_]/g, "");
+    const cleanFileName = sanitizedName || `imagem-${timestamp}.webp`;
+    const cleanCompanyId = String(companyId || "Geral").replace(
+      /[^a-zA-Z0-9.\-_]/g,
+      "",
+    );
+    const cleanUserId = String(userId || auth.currentUser.uid).replace(
+      /[^a-zA-Z0-9.\-_]/g,
+      "",
+    );
+    const cleanFolder = String(folder || "uploads").replace(
+      /[^a-zA-Z0-9.\-_]/g,
+      "",
+    );
+    const path = `empresas/${cleanCompanyId || "Geral"}/${cleanFolder || "uploads"}/${cleanUserId || auth.currentUser.uid}/${timestamp}_${cleanFileName}`;
     const storageRef = ref(storage, path);
 
-    // 5. Upload file
     const uploadTask = uploadBytesResumable(storageRef, finalFile, {
-      contentType: finalFile.type || "image/webp",
-      // Every upload uses a timestamped path, so the URL is immutable. A long
-      // cache lifetime prevents the same logo/avatar from being downloaded on
-      // every route change or app restart.
+      contentType: finalFile.type || sourceType || "image/webp",
       cacheControl: "public,max-age=31536000,immutable",
+      customMetadata: {
+        originalFileName: file.name,
+        uploadedBy: auth.currentUser.uid,
+      },
     });
 
-    // 6. Return a promise that resolves with the download URL
     return new Promise((resolve, reject) => {
       uploadTask.on(
         "state_changed",
         (snapshot) => {
-          // Calculate and report progress
           const progress =
-            (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          if (onProgress) {
-            onProgress(progress);
-          }
+            snapshot.totalBytes > 0
+              ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+              : 0;
+          onProgress?.(progress);
         },
         (error) => {
-          // Handle unsuccessful uploads
-          console.error("Erro no upload para o Firebase:", error);
-          reject(
-            new UploadError("Falha ao enviar o arquivo. Tente novamente."),
-          );
+          console.error("Erro no upload para o Firebase Storage:", {
+            code: (error as { code?: string })?.code,
+            message: (error as { message?: string })?.message,
+            path,
+            bytes: finalFile.size,
+            contentType: finalFile.type,
+          });
+          reject(normalizeFirebaseStorageError(error));
         },
         async () => {
-          // Handle successful uploads on complete
           try {
             const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
             resolve(downloadURL);
           } catch (error) {
             console.error("Erro ao obter URL de download:", error);
-            reject(new UploadError("Falha ao obter URL pública do arquivo."));
+            reject(normalizeFirebaseStorageError(error));
           }
         },
       );

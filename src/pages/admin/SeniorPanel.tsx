@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   XCircle,
   Building2,
+  Megaphone,
   Users,
   FileText,
   Trash2,
@@ -49,6 +50,7 @@ import { toast } from "sonner";
 import { syncSingleSimulatorMember, removeSimulatorMember } from "../../lib/syncSimulatorMembers";
 import { cn } from "../../lib/utils";
 import SimulatorManager from "../../components/admin/SimulatorManager";
+import { CreateNewsModal } from "../../components/admin/CreateNewsModal";
 import {
   isCompanyRegistration,
   normalizeRegistrationImages,
@@ -106,6 +108,7 @@ export default function SeniorPanel() {
   } = useSessionStore();
   const { simulators, removeDriverFromFleet } = useOperationalStore();
   const [loadingAction, setLoadingAction] = useState(false);
+  const [isCreateNewsModalOpen, setIsCreateNewsModalOpen] = useState(false);
   const [password, setPassword] = useState("");
   const hasSeniorRole = Boolean(
     (currentUser as any)?.role === "senior" ||
@@ -879,7 +882,7 @@ export default function SeniorPanel() {
             </form>
           </CardContent>
         </Card>
-      </div>
+    </div>
     );
   }
 
@@ -944,25 +947,37 @@ export default function SeniorPanel() {
   return (
     <div className="max-w-[1000px] mx-auto px-3 sm:px-5 lg:px-6 pt-1 sm:pt-2 pb-6 space-y-2.5 sm:space-y-4">
       {/* Corporate Banner Header */}
-      <div className="relative overflow-hidden bg-white/70 dark:bg-[#121213]/70 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-[18px] sm:rounded-[22px] px-5 sm:px-8 py-5 sm:py-6 shadow-[0_4px_24px_-12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_24px_-12px_rgba(0,0,0,0.5)] flex items-center justify-between">
+      <div className="relative overflow-hidden bg-white/70 dark:bg-[#121213]/70 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-[18px] sm:rounded-[22px] px-5 sm:px-8 py-5 sm:py-6 shadow-[0_4px_24px_-12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_24px_-12px_rgba(0,0,0,0.5)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 to-slate-100/30 dark:from-white/[0.02] dark:to-transparent pointer-events-none" />
         
         <div className="relative z-10 flex-1 min-w-0">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100/80 dark:bg-slate-800/80 backdrop-blur-md border border-slate-200/80 dark:border-slate-700/80 rounded-md mb-2.5 shadow-sm">
             <ShieldCheck size={12} className="text-slate-600 dark:text-slate-300" />
             <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest">ADMINISTRAÇÃO</span>
-          </div>
+    </div>
           <h1 className="text-[20px] sm:text-[24px] font-semibold text-slate-900 dark:text-white leading-tight tracking-tight mb-0.5">
             Painel Sênior NVU
           </h1>
           <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium truncate">
             Gestão suprema de empresas parceiras
           </p>
-        </div>
+    </div>
+        
+        <div className="relative z-10 flex items-center shrink-0">
+          <Button 
+            onClick={() => setIsCreateNewsModalOpen(true)}
+            variant="outline"
+            className="h-9 px-4 text-[13px] font-semibold flex items-center gap-2 bg-white/80 dark:bg-slate-800/80"
+          >
+            <Megaphone size={16} />
+            Criar Comunicado
+          </Button>
+    </div>
+
         <div className="absolute right-0 top-0 bottom-0 w-1/2 sm:w-1/3 opacity-[0.03] dark:opacity-[0.07] pointer-events-none flex items-center justify-end pr-4 sm:pr-8">
           <ShieldCheck size={120} className="text-slate-900 dark:text-white translate-x-1/4 sm:translate-x-0" strokeWidth={1} />
-        </div>
-      </div>
+    </div>
+    </div>
 
       {/* Resumo real da plataforma */}
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
@@ -997,7 +1012,7 @@ export default function SeniorPanel() {
             <span className="block text-[9px] sm:text-[10px] text-slate-400 leading-none line-clamp-1 sm:truncate">Ativas na plataforma</span>
           </span>
         </button>
-      </div>
+    </div>
 
       {/* Busca e filtro por simulador */}
       <div className="relative bg-white/90 dark:bg-[#121212]/95 border border-slate-100 dark:border-slate-800 rounded-[20px] p-2 shadow-[0_8px_30px_-22px_rgba(15,23,42,0.45)]">
@@ -1022,7 +1037,7 @@ export default function SeniorPanel() {
             <span className="hidden sm:inline text-sm max-w-[180px] truncate">{selectedSimulatorLabel}</span>
             <ChevronDown size={16} className={cn("transition-transform", simulatorMenuOpen && "rotate-180")} />
           </button>
-        </div>
+    </div>
         <p className="px-2.5 pt-1.5 pb-0.5 text-[11px] sm:text-[12px] font-medium leading-tight text-slate-500 dark:text-slate-400">
           Simulador selecionado: <span className="text-slate-900 dark:text-white">{selectedSimulatorLabel}</span>
         </p>
@@ -1048,9 +1063,9 @@ export default function SeniorPanel() {
                 {selectedSimulator === option.id && <CheckCircle2 size={16} />}
               </button>
             ))}
-          </div>
+    </div>
         )}
-      </div>
+    </div>
 
       {activeTab === "settings" && (
         <div className="space-y-6 animate-in fade-in duration-300">
@@ -1065,7 +1080,7 @@ export default function SeniorPanel() {
                   Configure os serviços externos e integrações que a plataforma
                   NVU utiliza para operar. Estas configurações são globais.
                 </p>
-              </div>
+    </div>
 
               <div className="bg-gray-50 dark:bg-[#09090b] border border-gray-100 dark:border-[#2A2F3A] rounded-2xl p-6 flex flex-col gap-6 justify-between items-start">
                 <div className="space-y-2">
@@ -1081,11 +1096,11 @@ export default function SeniorPanel() {
                     comprovantes, organizando os arquivos automaticamente por
                     empresa.
                   </p>
-                </div>
-              </div>
+    </div>
+    </div>
             </CardContent>
           </Card>
-        </div>
+    </div>
       )}
 
       {activeTab === "profile" && selectedCompany && (
@@ -1111,7 +1126,7 @@ export default function SeniorPanel() {
                   ) : (
                     <Building2 className="text-blue-500" size={32} />
                   )}
-                </div>
+    </div>
                 <div>
                   <h2 className="text-2xl font-bold text-gray-900 dark:text-[#fafafa] flex items-center gap-2">
                     {selectedCompany.companyName}
@@ -1126,9 +1141,9 @@ export default function SeniorPanel() {
                     <span className="flex items-center gap-1.5">
                       <Users size={16} /> {selectedCompany.ownerName}
                     </span>
-                  </div>
-                </div>
-              </div>
+    </div>
+    </div>
+    </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-gray-50 dark:bg-[#09090b] p-4 rounded-2xl border border-gray-100 dark:border-[#2A2F3A]">
@@ -1139,7 +1154,7 @@ export default function SeniorPanel() {
                   <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
                     {selectedCompany.totalEmployees}
                   </p>
-                </div>
+    </div>
                 <div className="bg-gray-50 dark:bg-[#09090b] p-4 rounded-2xl border border-gray-100 dark:border-[#2A2F3A]">
                   <p className="text-gray-500 dark:text-gray-400 text-[13px] font-medium flex items-center gap-2">
                     <Navigation size={14} className="text-green-500" /> Viagens
@@ -1148,7 +1163,7 @@ export default function SeniorPanel() {
                   <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
                     {selectedCompany.totalTrips}
                   </p>
-                </div>
+    </div>
                 <div className="bg-gray-50 dark:bg-[#09090b] p-4 rounded-2xl border border-gray-100 dark:border-[#2A2F3A]">
                   <p className="text-gray-500 dark:text-gray-400 text-[13px] font-medium flex items-center gap-2">
                     <FileText size={14} className="text-purple-500" /> Total
@@ -1157,7 +1172,7 @@ export default function SeniorPanel() {
                   <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
                     {selectedCompany.totalContracts}
                   </p>
-                </div>
+    </div>
                 <div className="bg-gray-50 dark:bg-[#09090b] p-4 rounded-2xl border border-gray-100 dark:border-[#2A2F3A]">
                   <p className="text-gray-500 dark:text-gray-400 text-[13px] font-medium flex items-center gap-2">
                     <Truck size={14} className="text-orange-500" /> Veículos na
@@ -1166,8 +1181,8 @@ export default function SeniorPanel() {
                   <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
                     {selectedCompany.totalVehicles}
                   </p>
-                </div>
-              </div>
+    </div>
+    </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-10">
                 <div className="space-y-4">
@@ -1182,7 +1197,7 @@ export default function SeniorPanel() {
                       <span className="font-semibold text-gray-900 dark:text-white">
                         {selectedCompany.cnpj}
                       </span>
-                    </div>
+    </div>
                     <div className="flex justify-between items-center text-sm px-1">
                       <span className="text-gray-500 dark:text-gray-400">
                         Data de Cadastro
@@ -1192,7 +1207,7 @@ export default function SeniorPanel() {
                           "pt-BR",
                         )}
                       </span>
-                    </div>
+    </div>
                     <div className="flex justify-between items-center text-sm px-1">
                       <span className="text-gray-500 dark:text-gray-400">
                         Proprietário (ID)
@@ -1200,9 +1215,9 @@ export default function SeniorPanel() {
                       <span className="font-semibold text-gray-900 dark:text-white text-[11px] font-mono">
                         {selectedCompany.userId || "N/A"}
                       </span>
-                    </div>
-                  </div>
-                </div>
+    </div>
+    </div>
+    </div>
                 <div className="space-y-4">
                   <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase px-1 border-b border-gray-100 dark:border-gray-800 pb-2">
                     Métricas de Frota e Staff
@@ -1216,7 +1231,7 @@ export default function SeniorPanel() {
                         {selectedCompany.totalDeliveries}{" "}
                         <span className="text-[11px] text-gray-400">unids</span>
                       </span>
-                    </div>
+    </div>
                     <div className="flex justify-between items-center text-sm px-1">
                       <span className="text-gray-500 dark:text-gray-400">
                         Administradores
@@ -1224,7 +1239,7 @@ export default function SeniorPanel() {
                       <span className="font-semibold text-gray-900 dark:text-white">
                         {selectedCompany.totalAdmins}
                       </span>
-                    </div>
+    </div>
                     <div className="flex justify-between items-center text-sm px-1">
                       <span className="text-gray-500 dark:text-gray-400">
                         Motoristas Qualificados
@@ -1232,10 +1247,10 @@ export default function SeniorPanel() {
                       <span className="font-semibold text-gray-900 dark:text-white">
                         {selectedCompany.totalDrivers}
                       </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+    </div>
+    </div>
+    </div>
+    </div>
 
               <div className="mt-10 space-y-4">
                 <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase px-1 border-b border-gray-100 dark:border-gray-800 pb-2">
@@ -1255,7 +1270,7 @@ export default function SeniorPanel() {
                           <div>
                             <p className="text-[13px] font-bold text-gray-900 dark:text-white">{name}</p>
                             <p className="text-[11px] text-gray-500 dark:text-gray-400 font-mono mt-0.5">{user?.email || "Sem e-mail"} • ID: {member.userId}</p>
-                          </div>
+    </div>
                           <Button 
                             variant="danger" 
                             className="h-8 text-[11px] px-4 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-950/30 dark:text-red-400 dark:hover:bg-red-900/50 border-0 shadow-none w-full sm:w-auto"
@@ -1267,15 +1282,15 @@ export default function SeniorPanel() {
                           >
                             Remover Acesso
                           </Button>
-                        </div>
+    </div>
                       );
                     });
                   })()}
-                </div>
-              </div>
+    </div>
+    </div>
             </CardContent>
           </Card>
-        </div>
+    </div>
       )}
 
       {activeTab === "requests" && (
@@ -1292,7 +1307,7 @@ export default function SeniorPanel() {
               <p className="text-slate-500 dark:text-[#a1a1aa] mt-2">
                 Nenhuma solicitação pending encontrada.
               </p>
-            </div>
+    </div>
           ) : (
             <div className="bg-white dark:bg-[#121212] border border-slate-200 dark:border-slate-800 rounded-2xl flex flex-col shadow-sm">
               {registrations.filter(r => r.status === 'pending' || r.status === 'rejected').sort((a,b) => {
@@ -1321,7 +1336,7 @@ export default function SeniorPanel() {
                         ) : (
                           reg.companyName.substring(0,2).toUpperCase()
                         )}
-                      </div>
+    </div>
                       <div className="flex-1 min-w-0 flex flex-col">
                         <h3 className="font-bold text-[15px] text-slate-900 dark:text-white truncate">
                           {reg.companyName}
@@ -1331,12 +1346,12 @@ export default function SeniorPanel() {
                           <span className="flex items-center gap-1.5 shrink-0">
                             <Gamepad2 size={14} /> {reg.simulatorName || "ETS2"}
                           </span>
-                        </div>
+    </div>
                         <div className="text-[12px] text-slate-400 dark:text-slate-500 mt-0.5">
                           {reg.cnpj}
-                        </div>
-                      </div>
-                    </div>
+    </div>
+    </div>
+    </div>
 
                     <div className="flex justify-between sm:justify-end items-center gap-6 w-full sm:w-auto mt-2 sm:mt-0">
                       <div className={cn("text-[12px] font-medium px-3 py-1 rounded-full flex items-center gap-1.5", 
@@ -1345,7 +1360,7 @@ export default function SeniorPanel() {
                       )}>
                         <div className={cn("w-1.5 h-1.5 rounded-full", reg.status === 'pending' ? "bg-yellow-400" : "bg-slate-400")}></div>
                         {reg.status === 'pending' ? "Em análise" : "Recusada"}
-                      </div>
+    </div>
                       <div className="flex items-center gap-4 text-slate-500 dark:text-slate-400">
                         <span className="text-[13px] hidden sm:inline-block">
                           {new Date(reg.createdAt).toLocaleDateString("pt-BR") === new Date().toLocaleDateString("pt-BR") ? "Hoje" : "Ontem"}, {new Date(reg.createdAt).toLocaleTimeString("pt-BR", {hour: '2-digit', minute:'2-digit'})}
@@ -1368,13 +1383,13 @@ export default function SeniorPanel() {
                           onClick={() => setSelectedRegistrationId(reg.id)}
                           className="text-slate-300 dark:text-slate-600 group-hover:text-slate-500 dark:group-hover:text-slate-300 transition-colors cursor-pointer" 
                         />
-                      </div>
-                    </div>
-                  </div>
+    </div>
+    </div>
+    </div>
               ))}
-            </div>
+    </div>
           )}
-        </div>
+    </div>
       )}
 
       {activeTab === "approved" && (
@@ -1383,7 +1398,7 @@ export default function SeniorPanel() {
             <div className="bg-white dark:bg-[#1A1F26] border border-slate-100 dark:border-[#2A2F3A] rounded-[24px] p-10 text-center shadow-sm">
               <Building2 size={44} className="mx-auto text-slate-300 dark:text-slate-700 mb-3" />
               <p className="text-slate-500 font-medium">Nenhuma empresa encontrada para este filtro.</p>
-            </div>
+    </div>
           ) : (
             filteredCompanies.map((company) => (
               <article
@@ -1398,16 +1413,16 @@ export default function SeniorPanel() {
                       ) : (
                         <Building2 size={22} className="text-slate-400" />
                       )}
-                    </div>
+    </div>
                     <div className="min-w-0 flex-1">
                       <h3 className="font-bold text-[14px] sm:text-[19px] text-slate-950 dark:text-white leading-[1.15] truncate">{company.companyName}</h3>
                       <div className="mt-1.5 sm:mt-2 space-y-1 sm:space-y-2 text-[10.5px] sm:text-[13px] leading-tight text-slate-500 dark:text-slate-400">
                         <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Gamepad2 size={13} className="shrink-0" /><span className="truncate">{company.simulatorName || company.simulatorId || "Não informado"}</span></p>
                         <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Users size={13} className="shrink-0" /><span className="truncate">{company.ownerName || "Proprietário não informado"}</span></p>
                         <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><FileText size={13} className="shrink-0" /><span className="truncate">{company.ownerEmail || "E-mail não informado"}</span></p>
-                      </div>
-                    </div>
-                  </div>
+    </div>
+    </div>
+    </div>
 
                   <div className="min-w-0 flex flex-col justify-between border-l border-slate-100 dark:border-slate-800 pl-2.5 sm:pl-5">
                     <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-slate-800">
@@ -1415,13 +1430,13 @@ export default function SeniorPanel() {
                         <p className="text-[8px] sm:text-[11px] font-bold uppercase tracking-[0.02em] sm:tracking-wide text-slate-500 dark:text-slate-400 whitespace-nowrap">Equipe</p>
                         <p className="text-[22px] sm:text-[28px] font-bold text-slate-950 dark:text-white leading-none mt-1.5 sm:mt-2">{company.totalEmployees}</p>
                         <p className="text-[9px] sm:text-[12px] text-slate-400 mt-1 truncate">membros</p>
-                      </div>
+    </div>
                       <div className="pl-2 sm:pl-4 min-w-0">
                         <p className="text-[8px] sm:text-[11px] font-bold uppercase tracking-[0.01em] sm:tracking-wide text-slate-500 dark:text-slate-400 whitespace-nowrap">Viagens (mês)</p>
                         <p className="text-[22px] sm:text-[28px] font-bold text-slate-950 dark:text-white leading-none mt-1.5 sm:mt-2">{company.monthlyTrips}</p>
                         <p className="text-[9px] sm:text-[12px] text-slate-400 mt-1 truncate">realizadas</p>
-                      </div>
-                    </div>
+    </div>
+    </div>
 
                     <div className="grid grid-cols-[34px_minmax(0,1fr)] sm:grid-cols-[auto_minmax(0,1fr)] gap-1.5 sm:gap-2 mt-2.5 sm:mt-3">
                       <Button
@@ -1439,13 +1454,13 @@ export default function SeniorPanel() {
                       >
                         <span className="truncate">Acessar Painel</span><ArrowRight size={14} className="ml-1 shrink-0" />
                       </Button>
-                    </div>
-                  </div>
-                </div>
+    </div>
+    </div>
+    </div>
               </article>
             ))
           )}
-        </div>
+    </div>
       )}
 
       {/* Confirmation Modals */}
@@ -1461,7 +1476,7 @@ export default function SeniorPanel() {
                 permanentemente? Todos os vínculos associados a ela perderão
                 referência à empresa.
               </p>
-            </div>
+    </div>
             <div className="flex gap-3 justify-end mt-2">
               <Button
                 onClick={() => setConfirmDeleteId(null)}
@@ -1478,9 +1493,9 @@ export default function SeniorPanel() {
               >
                 Confirmar Remoção
               </Button>
-            </div>
-          </div>
-        </div>
+    </div>
+    </div>
+    </div>
       )}
 
       {confirmDeleteRegId && (
@@ -1493,7 +1508,7 @@ export default function SeniorPanel() {
               <p className="text-[14px] text-gray-500 dark:text-gray-400">
                 Tem certeza que deseja excluir permanentemente esta solicitação recusada? Esta ação não pode ser desfeita.
               </p>
-            </div>
+    </div>
             <div className="flex gap-3 justify-end mt-2">
               <Button
                 onClick={() => setConfirmDeleteRegId(null)}
@@ -1510,9 +1525,9 @@ export default function SeniorPanel() {
               >
                 Confirmar Exclusão
               </Button>
-            </div>
-          </div>
-        </div>
+    </div>
+    </div>
+    </div>
       )}
 
       {selectedRegistrationId && (
@@ -1537,9 +1552,9 @@ export default function SeniorPanel() {
                       <span className={cn("text-[9px] uppercase font-bold px-1.5 py-0.5 rounded-full tracking-wider", getRegistrationStatusInfo(reg.status).color)}>
                         {getRegistrationStatusInfo(reg.status).label}
                       </span>
-                    </div>
-                  </div>
-                </div>
+    </div>
+    </div>
+    </div>
 
                 {/* Content Replica of the Registration Form */}
                 <div className="w-full max-w-[420px] mx-auto py-6 px-4 sm:px-0">
@@ -1550,7 +1565,7 @@ export default function SeniorPanel() {
                     <p className="text-slate-500 dark:text-[#a1a1aa] text-[13px] font-medium">
                       Dados Submetidos para Análise
                     </p>
-                  </div>
+    </div>
 
                   <Card className="rounded-[16px] border border-slate-200 dark:border-slate-800 shadow-sm bg-white dark:bg-[#121212]">
                     <CardContent className="p-4 sm:p-5 space-y-5">
@@ -1572,9 +1587,9 @@ export default function SeniorPanel() {
                             ) : (
                               <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center">
                                 <Building2 size={16} className="text-slate-400 dark:text-slate-500" />
-                              </div>
+    </div>
                             )}
-                          </div>
+    </div>
                           <div className="flex-1 min-w-0">
                             <label className="block text-[13px] font-semibold text-slate-800 dark:text-[#d4d4d8] mb-0.5">
                               Logo da Empresa
@@ -1582,8 +1597,8 @@ export default function SeniorPanel() {
                             <p className="text-[11px] text-slate-500 dark:text-[#a1a1aa] truncate">
                               {reg.companyLogoURL ? "Clique para ampliar" : "Não enviada"}
                             </p>
-                          </div>
-                        </div>
+    </div>
+    </div>
 
                         <div>
                           <label className="block text-[12px] font-medium text-slate-600 dark:text-[#d4d4d8] mb-1 ml-0.5">
@@ -1594,7 +1609,7 @@ export default function SeniorPanel() {
                             value={reg.companyName}
                             className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                           />
-                        </div>
+    </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
@@ -1606,7 +1621,7 @@ export default function SeniorPanel() {
                               value={reg.cnpj}
                               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                             />
-                          </div>
+    </div>
                           <div>
                             <label className="block text-[12px] font-medium text-slate-600 dark:text-[#d4d4d8] mb-1 ml-0.5">
                               Simulador
@@ -1616,9 +1631,9 @@ export default function SeniorPanel() {
                               value={reg.simulatorName || "N/A"}
                               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                             />
-                          </div>
-                        </div>
-                      </div>
+    </div>
+    </div>
+    </div>
 
                       <div className="space-y-3 pt-3">
                         <h3 className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider border-b border-slate-100 dark:border-slate-800 pb-1.5 mb-3">Dados do Proprietário</h3>
@@ -1637,9 +1652,9 @@ export default function SeniorPanel() {
                             ) : (
                               <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center">
                                 <Users size={16} className="text-slate-400 dark:text-slate-500" />
-                              </div>
+    </div>
                             )}
-                          </div>
+    </div>
                           <div className="flex-1 min-w-0">
                             <label className="block text-[13px] font-semibold text-slate-800 dark:text-[#d4d4d8] mb-0.5">
                               Foto do Proprietário
@@ -1647,8 +1662,8 @@ export default function SeniorPanel() {
                             <p className="text-[11px] text-slate-500 dark:text-[#a1a1aa] truncate">
                               {reg.ownerPhotoUrl ? "Clique para ampliar" : "Não enviada"}
                             </p>
-                          </div>
-                        </div>
+    </div>
+    </div>
 
                         <div>
                           <label className="block text-[12px] font-medium text-slate-600 dark:text-[#d4d4d8] mb-1 ml-0.5">
@@ -1659,7 +1674,7 @@ export default function SeniorPanel() {
                             value={reg.ownerName}
                             className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                           />
-                        </div>
+    </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <label className="block text-[12px] font-medium text-slate-600 dark:text-[#d4d4d8] mb-1 ml-0.5">
@@ -1670,7 +1685,7 @@ export default function SeniorPanel() {
                               value={reg.email || "N/A"}
                               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                             />
-                          </div>
+    </div>
                           <div>
                             <label className="block text-[12px] font-medium text-slate-600 dark:text-[#d4d4d8] mb-1 ml-0.5">
                               WhatsApp
@@ -1680,26 +1695,26 @@ export default function SeniorPanel() {
                               value={reg.whatsapp || "N/A"}
                               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 h-10 text-[14px] outline-none text-slate-900 dark:text-[#fafafa] cursor-default font-medium"
                             />
-                          </div>
-                        </div>
-                      </div>
+    </div>
+    </div>
+    </div>
 
                       <div className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800">
                         <div className="flex justify-between items-center px-1">
                           <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Abertura:</span>
                           <span className="text-[12px] font-medium text-slate-600 dark:text-slate-400">{new Date(reg.createdAt).toLocaleString("pt-BR")}</span>
-                        </div>
+    </div>
                         {reg.status !== "pending" && (
                           <div className="pt-2">
                              <label className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block mb-1">Parecer Registrado:</label>
                              <textarea readOnly value={reg.rejectionReason || "Nenhuma observação informada no sistema."} className="w-full h-16 bg-slate-50 dark:bg-slate-900 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 text-[13px] font-medium text-slate-600 dark:text-slate-400 resize-none outline-none cursor-default"/>
-                          </div>
+    </div>
                         )}
-                      </div>
+    </div>
 
                     </CardContent>
                   </Card>
-                </div>
+    </div>
 
                 {/* Fixed Footer */}
                 {reg.status === "pending" && (
@@ -1718,13 +1733,13 @@ export default function SeniorPanel() {
                       >
                         Aprovar e Ativar
                       </Button>
-                    </div>
-                  </div>
+    </div>
+    </div>
                 )}
-              </div>
+    </div>
             );
           })()}
-        </div>
+    </div>
       )}
 
       {showApproveConfirm && (
@@ -1737,7 +1752,7 @@ export default function SeniorPanel() {
               <p className="text-[13px] text-slate-600 dark:text-slate-400">
                 Confirma a ativação desta empresa na plataforma NVU? Após a aprovação ela poderá operar normalmente.
               </p>
-            </div>
+    </div>
             <div className="flex gap-2 justify-end mt-2">
               <Button
                 onClick={() => setShowApproveConfirm(null)}
@@ -1757,9 +1772,9 @@ export default function SeniorPanel() {
               >
                 Confirmar
               </Button>
-            </div>
-          </div>
-        </div>
+    </div>
+    </div>
+    </div>
       )}
 
       {showRejectConfirm && (
@@ -1781,7 +1796,7 @@ export default function SeniorPanel() {
                  placeholder="Explique o motivo..." 
                  rows={3} 
               />
-            </div>
+    </div>
             <div className="flex gap-2 justify-end mt-1">
               <Button
                 onClick={() => setShowRejectConfirm(null)}
@@ -1798,9 +1813,9 @@ export default function SeniorPanel() {
               >
                 Confirmar
               </Button>
-            </div>
-          </div>
-        </div>
+    </div>
+    </div>
+    </div>
       )}
 
       {/* Full-screen Image Zoom Overlay */}
@@ -1821,9 +1836,13 @@ export default function SeniorPanel() {
             className="max-w-[95vw] max-h-[95vh] object-contain rounded-xl shadow-2xl animate-in zoom-in-95 duration-300" 
             onClick={(e) => e.stopPropagation()}
           />
-        </div>
+    </div>
       )}
 
+      <CreateNewsModal
+        isOpen={isCreateNewsModalOpen}
+        onClose={() => setIsCreateNewsModalOpen(false)}
+      />
     </div>
   );
 }

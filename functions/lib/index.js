@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.repairApprovedMembership = exports.sendPushNotification = exports.registerPushDevice = exports.pushOnLegacyNotificationCreated = exports.pushOnNotificationCreated = void 0;
+exports.generateNvuNewsScheduled = exports.generateNvuNewsBackfill = exports.repairApprovedMembership = exports.sendPushNotification = exports.registerPushDevice = exports.pushOnLegacyNotificationCreated = exports.pushOnNotificationCreated = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const node_crypto_1 = require("node:crypto");
@@ -320,4 +320,7 @@ exports.repairApprovedMembership = functions.https.onCall(async (_data, context)
     });
     return { success: true, userId: uid, companyId, applicationId };
 });
+var nvuNewsBackfill_1 = require("./nvuNewsBackfill");
+Object.defineProperty(exports, "generateNvuNewsBackfill", { enumerable: true, get: function () { return nvuNewsBackfill_1.generateNvuNewsBackfill; } });
+Object.defineProperty(exports, "generateNvuNewsScheduled", { enumerable: true, get: function () { return nvuNewsBackfill_1.generateNvuNewsScheduled; } });
 //# sourceMappingURL=index.js.map

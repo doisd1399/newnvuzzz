@@ -19,6 +19,7 @@ import {
   Check,
   ClipboardList,
   Trophy,
+  Newspaper,
   Activity,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
@@ -307,6 +308,12 @@ export default function DriverLayout() {
           label: "Ranking Global",
           icon: Trophy,
           path: "/ranking",
+          exact: false,
+        },
+        {
+          label: "NVU News",
+          icon: Newspaper,
+          path: "/driver/news",
           exact: false,
         },
         {

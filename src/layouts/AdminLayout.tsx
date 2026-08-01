@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   Check,
   Trophy,
+  Newspaper,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -284,6 +285,11 @@ export default function AdminLayout() {
           label: "Ranking",
           icon: Trophy,
           path: "/ranking",
+        },
+        {
+          label: "NVU News",
+          icon: Newspaper,
+          path: "/admin/news",
         },
         {
           label: "Relatórios",
