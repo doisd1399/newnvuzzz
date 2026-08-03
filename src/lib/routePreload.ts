@@ -24,6 +24,7 @@ const routeLoaders: Record<string, Loader[]> = {
     () => import("../pages/admin/fleet/OperationsTab"),
   ],
   "/admin/reports": [() => import("../pages/admin/Reports")],
+  "/admin/news": [() => import("../pages/NewsFeed")],
   "/admin/senior": [() => import("../pages/admin/SeniorPanel")],
   "/admin/assign": [() => import("../pages/admin/AssignJob")],
   "/admin/add-driver": [() => import("../pages/admin/AddDriver")],
@@ -41,6 +42,7 @@ const routeLoaders: Record<string, Loader[]> = {
   "/driver/trip": [() => import("../pages/driver/RecordTrip")],
   "/driver/history": [() => import("../pages/driver/TripHistory")],
   "/driver/reports": [() => import("../pages/admin/Reports")],
+  "/driver/news": [() => import("../pages/NewsFeed")],
   "/driver/join": [() => import("../pages/driver/JoinCompany")],
   "/ranking": [() => import("../pages/RankingGlobal")],
 };
@@ -135,11 +137,13 @@ export function preloadRoleRoutes(role: "admin" | "driver"): Promise<void> {
       ? [
           "/admin/fleet",
           "/ranking",
+          "/admin/news",
           "/admin/assign"
         ]
       : [
           "/driver/profile",
           "/ranking",
+          "/driver/news",
           "/driver/trip"
         ];
 

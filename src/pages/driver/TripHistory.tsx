@@ -29,14 +29,27 @@ import {
   ChevronDown,
   ChevronsUpDown,
   ChevronsDownUp,
+  ShieldAlert,
+  Check,
 } from "lucide-react";
 
 import { cn } from "../../lib/utils";
 import { StableImage } from "../../components/common/StableImage";
-import { doc, runTransaction } from "firebase/firestore";
+import { doc } from "firebase/firestore";
+import { toast } from "sonner";
 import { db } from "../../lib/firebase";
 import { useTripHistory } from "../../hooks/useTripHistory";
 import { TripsRepository } from "../../repositories/TripsRepository";
+import {
+  applyDriverSuspension,
+  deleteTripWithModeration,
+} from "../../services/tripModerationService";
+import {
+  DRIVER_SUSPENSION_DURATION_OPTIONS,
+  DRIVER_SUSPENSION_REASON_OPTIONS,
+  TRIP_DELETION_REASON_OPTIONS,
+  type DriverSuspensionDurationHours,
+} from "../../lib/driverSuspension";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { onAuthTeardown } from "../../lib/authLifecycle";
 import { normalizeTrip, parseTripValue } from "../../lib/tripNormalizer";
@@ -516,8 +529,10 @@ const TripListItem = React.memo(({
   setSelectedTrip,
   setEditingTrip,
   setDeletingTrip,
+  setSuspendingTrip,
   canEdit,
   canDelete,
+  canSuspend,
   formatCurrency,
   formatDate,
   formatTime,
@@ -532,8 +547,10 @@ const TripListItem = React.memo(({
   setSelectedTrip: (t: TripRecord) => void;
   setEditingTrip: (t: TripRecord) => void;
   setDeletingTrip: (t: TripRecord) => void;
+  setSuspendingTrip: (t: TripRecord) => void;
   canEdit: boolean;
   canDelete: boolean;
+  canSuspend: boolean;
   formatCurrency: (v: number) => string;
   formatDate: (d: any) => string;
   formatTime: (d: any) => string;
@@ -819,6 +836,18 @@ const TripListItem = React.memo(({
               <Pencil size={11} className="stroke-[2]" />
             </button>
           )}
+          {canSuspend && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setSuspendingTrip(trip);
+              }}
+              title="Suspender motorista"
+              className="w-7 h-6 rounded-lg border border-amber-100/60 dark:border-amber-900/30 bg-amber-50/60 dark:bg-amber-500/5 flex items-center justify-center text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-500/10 transition-colors"
+            >
+              <ShieldAlert size={11} className="stroke-[2]" />
+            </button>
+          )}
           {canDelete && (
             <button
               onClick={(e) => {
@@ -849,6 +878,114 @@ const TripListItem = React.memo(({
     </div>
   );
 });
+
+const CompactMultiSelect = ({
+  options,
+  selected,
+  onToggle,
+}: {
+  options: readonly string[];
+  selected: string[];
+  onToggle: (option: string) => void;
+}) => (
+  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+    {options.map((option) => {
+      const isSelected = selected.includes(option);
+      return (
+        <button
+          key={option}
+          type="button"
+          onClick={() => onToggle(option)}
+          className={cn(
+            "min-h-10 rounded-xl border px-3 py-2 text-left text-[12px] font-semibold flex items-center gap-2 transition-colors",
+            isSelected
+              ? "border-blue-500 bg-blue-50 text-blue-800 dark:border-blue-400 dark:bg-blue-500/10 dark:text-blue-200"
+              : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-[#18181b] dark:text-gray-300 dark:hover:bg-gray-800",
+          )}
+          aria-pressed={isSelected}
+        >
+          <span
+            className={cn(
+              "w-4 h-4 rounded border flex items-center justify-center shrink-0",
+              isSelected
+                ? "border-blue-600 bg-blue-600 text-white"
+                : "border-gray-300 dark:border-gray-600",
+            )}
+          >
+            {isSelected && <Check size={11} strokeWidth={3} />}
+          </span>
+          <span>{option}</span>
+        </button>
+      );
+    })}
+  </div>
+);
+
+const SuspensionFields = ({
+  duration,
+  setDuration,
+  reasons,
+  toggleReason,
+  message,
+  setMessage,
+}: {
+  duration: DriverSuspensionDurationHours;
+  setDuration: (duration: DriverSuspensionDurationHours) => void;
+  reasons: string[];
+  toggleReason: (reason: string) => void;
+  message: string;
+  setMessage: (message: string) => void;
+}) => (
+  <div className="space-y-4">
+    <div>
+      <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+        Duração da suspensão
+      </p>
+      <div className="grid grid-cols-3 gap-2">
+        {DRIVER_SUSPENSION_DURATION_OPTIONS.map((hours) => (
+          <button
+            key={hours}
+            type="button"
+            onClick={() => setDuration(hours)}
+            className={cn(
+              "h-10 rounded-xl border text-[12px] font-bold transition-colors",
+              duration === hours
+                ? "border-amber-500 bg-amber-50 text-amber-800 dark:border-amber-400 dark:bg-amber-500/10 dark:text-amber-200"
+                : "border-gray-200 bg-white text-gray-700 dark:border-gray-700 dark:bg-[#18181b] dark:text-gray-300",
+            )}
+          >
+            {hours} horas
+          </button>
+        ))}
+      </div>
+    </div>
+
+    <div>
+      <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+        Motivo da suspensão
+      </p>
+      <CompactMultiSelect
+        options={DRIVER_SUSPENSION_REASON_OPTIONS}
+        selected={reasons}
+        onToggle={toggleReason}
+      />
+    </div>
+
+    <div>
+      <label className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+        Mensagem opcional
+      </label>
+      <textarea
+        value={message}
+        onChange={(event) => setMessage(event.target.value.slice(0, 500))}
+        rows={3}
+        placeholder="Orientação que ficará visível no painel operacional do motorista."
+        className="w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-[13px] text-gray-900 outline-none focus:border-amber-500 dark:border-gray-700 dark:bg-[#18181b] dark:text-white"
+      />
+      <p className="mt-1 text-right text-[10px] text-gray-400">{message.length}/500</p>
+    </div>
+  </div>
+);
 
 const TripHistorySkeleton = () => (
   <div className="flex flex-col gap-3" role="status" aria-live="polite">
@@ -918,6 +1055,14 @@ export default function TripHistory({
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
   const [editingTripValorDisplay, setEditingTripValorDisplay] = useState("");
   const [deletingTrip, setDeletingTrip] = useState<TripRecord | null>(null);
+  const [suspendingTrip, setSuspendingTrip] = useState<TripRecord | null>(null);
+  const [deletionReasons, setDeletionReasons] = useState<string[]>([]);
+  const [suspendWithDeletion, setSuspendWithDeletion] = useState(false);
+  const [suspensionDuration, setSuspensionDuration] =
+    useState<DriverSuspensionDurationHours>(24);
+  const [suspensionReasons, setSuspensionReasons] = useState<string[]>([]);
+  const [suspensionMessage, setSuspensionMessage] = useState("");
+  const [moderationBusy, setModerationBusy] = useState(false);
   const [deletedTripIds, setDeletedTripIds] = useState<Set<string>>(new Set());
   const [selectedTripOptionsOpen, setSelectedTripOptionsOpen] = useState(false);
   const [selectedTripTransition, setSelectedTripTransition] = useState<{
@@ -1478,7 +1623,7 @@ export default function TripHistory({
 
   const canEditTrip = React.useCallback((trip: TripRecord) => {
     if (!currentUser) return false;
-    if ((activeRole as string) === "senior") return true;
+    if (isSeniorAccess) return true;
     if (activeRole === "admin") {
       return getCanonicalTripCompanyId(trip) === activeCompanyId;
     }
@@ -1486,11 +1631,41 @@ export default function TripHistory({
       return getCanonicalTripDriverId(trip) === currentUser.id;
     }
     return false;
-  }, [currentUser, activeRole, activeCompanyId]);
+  }, [currentUser, activeRole, activeCompanyId, isSeniorAccess]);
 
   const canDeleteTrip = React.useCallback((trip: TripRecord) => {
     return canEditTrip(trip);
   }, [canEditTrip]);
+
+  const canModerateTrip = React.useCallback((trip: TripRecord) => {
+    if (!currentUser || !getCanonicalTripDriverId(trip)) return false;
+    if (isSeniorAccess) return true;
+    return (
+      activeRole === "admin" &&
+      getCanonicalTripCompanyId(trip) === activeCompanyId
+    );
+  }, [currentUser, activeRole, activeCompanyId, isSeniorAccess]);
+
+  const canSuspendTripDriver = canModerateTrip;
+
+  const resetModerationForm = React.useCallback(() => {
+    setDeletionReasons([]);
+    setSuspendWithDeletion(false);
+    setSuspensionDuration(24);
+    setSuspensionReasons([]);
+    setSuspensionMessage("");
+  }, []);
+
+  const toggleOption = React.useCallback((
+    option: string,
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+  ) => {
+    setter((current) =>
+      current.includes(option)
+        ? current.filter((item) => item !== option)
+        : [...current, option],
+    );
+  }, []);
 
   const handleEditSelectedTrip = React.useCallback(() => {
     if (!selectedTrip || !canEditTrip(selectedTrip)) return;
@@ -1500,9 +1675,17 @@ export default function TripHistory({
 
   const handleDeleteSelectedTrip = React.useCallback(() => {
     if (!selectedTrip || !canDeleteTrip(selectedTrip)) return;
+    resetModerationForm();
     setSelectedTripOptionsOpen(false);
     setDeletingTrip(selectedTrip);
-  }, [canDeleteTrip, selectedTrip]);
+  }, [canDeleteTrip, resetModerationForm, selectedTrip]);
+
+  const handleSuspendSelectedTripDriver = React.useCallback(() => {
+    if (!selectedTrip || !canSuspendTripDriver(selectedTrip)) return;
+    resetModerationForm();
+    setSelectedTripOptionsOpen(false);
+    setSuspendingTrip(selectedTrip);
+  }, [canSuspendTripDriver, resetModerationForm, selectedTrip]);
 
   const handleSelectedTripStep = React.useCallback(
     (direction: -1 | 1) => {
@@ -1532,44 +1715,138 @@ export default function TripHistory({
   }, []);
 
   const confirmDeleteTrip = async () => {
-    if (!deletingTrip) return;
-    
+    if (!deletingTrip || moderationBusy) return;
+
     const tripToDelete = deletingTrip;
-    
-    // Optimistic UI updates - execute immediately for responsive UX
+    const isModeratedDeletion = canModerateTrip(tripToDelete);
+    if (isModeratedDeletion && deletionReasons.length === 0) {
+      toast.error("Selecione ao menos um motivo para excluir a viagem.");
+      return;
+    }
+    if (
+      isModeratedDeletion &&
+      suspendWithDeletion &&
+      suspensionReasons.length === 0
+    ) {
+      toast.error("Selecione ao menos um motivo para a suspensão.");
+      return;
+    }
+
+    const driverId = getCanonicalTripDriverId(tripToDelete);
+    const companyId = getCanonicalTripCompanyId(tripToDelete) || activeCompanyId || "";
+    const tripNumber =
+      tripNumberById.get(String(tripToDelete.id)) ??
+      (tripToDelete as any).tripNumber ??
+      (tripToDelete as any).numeroViagem;
+
+    if (!driverId) {
+      toast.error("Não foi possível identificar o motorista desta viagem.");
+      return;
+    }
+
+    setModerationBusy(true);
     setDeletedTripIds((prev) => new Set(prev).add(tripToDelete.id));
     setDeletingTrip(null);
     setSelectedTrip(null);
     setSelectedTripTransition(null);
 
     try {
-      console.log(`[DIAGNOSTIC] Ao clicar excluir:`);
-      console.log(`- tripToDelete.id: ${tripToDelete.id}`);
-      console.log(`- tripToDelete.jobId: ${tripToDelete.jobId || "undefined"}`);
-      console.log(`- tripToDelete.contractId: ${tripToDelete.contratoId || "undefined"}`);
-
-      if (tripToDelete.jobId && tripToDelete.contratoId) {
-        await runTransaction(db, async (transaction) => {
-          const tripRef = doc(db, "historico_viagens", tripToDelete.id);
-          transaction.delete(tripRef);
+      if (isModeratedDeletion) {
+        await deleteTripWithModeration({
+          tripId: tripToDelete.id,
+          driverId,
+          companyId,
+          tripNumber: String(tripNumber ?? tripToDelete.id.slice(0, 8)),
+          tripDateLabel: formatDate(
+            (tripToDelete as any).metricDate || getTripDisplayDate(tripToDelete as any),
+          ),
+          tripValue: parseTripValue(tripToDelete.valor),
+          reasons: deletionReasons,
+          suspension: suspendWithDeletion
+            ? {
+                driverId,
+                companyId,
+                tripId: tripToDelete.id,
+                durationHours: suspensionDuration,
+                reasons: suspensionReasons,
+                message: suspensionMessage,
+              }
+            : null,
         });
-
-        // Never decrement a cached counter. Rebuild the exact job progress
-        // from the remaining valid trips and reconcile its operational status.
-        await TripsRepository.syncJobProgress(tripToDelete.jobId);
       } else {
-        console.log(`[DIAGNOSTIC] Deletando trip sem transacao de job`);
         await TripsRepository.deleteTrip(tripToDelete.id);
       }
-    } catch (error) {
-      console.error("Erro ao deletar viagem:", error);
-      // Revert optimistic update on failure
+
+      if (tripToDelete.jobId) {
+        try {
+          await TripsRepository.syncJobProgress(tripToDelete.jobId);
+        } catch (progressError) {
+          console.warn(
+            "A exclusão foi concluída, mas o progresso da operação não pôde ser reconciliado imediatamente.",
+            progressError,
+          );
+        }
+      }
+
+      toast.success(
+        isModeratedDeletion
+          ? suspendWithDeletion
+            ? "Viagem excluída, motorista notificado e suspensão aplicada."
+            : "Viagem excluída e motorista notificado."
+          : "Viagem excluída com sucesso.",
+      );
+      resetModerationForm();
+    } catch (error: any) {
+      console.error("Erro ao moderar exclusão de viagem:", error);
       setDeletedTripIds((prev) => {
         const next = new Set(prev);
         next.delete(tripToDelete.id);
         return next;
       });
-      alert("Erro ao remover a viagem. Verifique suas permissões.");
+      toast.error(
+        error?.message ||
+          (isModeratedDeletion
+            ? "Não foi possível excluir a viagem e concluir a notificação."
+            : "Não foi possível excluir a viagem."),
+      );
+    } finally {
+      setModerationBusy(false);
+    }
+  };
+
+  const confirmDriverSuspension = async () => {
+    if (!suspendingTrip || moderationBusy) return;
+    if (suspensionReasons.length === 0) {
+      toast.error("Selecione ao menos um motivo para a suspensão.");
+      return;
+    }
+
+    const driverId = getCanonicalTripDriverId(suspendingTrip);
+    const companyId =
+      getCanonicalTripCompanyId(suspendingTrip) || activeCompanyId || "";
+    if (!driverId) {
+      toast.error("Não foi possível identificar o motorista desta viagem.");
+      return;
+    }
+
+    setModerationBusy(true);
+    try {
+      await applyDriverSuspension({
+        driverId,
+        companyId,
+        tripId: suspendingTrip.id,
+        durationHours: suspensionDuration,
+        reasons: suspensionReasons,
+        message: suspensionMessage,
+      });
+      toast.success("Suspensão aplicada e motorista notificado.");
+      setSuspendingTrip(null);
+      resetModerationForm();
+    } catch (error: any) {
+      console.error("Erro ao suspender motorista:", error);
+      toast.error(error?.message || "Não foi possível aplicar a suspensão.");
+    } finally {
+      setModerationBusy(false);
     }
   };
 
@@ -1783,9 +2060,17 @@ export default function TripHistory({
                   toggleExpand={toggleExpand}
                   setSelectedTrip={setSelectedTrip}
                   setEditingTrip={setEditingTrip}
-                  setDeletingTrip={setDeletingTrip}
+                  setDeletingTrip={(targetTrip) => {
+                    resetModerationForm();
+                    setDeletingTrip(targetTrip);
+                  }}
+                  setSuspendingTrip={(targetTrip) => {
+                    resetModerationForm();
+                    setSuspendingTrip(targetTrip);
+                  }}
                   canEdit={canEditTrip(trip as any)}
                   canDelete={canDeleteTrip(trip as any)}
+                  canSuspend={canSuspendTripDriver(trip as any)}
                   formatCurrency={formatCurrency}
                   formatDate={formatDate}
                   formatTime={formatTime}
@@ -1868,7 +2153,9 @@ export default function TripHistory({
           const selectedOperationCounter = operationCounterById.get(String(selectedTrip.id));
           const canEditSelectedTrip = canEditTrip(selectedTrip);
           const canDeleteSelectedTrip = canDeleteTrip(selectedTrip);
-          const canManageSelectedTrip = canEditSelectedTrip || canDeleteSelectedTrip;
+          const canSuspendSelectedTrip = canSuspendTripDriver(selectedTrip);
+          const canManageSelectedTrip =
+            canEditSelectedTrip || canDeleteSelectedTrip || canSuspendSelectedTrip;
 
           const handleTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
             if (event.touches.length !== 1) return;
@@ -1955,7 +2242,7 @@ export default function TripHistory({
                         {selectedTripOptionsOpen && (
                           <div
                             role="menu"
-                            className="absolute left-0 top-10 z-20 w-36 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#18181b] shadow-lg"
+                            className="absolute left-0 top-10 z-20 w-48 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#18181b] shadow-lg"
                           >
                             {canEditSelectedTrip && (
                               <button
@@ -1966,6 +2253,17 @@ export default function TripHistory({
                               >
                                 <Pencil size={13} />
                                 Editar
+                              </button>
+                            )}
+                            {canSuspendSelectedTrip && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={handleSuspendSelectedTripDriver}
+                                className="w-full px-3 py-2.5 text-left text-[13px] font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-500/10 flex items-center gap-2 transition-colors"
+                              >
+                                <ShieldAlert size={13} />
+                                Suspender motorista
                               </button>
                             )}
                             {canDeleteSelectedTrip && (
@@ -2258,49 +2556,203 @@ export default function TripHistory({
           );
         })()}
 
-      {/* Delete Confirmation Modal */}
-      {deletingTrip && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm">
-          <div className="bg-white dark:bg-[#121213] w-full max-w-sm rounded-[24px] shadow-xl overflow-hidden flex flex-col">
-            <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-              <h3 className="font-bold text-gray-900 dark:text-white text-[15px]">
-                Confirmar Exclusão
-              </h3>
+      {/* Driver Suspension Modal */}
+      {suspendingTrip && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-gray-900/45 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#121213] w-full max-w-lg rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300 flex items-center justify-center shrink-0">
+                  <ShieldAlert size={18} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-[15px]">
+                    Suspender atividades
+                  </h3>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                    {suspendingTrip.motoristaNome || "Motorista"}
+                  </p>
+                </div>
+              </div>
               <button
-                onClick={() => setDeletingTrip(null)}
-                className="p-1 -mr-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                type="button"
+                disabled={moderationBusy}
+                onClick={() => {
+                  setSuspendingTrip(null);
+                  resetModerationForm();
+                }}
+                className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 disabled:opacity-50"
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </div>
 
-            <div className="p-5 text-center">
-              <div className="w-14 h-14 bg-red-50 dark:bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                <Trash2 size={24} className="text-red-500" />
-              </div>
-              <h4 className="text-[17px] font-semibold text-gray-900 dark:text-white mb-2">
-                Excluir Viagem?
-              </h4>
-              <p className="text-[13px] leading-relaxed text-gray-500 dark:text-gray-400">
-                Tem certeza que deseja excluir esta viagem? Esta ação não pode
-                ser desfeita e os dados serão perdidos permanentemente.
+            <div className="p-5 overflow-y-auto">
+              <p className="mb-4 text-[12px] leading-relaxed text-gray-600 dark:text-gray-300">
+                O motorista ficará impedido de solicitar trabalhos e lançar viagens até o término automático da suspensão.
               </p>
+              <SuspensionFields
+                duration={suspensionDuration}
+                setDuration={setSuspensionDuration}
+                reasons={suspensionReasons}
+                toggleReason={(reason) => toggleOption(reason, setSuspensionReasons)}
+                message={suspensionMessage}
+                setMessage={setSuspensionMessage}
+              />
             </div>
 
             <div className="p-4 border-t border-gray-100 dark:border-gray-800 flex gap-3 bg-gray-50 dark:bg-[#09090b]">
               <button
                 type="button"
-                onClick={() => setDeletingTrip(null)}
-                className="flex-1 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white font-semibold py-2 px-3 text-[14px] rounded-xl transition-colors"
+                disabled={moderationBusy}
+                onClick={() => {
+                  setSuspendingTrip(null);
+                  resetModerationForm();
+                }}
+                className="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white font-semibold py-2.5 px-3 text-[14px] rounded-xl disabled:opacity-50"
               >
                 Cancelar
               </button>
               <button
                 type="button"
-                onClick={confirmDeleteTrip}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-3 text-[14px] rounded-xl transition-colors"
+                disabled={moderationBusy || suspensionReasons.length === 0}
+                onClick={confirmDriverSuspension}
+                className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-semibold py-2.5 px-3 text-[14px] rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Excluir Viagem
+                {moderationBusy ? "Aplicando..." : "Aplicar suspensão"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deletingTrip && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-gray-900/45 backdrop-blur-sm">
+          <div className="bg-white dark:bg-[#121213] w-full max-w-lg rounded-t-3xl sm:rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300 flex items-center justify-center shrink-0">
+                  <Trash2 size={18} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-[15px]">
+                    Excluir viagem
+                  </h3>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                    {deletingTrip.motoristaNome || "Motorista"} • {formatCurrency(parseTripValue(deletingTrip.valor))}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={moderationBusy}
+                onClick={() => {
+                  setDeletingTrip(null);
+                  resetModerationForm();
+                }}
+                className="p-2 -mr-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 disabled:opacity-50"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-5">
+              {canModerateTrip(deletingTrip) ? (
+                <div>
+                  <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                    Motivo da exclusão
+                  </p>
+                  <p className="mb-3 text-[12px] leading-relaxed text-gray-600 dark:text-gray-300">
+                    Selecione uma ou mais opções. Os motivos serão enviados ao motorista na Central de Notificações.
+                  </p>
+                  <CompactMultiSelect
+                    options={TRIP_DELETION_REASON_OPTIONS}
+                    selected={deletionReasons}
+                    onToggle={(reason) => toggleOption(reason, setDeletionReasons)}
+                  />
+                </div>
+              ) : (
+                <p className="text-[12px] leading-relaxed text-gray-600 dark:text-gray-300">
+                  Confirme a exclusão permanente desta viagem do seu histórico.
+                </p>
+              )}
+
+              {canSuspendTripDriver(deletingTrip) && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-500/20 dark:bg-amber-500/5">
+                  <button
+                    type="button"
+                    onClick={() => setSuspendWithDeletion((current) => !current)}
+                    className="w-full flex items-start gap-3 text-left"
+                    aria-pressed={suspendWithDeletion}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 w-5 h-5 rounded-md border flex items-center justify-center shrink-0",
+                        suspendWithDeletion
+                          ? "border-amber-600 bg-amber-600 text-white"
+                          : "border-amber-300 bg-white dark:border-amber-500/40 dark:bg-[#18181b]",
+                      )}
+                    >
+                      {suspendWithDeletion && <Check size={13} strokeWidth={3} />}
+                    </span>
+                    <span>
+                      <span className="block text-[13px] font-bold text-amber-900 dark:text-amber-200">
+                        Suspender também as atividades do motorista
+                      </span>
+                      <span className="mt-1 block text-[11px] leading-relaxed text-amber-800/80 dark:text-amber-300/80">
+                        A exclusão, a notificação e a suspensão serão confirmadas na mesma operação.
+                      </span>
+                    </span>
+                  </button>
+
+                  {suspendWithDeletion && (
+                    <div className="mt-4 border-t border-amber-200/80 pt-4 dark:border-amber-500/20">
+                      <SuspensionFields
+                        duration={suspensionDuration}
+                        setDuration={setSuspensionDuration}
+                        reasons={suspensionReasons}
+                        toggleReason={(reason) => toggleOption(reason, setSuspensionReasons)}
+                        message={suspensionMessage}
+                        setMessage={setSuspensionMessage}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="rounded-xl border border-red-100 bg-red-50 px-3 py-2.5 text-[11px] leading-relaxed text-red-700 dark:border-red-500/20 dark:bg-red-500/5 dark:text-red-300">
+                {canModerateTrip(deletingTrip)
+                  ? "A viagem será removida permanentemente. A exclusão só será concluída se o registro de auditoria e a notificação do motorista também forem gravados."
+                  : "A viagem será removida permanentemente do histórico."}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-gray-100 dark:border-gray-800 flex gap-3 bg-gray-50 dark:bg-[#09090b]">
+              <button
+                type="button"
+                disabled={moderationBusy}
+                onClick={() => {
+                  setDeletingTrip(null);
+                  resetModerationForm();
+                }}
+                className="flex-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white font-semibold py-2.5 px-3 text-[14px] rounded-xl disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={
+                  moderationBusy ||
+                  (canModerateTrip(deletingTrip) && deletionReasons.length === 0) ||
+                  (canModerateTrip(deletingTrip) &&
+                    suspendWithDeletion &&
+                    suspensionReasons.length === 0)
+                }
+                onClick={confirmDeleteTrip}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 px-3 text-[14px] rounded-xl disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {moderationBusy ? "Processando..." : "Excluir viagem"}
               </button>
             </div>
           </div>

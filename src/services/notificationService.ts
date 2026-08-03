@@ -24,6 +24,8 @@ export type NotificationType =
   | "COMPANY_REJECTED"
   | "RECRUITMENT_APPROVED"
   | "RECRUITMENT_REJECTED"
+  | "TRIP_DELETED"
+  | "DRIVER_SUSPENDED"
   | "SYSTEM";
 
 export interface AppNotification {

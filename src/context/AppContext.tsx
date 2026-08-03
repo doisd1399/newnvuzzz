@@ -22,6 +22,7 @@ import { generateCnpj } from "../lib/cnpj";
 import { preloadImages } from "../lib/imageCache";
 import { warmRankingUserProfiles } from "../lib/rankingPhotoWarmup";
 import { resolveMembershipRoles } from "../lib/membershipRoles";
+import { getOperationalSuspension } from "../lib/driverSuspension";
 import {
   resolveApprovedCompanyOwnerPhoto,
   resolvePersistedUserProfilePhoto,
@@ -105,6 +106,18 @@ export interface User {
   };
   role?: Role;
   roles?: Role[];
+  operationalSuspendedUntil?: any;
+  operationalSuspendedAt?: any;
+  operationalSuspension?: {
+    startsAt?: any;
+    endsAt?: any;
+    durationHours?: number;
+    reasons?: string[];
+    message?: string;
+    companyId?: string;
+    tripId?: string;
+    createdBy?: string;
+  };
 }
 
 export interface Vehicle {
@@ -3484,9 +3497,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const startJob = async (jobId: string) => {
     try {
       getCurrentUserId();
+      const suspension = getOperationalSuspension(currentUser as any);
+      if (suspension.active) {
+        throw new Error(
+          "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para iniciar uma operação.",
+        );
+      }
       await updateDoc(doc(db, "trabalhos", jobId), { status: "active" });
     } catch (e) {
       handleFirebaseError(e);
+      throw e;
     }
   };
 
@@ -4017,8 +4037,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     // the background without blocking the destination screen.
     setActiveRole(role);
     setActiveCompanyId(targetCompanyId);
-    writeLocalStorageValue("activeRole", role);
-    writeLocalStorageValue("activeCompanyId", targetCompanyId);
+    writeLocalStorageValue(sessionActiveRoleKey(currentUser.id), role);
+    writeLocalStorageValue(sessionActiveCompanyKey(currentUser.id), targetCompanyId);
 
     if (hasSeniorAccess) {
       setCurrentUser({ ...currentUser });
@@ -4167,6 +4187,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const updateUserOnlineStatus = async (isOnline: boolean) => {
     try {
       const uid = getCurrentUserId();
+      if (isOnline && getOperationalSuspension(currentUser as any).active) {
+        throw new Error(
+          "Você não pode ficar disponível enquanto a suspensão operacional estiver ativa.",
+        );
+      }
       await updateDoc(doc(db, "users", uid), { isOnline });
       if (currentUser) {
         setCurrentUser({ ...currentUser, isOnline });
@@ -4331,6 +4356,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const requestNewJobDemand = async () => {
     try {
       const uid = getCurrentUserId();
+      const suspension = getOperationalSuspension(currentUser as any);
+      if (suspension.active) {
+        throw new Error(
+          "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para solicitar um novo trabalho.",
+        );
+      }
       const targetCompanyId = activeCompanyId || currentUser?.companyId;
       if (!targetCompanyId)
         throw new Error(

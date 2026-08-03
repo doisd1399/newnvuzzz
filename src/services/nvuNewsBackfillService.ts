@@ -7,29 +7,16 @@ export type NvuNewsBackfillResult = {
   created: number;
   updated: number;
   ignored: number;
-  recordCreated: number;
-  recordUpdated: number;
-  recordIgnored: number;
-  archived: number;
+  migratedCommunications: number;
   sourceTrips: number;
   generationKey: string;
+  historyVersion: string;
+  removedLegacyClassifications: number;
 };
 
 let inFlight: Promise<NvuNewsBackfillResult> | null = null;
-const STORAGE_KEY = "nvu_news_automation_checked_v5";
-const NEWS_TIME_ZONE = "America/Sao_Paulo";
-
-const wait = (milliseconds: number) =>
-  new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
-
-function todayKey(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: NEWS_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
+const HISTORY_VERSION = "nvu_news_full_history_individual_v3";
+const STORAGE_KEY = `nvu_news_history_checked_${HISTORY_VERSION}`;
 
 async function invokeBackfill(): Promise<NvuNewsBackfillResult> {
   const callable = httpsCallable<Record<string, never>, NvuNewsBackfillResult>(
@@ -41,40 +28,37 @@ async function invokeBackfill(): Promise<NvuNewsBackfillResult> {
 }
 
 export async function ensureNvuNewsBackfill(): Promise<NvuNewsBackfillResult> {
-  const currentDay = todayKey();
-  if (typeof window !== "undefined" && localStorage.getItem(STORAGE_KEY) === currentDay) {
+  if (typeof window !== "undefined" && localStorage.getItem(STORAGE_KEY) === "completed") {
     return {
       success: true,
       status: "already_completed",
       created: 0,
       updated: 0,
       ignored: 0,
-      recordCreated: 0,
-      recordUpdated: 0,
-      recordIgnored: 0,
-      archived: 0,
+      migratedCommunications: 0,
       sourceTrips: 0,
-      generationKey: currentDay,
+      generationKey: HISTORY_VERSION,
+      historyVersion: HISTORY_VERSION,
+      removedLegacyClassifications: 0,
     };
   }
 
   if (inFlight) return inFlight;
 
-  inFlight = (async () => {
-    let result = await invokeBackfill();
-
-    for (let attempt = 0; result.status === "in_progress" && attempt < 3; attempt += 1) {
-      await wait(1200);
-      result = await invokeBackfill();
-    }
-
-    if (typeof window !== "undefined" && result.status !== "in_progress") {
-      localStorage.setItem(STORAGE_KEY, currentDay);
-    }
-    return result;
-  })().finally(() => {
-    inFlight = null;
-  });
+  inFlight = invokeBackfill()
+    .then((result) => {
+      if (
+        typeof window !== "undefined" &&
+        result.status !== "in_progress" &&
+        result.historyVersion === HISTORY_VERSION
+      ) {
+        localStorage.setItem(STORAGE_KEY, "completed");
+      }
+      return result;
+    })
+    .finally(() => {
+      inFlight = null;
+    });
 
   return inFlight;
 }

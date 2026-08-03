@@ -29,6 +29,8 @@ import {
 import { toast } from "sonner";
 import { uploadService } from "../../services/uploadService";
 import { TripsRepository } from "../../repositories/TripsRepository";
+import { OperationalSuspensionNotice } from "../../components/OperationalSuspensionNotice";
+import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { parseTripValue } from "../../lib/tripNormalizer";
 import { extractGtoTripValue } from "../../services/gtoOcrService";
@@ -51,6 +53,9 @@ const generateImageHash = async (file: File): Promise<string> => {
 export default function RecordTrip() {
   const navigate = useNavigate();
   const { currentUser, companies, activeCompanyId, memberships } = useSessionStore();
+  const { suspension: operationalSuspension } = useOperationalSuspension(
+    currentUser as any,
+  );
   const {
     jobs,
     contracts,
@@ -165,6 +170,21 @@ export default function RecordTrip() {
   }, [currentPredefinedRoute, origem, destino]);
 
   if (!currentUser) return null;
+
+  if (operationalSuspension.active) {
+    return (
+      <div className="w-full max-w-2xl mx-auto space-y-4 py-4 px-1">
+        <OperationalSuspensionNotice user={currentUser as any} sticky={false} />
+        <button
+          type="button"
+          onClick={() => navigate("/driver/profile")}
+          className="w-full h-11 rounded-xl bg-gray-900 text-white font-semibold hover:bg-gray-800 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white transition-colors"
+        >
+          Voltar ao painel operacional
+        </button>
+      </div>
+    );
+  }
 
   if (!currentCompany) {
     return (
@@ -393,6 +413,12 @@ export default function RecordTrip() {
   };
 
   const handleLancarViagem = async () => {
+    if (operationalSuspension.active) {
+      toast.error(
+        "Suas atividades operacionais estão suspensas. Aguarde a liberação para lançar viagens.",
+      );
+      return;
+    }
     if (isContractCompletedState) {
       toast.error("Este contrato já foi 100% concluído. Volte ao painel e finalize a operação.");
       return;

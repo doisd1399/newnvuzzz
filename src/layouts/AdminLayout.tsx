@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   useActivityStore,
   useNotificationStore,
+  useOperationalStore,
   useSessionStore,
 } from "../context/AppContext";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
@@ -65,11 +66,13 @@ export default function AdminLayout() {
     logOutApp,
   } = useSessionStore();
   const { notifications, markNotificationAsRead } = useNotificationStore();
+  const { simulators } = useOperationalStore();
   const { jobDemands, recruitmentApplications } = useActivityStore();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const isSeniorPanelRoute = location.pathname.startsWith("/admin/senior");
+  const isNewsRoute = location.pathname.includes("/admin/news");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = React.useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = React.useState(false);
@@ -83,6 +86,34 @@ export default function AdminLayout() {
       waitForRankingWarmup(currentUser?.id),
     ]).then(() => undefined);
   }, [currentUser?.id]);
+
+  const warmNewsFeed = React.useCallback(() => {
+    const newsUser = currentUser as any;
+    const activeCompany = companies.find((company) => company.id === activeCompanyId) ||
+      companies.find((company) => company.id === currentUser?.companyId);
+    const simulatorId = activeCompany?.simulatorId || activeCompany?.simuladorId ||
+      newsUser?.simulatorId || newsUser?.simuladorId;
+    const simulatorDocument = simulators.find((simulator) => simulator.id === simulatorId);
+    return import("../pages/NewsFeed").then(({ warmNvuNewsFirstPage }) => warmNvuNewsFirstPage({
+      userId: currentUser?.id,
+      simulatorValues: [
+        activeCompany?.simulatorName,
+        activeCompany?.simuladorNome,
+        activeCompany?.simulator,
+        simulatorDocument?.name,
+        newsUser?.simulatorName,
+        newsUser?.simuladorNome,
+        newsUser?.simulator,
+        simulatorDocument?.id,
+        activeCompany?.simulatorId,
+        activeCompany?.simuladorId,
+        newsUser?.simulatorId,
+        newsUser?.simuladorId,
+      ],
+    })).catch((error) => {
+      console.warn("[NVU NEWS] Pré-carregamento da página indisponível:", error);
+    });
+  }, [activeCompanyId, companies, currentUser, simulators]);
 
   React.useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -115,8 +146,10 @@ export default function AdminLayout() {
     if (!isMobileMenuOpen) return;
     void preloadRoute("/admin/fleet");
     void preloadRoute("/ranking");
+    void preloadRoute("/admin/news");
+    if (!isNewsRoute) void warmNewsFeed();
     void preloadRoute("/admin/reports");
-  }, [isMobileMenuOpen]);
+  }, [isMobileMenuOpen, isNewsRoute, warmNewsFeed]);
 
 
   React.useEffect(() => {
@@ -124,10 +157,19 @@ export default function AdminLayout() {
     // photos are intentionally deferred so they do not compete with the first
     // profile/panel render.
     void preloadRoute("/ranking");
+    void preloadRoute("/admin/news");
+    const newsWarmupTimer = isNewsRoute
+      ? null
+      : window.setTimeout(() => {
+          void warmNewsFeed();
+        }, 900);
     if (memberships.some((membership) => membershipHasRole(membership, "driver", currentUser))) {
       void preloadRoute("/driver/profile");
     }
-  }, [currentUser?.id, memberships]);
+    return () => {
+      if (newsWarmupTimer !== null) window.clearTimeout(newsWarmupTimer);
+    };
+  }, [currentUser?.id, isNewsRoute, memberships, warmNewsFeed]);
 
   const unreadNotifications = notifications.filter((n) => !n.lida);
   const pendingCount = unreadNotifications.length;
@@ -673,7 +715,9 @@ export default function AdminLayout() {
               "flex-1",
               isSeniorPanelRoute
                 ? "px-0 pt-0 pb-4 sm:px-2 sm:pt-1 md:px-4 md:pt-2"
-                : "p-4 sm:p-6 md:p-10",
+                : isNewsRoute
+                  ? "p-2 sm:p-4 md:p-6"
+                  : "p-4 sm:p-6 md:p-10",
             )}
           >
             <div className="max-w-6xl mx-auto">

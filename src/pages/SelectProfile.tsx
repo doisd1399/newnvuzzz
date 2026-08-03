@@ -51,6 +51,7 @@ export default function SelectProfile() {
     memberships,
     logOutApp,
     setSeniorCompanyId,
+    setIsSeniorAuthenticated,
   } = useSessionStore();
   const navigate = useNavigate();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
@@ -145,10 +146,13 @@ export default function SelectProfile() {
     try {
       sessionStorage.removeItem("seniorAccess");
       sessionStorage.removeItem("seniorCompanyId");
+      sessionStorage.removeItem("seniorPanelPasswordUnlocked");
+      sessionStorage.removeItem("seniorPanelPasswordUid");
     } catch {
       // O estado React continua sendo a fonte ativa em previews restritos.
     }
     setSeniorCompanyId(null);
+    setIsSeniorAuthenticated(false);
 
     switchingRoleRef.current = false;
     // Warm after the visible acknowledgement; a cold module cannot hold the

@@ -35,6 +35,48 @@ service cloud.firestore {
       return company != null && company.userId == request.auth.uid;
     }
 
+    function isOperationallySuspended(userId) {
+      return userId is string &&
+        exists(/databases/$(database)/documents/users/$(userId)) &&
+        ('operationalSuspendedUntil' in get(/databases/$(database)/documents/users/$(userId)).data) &&
+        get(/databases/$(database)/documents/users/$(userId)).data.operationalSuspendedUntil is timestamp &&
+        get(/databases/$(database)/documents/users/$(userId)).data.operationalSuspendedUntil > request.time;
+    }
+
+    function requestedTripDriverId() {
+      return ('driverId' in request.resource.data && request.resource.data.driverId is string)
+        ? request.resource.data.driverId
+        : (('motoristaId' in request.resource.data && request.resource.data.motoristaId is string)
+          ? request.resource.data.motoristaId
+          : '');
+    }
+
+    function existingJobDriverId() {
+      return ('driverId' in resource.data && resource.data.driverId is string)
+        ? resource.data.driverId
+        : (('motoristaId' in resource.data && resource.data.motoristaId is string)
+          ? resource.data.motoristaId
+          : '');
+    }
+
+    function preservesOwnOperationalModeration(userId) {
+      return request.auth.uid != userId || (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'operationalSuspendedAt',
+          'operationalSuspendedUntil',
+          'operationalSuspensionDurationHours',
+          'operationalSuspensionReasons',
+          'operationalSuspensionMessage',
+          'operationalSuspension'
+        ]) &&
+        !(
+          isOperationallySuspended(userId) &&
+          'isOnline' in request.resource.data &&
+          request.resource.data.isOnline == true
+        )
+      );
+    }
+
     // TEMPORARY COMPATIBILITY MODE (legacy Senior password 9173).
     // Firestore Rules cannot inspect the browser's password or sessionStorage.
     // Until the shared password is replaced with Firebase custom claims, the
@@ -78,7 +120,9 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated(); // Allowed for initial setup
-      allow update: if hasLegacySeniorPanelAccess() || isOwner(userId) || isSenior() || isAdmin();
+      allow update: if (
+        hasLegacySeniorPanelAccess() || isOwner(userId) || isSenior() || isAdmin()
+      ) && preservesOwnOperationalModeration(userId);
       allow delete: if hasLegacySeniorPanelAccess() || isSenior();
     }
 
@@ -133,7 +177,19 @@ service cloud.firestore {
 
     // 6. trabalhos
     match /trabalhos/{id} {
-      allow read, write: if isAuthenticated();
+      allow read, create, delete: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        !(request.resource.data.status == 'active' && resource.data.status != 'active') ||
+        (
+          existingJobDriverId() != '' &&
+          (
+            existingJobDriverId() == request.auth.uid ||
+            isSenior() ||
+            isAdmin()
+          ) &&
+          !isOperationallySuspended(existingJobDriverId())
+        )
+      );
     }
 
     // 7. solicitacoes_motoristas
@@ -177,7 +233,15 @@ service cloud.firestore {
     // 9. jobDemands
     match /jobDemands/{id} {
       allow read: if isAuthenticated();
-      allow write: if hasLegacySeniorPanelAccess() || isSenior() || isAdmin();
+      allow create: if isAuthenticated() &&
+        request.resource.data.driverId is string &&
+        (
+          request.resource.data.driverId == request.auth.uid ||
+          isSenior() ||
+          isAdmin()
+        ) &&
+        !isOperationallySuspended(request.resource.data.driverId);
+      allow update, delete: if hasLegacySeniorPanelAccess() || isSenior() || isAdmin();
     }
 
     // 10. recruitment_applications
@@ -215,7 +279,14 @@ service cloud.firestore {
     // 13. historico_viagens
     match /historico_viagens/{tripId} {
       allow read: if true;
-      allow create: if request.auth != null;
+      allow create: if request.auth != null &&
+        requestedTripDriverId() != '' &&
+        (
+          requestedTripDriverId() == request.auth.uid ||
+          isSenior() ||
+          isAdmin()
+        ) &&
+        !isOperationallySuspended(requestedTripDriverId());
       allow update, delete: if request.auth != null && (
         request.auth.uid == resource.data.motoristaId ||
         request.auth.uid == resource.data.criadoPor ||
@@ -228,10 +299,57 @@ service cloud.firestore {
     }
     
 
+    match /trip_deletion_audits/{auditId} {
+      allow read, create: if hasLegacySeniorPanelAccess() || isSenior() || isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /driver_suspension_audits/{auditId} {
+      allow read, create: if hasLegacySeniorPanelAccess() || isSenior() || isAdmin();
+      allow update, delete: if false;
+    }
+
     match /simulators/{id} {
       allow read: if true;
       allow write: if isAuthenticated();
     }
+    // Central NVU compacta. As classificações são gravadas somente pelas
+    // Cloud Functions. Comunicados são publicados manualmente pelo Painel Sênior.
+    match /nvu_classificacoes/{classificationId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    match /nvu_comunicados/{communicationId} {
+      allow read: if isAuthenticated();
+
+      allow create: if (hasLegacySeniorPanelAccess() || isSenior()) &&
+        request.resource.data.tipo == 'comunicado' &&
+        request.resource.data.origem == 'senior' &&
+        request.resource.data.titulo is string &&
+        request.resource.data.titulo.size() > 0 &&
+        request.resource.data.titulo.size() <= 110 &&
+        request.resource.data.mensagem is string &&
+        request.resource.data.mensagem.size() > 0 &&
+        request.resource.data.mensagem.size() <= 3000 &&
+        request.resource.data.simuladorKey is string;
+
+      allow update, delete: if hasLegacySeniorPanelAccess() || isSenior();
+    }
+
+    // Estado de leitura da NVU News, persistido por conta e simulador.
+    match /nvu_news_read_state/{stateId} {
+      allow create: if isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.simulatorKey is string;
+      allow read, delete: if isAuthenticated() &&
+        resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() &&
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.simulatorKey == resource.data.simulatorKey;
+    }
+
     // NVU News: feed público para usuários autenticados, com interações
     // restritas à identidade do próprio usuário e contadores protegidos.
     match /noticias/{newsId} {

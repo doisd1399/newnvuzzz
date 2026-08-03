@@ -119,7 +119,7 @@ html.nvu-route-loading-active [data-nvu-layout-brand] {
 
   .nvu-content-auto-lg {
     content-visibility: auto;
-    contain-intrinsic-size: 180px;
+    contain-intrinsic-size: 320px;
   }
 }
 

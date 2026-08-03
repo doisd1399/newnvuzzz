@@ -402,20 +402,25 @@ const ProtectedRoute = ({
   // Session storage is only a UI convenience; authorization must come from
   // the current Firestore user role. This prevents an old password-based
   // `isSeniorAuthenticated` flag from bypassing company membership checks.
-  const hasRoleForCompany = hasSeniorRole || hasLegacySeniorSession || isSeniorPanelRoute
-    ? allowedRole === "admin"
-    : allowedRole === "admin"
-      ? Boolean(
-          membershipHasRole(activeMembership, "admin", currentUser) ||
-            isOwner ||
-            (currentUser.roles?.includes("admin") &&
-              currentUser.companyId === activeCompanyId),
-        )
-      : Boolean(
-          membershipHasRole(activeMembership, "driver", currentUser) ||
-            (currentUser.roles?.includes("driver") &&
-              currentUser.companyId === activeCompanyId),
-        );
+  let hasRoleForCompany = false;
+
+  if (allowedRole === "admin") {
+    hasRoleForCompany = Boolean(
+      hasSeniorRole ||
+        hasLegacySeniorSession ||
+        isSeniorPanelRoute ||
+        membershipHasRole(activeMembership, "admin", currentUser) ||
+        isOwner ||
+        (currentUser.roles?.includes("admin") &&
+          currentUser.companyId === activeCompanyId),
+    );
+  } else if (allowedRole === "driver") {
+    hasRoleForCompany = Boolean(
+      membershipHasRole(activeMembership, "driver", currentUser) ||
+        (currentUser.roles?.includes("driver") &&
+          currentUser.companyId === activeCompanyId),
+    );
+  }
 
   if (!hasRoleForCompany) {
     return <Navigate to="/select-profile" replace />;

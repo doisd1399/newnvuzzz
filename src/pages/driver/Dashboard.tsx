@@ -49,6 +49,8 @@ import { ptBR } from "date-fns/locale";
 import { db } from "../../lib/firebase";
 import { query, collection, where, onSnapshot } from "firebase/firestore";
 import ErrorBoundary from "../../components/ErrorBoundary";
+import { OperationalSuspensionNotice } from "../../components/OperationalSuspensionNotice";
+import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import TripHistory from "./TripHistory";
 
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
@@ -67,6 +69,9 @@ function DashboardComponent({
   tripHistoryOverride?: any[];
 }) {
   const { currentUser, companies, activeCompanyId } = useSessionStore();
+  const { suspension: operationalSuspension } = useOperationalSuspension(
+    currentUser as any,
+  );
   const {
     jobs,
     requestNewJobDemand,
@@ -300,6 +305,12 @@ function DashboardComponent({
             >
               <button
                 onClick={() => {
+                  if (operationalSuspension.active) {
+                    alert(
+                      "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para lançar viagens.",
+                    );
+                    return;
+                  }
                   if (!myJob) {
                     alert(
                       "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
@@ -310,12 +321,12 @@ function DashboardComponent({
                 }}
                 className={cn(
                   "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
-                  myJob
+                  myJob && !operationalSuspension.active
                     ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800"
                     : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80",
                 )}
               >
-                {myJob ? (
+                {myJob && !operationalSuspension.active ? (
                   <Navigation
                     size={14}
                     className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
@@ -396,6 +407,12 @@ function DashboardComponent({
 
   const handleRequestDemand = async () => {
     try {
+      if (operationalSuspension.active) {
+        alert(
+          "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para solicitar um novo trabalho.",
+        );
+        return;
+      }
       setIsSubmittingDemand(true);
       await requestNewJobDemand();
       setDemandSuccess(true);
@@ -405,6 +422,15 @@ function DashboardComponent({
     } finally {
       setIsSubmittingDemand(false);
     }
+  };
+
+  const handleResultRequestNewJob = () => {
+    setShowOperationResultModal(false);
+    const event = new CustomEvent("app-navigate", {
+      detail: { to: "dashboard" },
+    });
+    window.dispatchEvent(event);
+    void handleRequestDemand();
   };
 
   // Check if there is an active request
@@ -491,10 +517,14 @@ function DashboardComponent({
               <div className="space-y-3">
                 <Button
                   onClick={handleRequestDemand}
-                  disabled={!currentUser?.isOnline || isSubmittingDemand}
+                  disabled={
+                    !currentUser?.isOnline ||
+                    isSubmittingDemand ||
+                    operationalSuspension.active
+                  }
                   className={cn(
                     "w-full h-10 text-sm font-bold shadow-sm dark:shadow-none transition-all",
-                    currentUser?.isOnline
+                    currentUser?.isOnline && !operationalSuspension.active
                       ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] dark:bg-blue-600 dark:hover:bg-blue-700 text-white"
                       : "bg-gray-100 dark:bg-[#18181b] text-gray-400 cursor-not-allowed",
                   )}
@@ -508,11 +538,15 @@ function DashboardComponent({
                     "Solicitar Novo Trabalho"
                   )}
                 </Button>
-                {!currentUser?.isOnline && (
+                {operationalSuspension.active ? (
+                  <p className="text-center text-[10px] text-red-500 font-semibold">
+                    Solicitações bloqueadas durante a suspensão
+                  </p>
+                ) : !currentUser?.isOnline ? (
                   <p className="text-center text-[10px] text-gray-400 font-medium">
                     Fique online para enviar solicitação
                   </p>
-                )}
+                ) : null}
               </div>
             )}
           </div>
@@ -601,8 +635,24 @@ function DashboardComponent({
                         </p>
                       </div>
                       <Button
-                        onClick={() => startJob(job.id)}
-                        className="w-full h-9 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-none rounded-lg flex items-center justify-center gap-2"
+                        onClick={() => {
+                          if (operationalSuspension.active) {
+                            alert(
+                              "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para iniciar esta operação.",
+                            );
+                            return;
+                          }
+                          void startJob(job.id).catch((error: any) => {
+                            alert(error?.message || "Não foi possível iniciar a operação.");
+                          });
+                        }}
+                        disabled={operationalSuspension.active}
+                        className={cn(
+                          "w-full h-9 text-xs font-bold text-white shadow-none rounded-lg flex items-center justify-center gap-2",
+                          operationalSuspension.active
+                            ? "bg-gray-400 cursor-not-allowed"
+                            : "bg-blue-600 hover:bg-blue-700",
+                        )}
                       >
                         <Play size={14} className="fill-current" />
                         Iniciar Operação
@@ -633,19 +683,11 @@ function DashboardComponent({
         <OperationResultModal
           isOpen={showOperationResultModal}
           onClose={() => setShowOperationResultModal(false)}
-          onRequestNewJob={() => {
-            setShowOperationResultModal(false);
-            const event = new CustomEvent("app-navigate", {
-              detail: { to: "dashboard" },
-            });
-            window.dispatchEvent(event);
-            if (requestNewJobDemand && currentUser) {
-              requestNewJobDemand();
-            }
-          }}
+          onRequestNewJob={handleResultRequestNewJob}
           resultData={operationResultData}
         />
         {renderTopControls(true)}
+        <OperationalSuspensionNotice user={currentUser as any} />
 
         {/* Central Operacional Header */}
         <header className="flex flex-col sm:flex-row md:items-center justify-between gap-4 bg-white dark:bg-[#1A1F26] p-4 sm:px-5 sm:py-4 rounded-[18px] border border-gray-100 dark:border-[#2A2F3A] shadow-sm">
@@ -685,14 +727,24 @@ function DashboardComponent({
                   </h3>
                 </div>
                 <p className="text-[10px] sm:text-[11px] text-gray-500 dark:text-[#a1a1aa] leading-none">
-                  {currentUser?.isOnline ? "Disponível" : "Indisponível"}
+                  {operationalSuspension.active
+                    ? "Suspenso"
+                    : currentUser?.isOnline
+                      ? "Disponível"
+                      : "Indisponível"}
                 </p>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <label
+                className={cn(
+                  "relative inline-flex items-center shrink-0",
+                  operationalSuspension.active ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                )}
+              >
                 <input
                   type="checkbox"
                   className="sr-only peer"
                   checked={currentUser?.isOnline || false}
+                  disabled={operationalSuspension.active}
                   onChange={(e) => updateUserOnlineStatus(e.target.checked)}
                 />
                 <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#0cb49f] dark:peer-checked:bg-[#0cb49f] shadow-inner dark:shadow-none"></div>
@@ -891,23 +943,17 @@ function DashboardComponent({
       <OperationResultModal
         isOpen={showOperationResultModal}
         onClose={() => setShowOperationResultModal(false)}
-        onRequestNewJob={() => {
-          setShowOperationResultModal(false);
-          const event = new CustomEvent("app-navigate", {
-            detail: { to: "dashboard" },
-          });
-          window.dispatchEvent(event);
-          if (requestNewJobDemand && currentUser) {
-            requestNewJobDemand();
-          }
-        }}
+        onRequestNewJob={handleResultRequestNewJob}
         resultData={operationResultData}
       />
       <div className="flex flex-col w-full gap-3 sm:gap-0">
         <div className="order-1 sm:order-2 w-full">
           {renderTopControls(true)}
         </div>
-        <header className="order-2 sm:order-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 w-full mb-0 sm:mb-3">
+        <div className="order-2 sm:order-2 w-full">
+          <OperationalSuspensionNotice user={currentUser as any} />
+        </div>
+        <header className="order-3 sm:order-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 w-full mb-0 sm:mb-3">
           <Card className="w-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] shadow-sm rounded-2xl bg-white dark:bg-[#1A1F26] flex-1">
             <CardContent className="p-3">
               <div className="flex items-center justify-between">
@@ -931,16 +977,24 @@ function DashboardComponent({
                     </h3>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-[#a1a1aa] leading-tight mt-0.5">
-                    {currentUser?.isOnline
-                      ? "Disponível para fretes"
-                      : "Indisponível no momento"}
+                    {operationalSuspension.active
+                      ? "Suspenso temporariamente"
+                      : currentUser?.isOnline
+                        ? "Disponível para fretes"
+                        : "Indisponível no momento"}
                   </p>
                 </div>
-                <label className="relative inline-flex items-center cursor-pointer shrink-0 ml-2">
+                <label
+                  className={cn(
+                    "relative inline-flex items-center shrink-0 ml-2",
+                    operationalSuspension.active ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+                  )}
+                >
                   <input
                     type="checkbox"
                     className="sr-only peer"
                     checked={currentUser?.isOnline || false}
+                    disabled={operationalSuspension.active}
                     onChange={(e) => updateUserOnlineStatus(e.target.checked)}
                   />
                   <div className="w-10 h-5 bg-gray-200 dark:bg-[#18181b] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white dark:after:bg-gray-300 after:border-gray-200 dark:after:border-transparent after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#0cb49f] dark:peer-checked:bg-[#0cb49f] shadow-inner dark:shadow-none"></div>

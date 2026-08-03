@@ -3,6 +3,7 @@ import React, { useState } from "react";
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   useNotificationStore,
+  useOperationalStore,
   useSessionStore,
 } from "../context/AppContext";
 import {
@@ -56,8 +57,10 @@ export default function DriverLayout() {
     logOutApp,
   } = useSessionStore();
   const { notifications, markNotificationAsRead } = useNotificationStore();
+  const { simulators } = useOperationalStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const isNewsRoute = location.pathname.includes("/driver/news");
   const { theme, toggleTheme } = useTheme();
   const [isProfileMenuOpen, setIsProfileMenuOpen] = React.useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
@@ -72,6 +75,34 @@ export default function DriverLayout() {
       waitForRankingWarmup(currentUser?.id),
     ]).then(() => undefined);
   }, [currentUser?.id]);
+
+  const warmNewsFeed = React.useCallback(() => {
+    const newsUser = currentUser as any;
+    const activeCompany = companies.find((company) => company.id === activeCompanyId) ||
+      companies.find((company) => company.id === currentUser?.companyId);
+    const simulatorId = activeCompany?.simulatorId || activeCompany?.simuladorId ||
+      newsUser?.simulatorId || newsUser?.simuladorId;
+    const simulatorDocument = simulators.find((simulator) => simulator.id === simulatorId);
+    return import("../pages/NewsFeed").then(({ warmNvuNewsFirstPage }) => warmNvuNewsFirstPage({
+      userId: currentUser?.id,
+      simulatorValues: [
+        activeCompany?.simulatorName,
+        activeCompany?.simuladorNome,
+        activeCompany?.simulator,
+        simulatorDocument?.name,
+        newsUser?.simulatorName,
+        newsUser?.simuladorNome,
+        newsUser?.simulator,
+        simulatorDocument?.id,
+        activeCompany?.simulatorId,
+        activeCompany?.simuladorId,
+        newsUser?.simulatorId,
+        newsUser?.simuladorId,
+      ],
+    })).catch((error) => {
+      console.warn("[NVU NEWS] Pré-carregamento da página indisponível:", error);
+    });
+  }, [activeCompanyId, companies, currentUser, simulators]);
 
   React.useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -154,17 +185,28 @@ export default function DriverLayout() {
     if (!isMobileMenuOpen) return;
     void preloadRoute("/driver/profile");
     void preloadRoute("/ranking");
+    void preloadRoute("/driver/news");
+    if (!isNewsRoute) void warmNewsFeed();
     void preloadRoute("/driver/reports");
     void preloadRoute("/driver/history");
-  }, [isMobileMenuOpen]);
+  }, [isMobileMenuOpen, isNewsRoute, warmNewsFeed]);
 
 
   React.useEffect(() => {
     // Keep the most common route chunks ready without opening ranking data
     // listeners during the first authenticated render.
     void preloadRoute("/ranking");
+    void preloadRoute("/driver/news");
+    const newsWarmupTimer = isNewsRoute
+      ? null
+      : window.setTimeout(() => {
+          void warmNewsFeed();
+        }, 900);
     if (canUseAdminProfile) void preloadRoute("/admin/fleet");
-  }, [canUseAdminProfile, currentUser?.id]);
+    return () => {
+      if (newsWarmupTimer !== null) window.clearTimeout(newsWarmupTimer);
+    };
+  }, [canUseAdminProfile, currentUser?.id, isNewsRoute, warmNewsFeed]);
 
   // availableCompanies
   const availableCompanies = React.useMemo(() => {

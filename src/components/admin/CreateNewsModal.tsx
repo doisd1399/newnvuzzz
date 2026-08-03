@@ -1,23 +1,57 @@
-import React, { useState } from "react";
-import { X, Megaphone, Loader2 } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  CalendarDays,
+  ChevronLeft,
+  Eye,
+  Gamepad2,
+  Loader2,
+  Megaphone,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Button } from "../ui/Button";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
 import { toast } from "sonner";
 import { db } from "../../lib/firebase";
-import { useSessionStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 
+function normalizeSearch(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-function buildNewsSearchTokens(...values: unknown[]): string[] {
+function simulatorKey(value: unknown): string {
+  const normalized = normalizeSearch(value).replace(/\s/g, "");
+  if (!normalized) return "all";
+  if (normalized === "gto" || normalized.includes("globaltruckonline")) return "gto";
+  if (normalized === "ets2" || normalized.includes("eurotrucksimulator2")) return "ets2";
+  if (normalized === "ats" || normalized.includes("americantrucksimulator")) return "ats";
+  if (normalized === "toe3" || normalized.includes("truckersofeurope3")) return "toe3";
+  return normalized;
+}
+
+function buildSearchTokens(...values: unknown[]): string[] {
   const tokens = new Set<string>();
   values.forEach((value) => {
-    const normalized = String(value || "")
-      .trim()
-      .toLocaleLowerCase("pt-BR")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const normalized = normalizeSearch(value);
     if (!normalized) return;
     if (normalized.length <= 120) tokens.add(normalized);
     normalized.split(" ").filter(Boolean).forEach((word) => {
@@ -30,6 +64,41 @@ function buildNewsSearchTokens(...values: unknown[]): string[] {
   return Array.from(tokens).slice(0, 120);
 }
 
+function timestampToMillis(value: any): number {
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (typeof value?.seconds === "number") return value.seconds * 1000;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatPublicationDate(value: any): string {
+  const milliseconds = timestampToMillis(value);
+  if (!milliseconds) return "Data não disponível";
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(milliseconds));
+}
+
+type ModalView = "create" | "published";
+
+type CommunicationRecord = {
+  id: string;
+  titulo: string;
+  mensagem: string;
+  simuladorId?: string;
+  simulador?: string;
+  simuladorKey?: string;
+  status?: string;
+  autorId?: string;
+  autorNome?: string;
+  createdAt?: any;
+  updatedAt?: any;
+  sortAt?: any;
+  dataReferencia?: any;
+};
+
 interface CreateNewsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -37,18 +106,137 @@ interface CreateNewsModalProps {
 
 export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
   const { currentUser } = useSessionStore();
+  const { simulators } = useOperationalStore();
+  const [activeView, setActiveView] = useState<ModalView>("create");
   const [title, setTitle] = useState("");
   const [message, setMessage] = useState("");
-  const [category, setCategory] = useState("Atualização");
-  const [visibility, setVisibility] = useState("publico");
-  const [targetAudience, setTargetAudience] = useState("geral");
+  const [selectedSimulator, setSelectedSimulator] = useState("all");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [communications, setCommunications] = useState<CommunicationRecord[]>([]);
+  const [isLoadingCommunications, setIsLoadingCommunications] = useState(false);
+  const [communicationsError, setCommunicationsError] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [simulatorFilter, setSimulatorFilter] = useState("all");
+  const [editingCommunication, setEditingCommunication] = useState<CommunicationRecord | null>(null);
+  const [viewingCommunication, setViewingCommunication] = useState<CommunicationRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CommunicationRecord | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const simulatorOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    (simulators || []).forEach((simulator: any) => {
+      const key = simulatorKey(simulator?.name || simulator?.id);
+      const label = String(simulator?.name || simulator?.id || "").trim();
+      if (key && key !== "all" && label && !map.has(key)) map.set(key, label);
+    });
+    communications.forEach((communication) => {
+      const key = simulatorKey(
+        communication.simuladorKey || communication.simuladorId || communication.simulador,
+      );
+      const label = String(communication.simulador || key.toUpperCase()).trim();
+      if (key && key !== "all" && label && !map.has(key)) map.set(key, label);
+    });
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((left, right) => left.label.localeCompare(right.label, "pt-BR"));
+  }, [communications, simulators]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+
+    setIsLoadingCommunications(true);
+    setCommunicationsError("");
+    const unsubscribe = onSnapshot(
+      collection(db, "nvu_comunicados"),
+      (snapshot) => {
+        const nextCommunications = snapshot.docs
+          .map((snapshotDocument) => ({
+            id: snapshotDocument.id,
+            ...snapshotDocument.data(),
+          } as CommunicationRecord))
+          .filter((communication) => normalizeSearch(communication.status || "publicado") === "publicado")
+          .sort((left, right) => {
+            const rightDate = timestampToMillis(right.sortAt || right.createdAt || right.dataReferencia);
+            const leftDate = timestampToMillis(left.sortAt || left.createdAt || left.dataReferencia);
+            return rightDate - leftDate;
+          });
+        setCommunications(nextCommunications);
+        setIsLoadingCommunications(false);
+      },
+      (snapshotError) => {
+        console.error("[NVU NEWS] Erro ao carregar comunicados:", snapshotError);
+        setCommunicationsError("Não foi possível carregar os comunicados publicados.");
+        setIsLoadingCommunications(false);
+      },
+    );
+
+    return unsubscribe;
+  }, [isOpen]);
+
+  const filteredCommunications = useMemo(() => {
+    const normalizedQuery = normalizeSearch(searchTerm);
+    return communications.filter((communication) => {
+      const communicationSimulator = simulatorKey(
+        communication.simuladorKey || communication.simuladorId || communication.simulador,
+      );
+      const matchesSimulator = simulatorFilter === "all" || communicationSimulator === simulatorFilter;
+      const matchesSearch = !normalizedQuery || normalizeSearch([
+        communication.titulo,
+        communication.mensagem,
+        communication.simulador,
+        communication.autorNome,
+      ].join(" ")).includes(normalizedQuery);
+      return matchesSimulator && matchesSearch;
+    });
+  }, [communications, searchTerm, simulatorFilter]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const resetForm = () => {
+    setTitle("");
+    setMessage("");
+    setSelectedSimulator("all");
+    setEditingCommunication(null);
+    setError("");
+  };
+
+  const resetAndClose = () => {
+    resetForm();
+    setActiveView("create");
+    setViewingCommunication(null);
+    setDeleteTarget(null);
+    setSearchTerm("");
+    setSimulatorFilter("all");
+    setCommunicationsError("");
+    onClose();
+  };
+
+  const openCreateView = () => {
+    resetForm();
+    setViewingCommunication(null);
+    setActiveView("create");
+  };
+
+  const openPublishedView = () => {
+    setViewingCommunication(null);
+    setActiveView("published");
+  };
+
+  const startEditing = (communication: CommunicationRecord) => {
+    setTitle(String(communication.titulo || ""));
+    setMessage(String(communication.mensagem || ""));
+    setSelectedSimulator(simulatorKey(
+      communication.simuladorKey || communication.simuladorId || communication.simulador,
+    ));
+    setEditingCommunication(communication);
+    setViewingCommunication(null);
+    setError("");
+    setActiveView("create");
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     if (!title.trim() || !message.trim()) {
       setError("Título e mensagem são obrigatórios.");
       return;
@@ -58,175 +246,420 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
     setError("");
 
     try {
-      await addDoc(collection(db, "noticias"), {
-        tipo: "manual",
-        categoria: category,
+      const simulator = simulatorOptions.find((option) => option.value === selectedSimulator);
+      const commonPayload = {
         titulo: title.trim(),
         mensagem: message.trim(),
-        dataCriacao: serverTimestamp(),
-        status: "publicado",
-        origem: "senior",
-        visibilidade: visibility,
-        publicoAlvo: targetAudience,
-        curtidasCount: 0,
-        comentariosCount: 0,
-        empresaId: "",
-        empresaNome: "NVU Sênior",
-        empresaLogo: "",
-        autorId: currentUser?.id || "",
-        autorNome: currentUser?.name || "Painel Sênior NVU",
-        searchTokens: buildNewsSearchTokens(
+        simuladorId: selectedSimulator === "all" ? "" : selectedSimulator,
+        simulador: simulator?.label || "",
+        simuladorKey: selectedSimulator,
+        updatedAt: serverTimestamp(),
+        searchTokens: buildSearchTokens(
           title.trim(),
           message.trim(),
-          category,
+          simulator?.label,
           currentUser?.name,
-          "NVU Sênior",
+          "comunicado NVU",
         ),
-      });
-      toast.success("Comunicado publicado na NVU News.");
-      setTitle("");
-      setMessage("");
-      setCategory("Atualização");
-      setVisibility("publico");
-      setTargetAudience("geral");
-      onClose();
-    } catch (err: any) {
-      console.error("[NVU NEWS] Erro ao criar comunicado:", err);
-      setError("Não foi possível publicar o comunicado. Verifique as regras do Firestore.");
+      };
+
+      if (editingCommunication) {
+        await updateDoc(doc(db, "nvu_comunicados", editingCommunication.id), {
+          ...commonPayload,
+          editadoEm: serverTimestamp(),
+          editadoPorId: currentUser?.id || "",
+          editadoPorNome: currentUser?.name || "Painel Sênior NVU",
+        });
+        toast.success("Comunicado atualizado.");
+      } else {
+        await addDoc(collection(db, "nvu_comunicados"), {
+          schemaVersion: "nvu_news_compact_v1",
+          secao: "comunicados",
+          tipo: "comunicado",
+          categoria: "comunicado",
+          ...commonPayload,
+          origem: "senior",
+          status: "publicado",
+          visibilidade: "publico",
+          autorId: currentUser?.id || "",
+          autorNome: currentUser?.name || "Painel Sênior NVU",
+          sortAt: serverTimestamp(),
+          dataReferencia: serverTimestamp(),
+          createdAt: serverTimestamp(),
+        });
+        toast.success("Comunicado publicado.");
+      }
+
+      resetForm();
+      setActiveView("published");
+    } catch (submissionError) {
+      console.error("[NVU NEWS] Erro ao salvar comunicado:", submissionError);
+      setError(editingCommunication
+        ? "Não foi possível atualizar o comunicado. Verifique as regras do Firestore."
+        : "Não foi possível publicar o comunicado. Verifique as regras do Firestore.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, "nvu_comunicados", deleteTarget.id));
+      if (viewingCommunication?.id === deleteTarget.id) setViewingCommunication(null);
+      if (editingCommunication?.id === deleteTarget.id) resetForm();
+      setDeleteTarget(null);
+      toast.success("Comunicado excluído da NVU News.");
+    } catch (deletionError) {
+      console.error("[NVU NEWS] Erro ao excluir comunicado:", deletionError);
+      toast.error("Não foi possível excluir o comunicado.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const communicationSimulatorLabel = (communication: CommunicationRecord): string => {
+    const key = simulatorKey(communication.simuladorKey || communication.simuladorId || communication.simulador);
+    if (!key || key === "all") return "Todos os simuladores";
+    return communication.simulador || simulatorOptions.find((option) => option.value === key)?.label || key.toUpperCase();
+  };
+
+  const isBusy = isSubmitting || isDeleting;
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div 
-        className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity"
-        onClick={!isSubmitting ? onClose : undefined}
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-2.5 sm:p-4">
+      <button
+        type="button"
+        aria-label="Fechar"
+        className="absolute inset-0 bg-slate-950/55 backdrop-blur-sm"
+        onClick={!isBusy ? resetAndClose : undefined}
       />
-      
-      <div className="relative w-full max-w-lg bg-white dark:bg-[#18181b] rounded-2xl shadow-xl overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800/60">
-          <div className="flex items-center gap-2 text-slate-800 dark:text-slate-200">
-            <Megaphone size={20} className="text-blue-600 dark:text-blue-500" />
-            <h2 className="text-lg font-semibold">Novo Comunicado</h2>
+
+      <div className="relative flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-2xl dark:border-slate-800 dark:bg-[#18181b]">
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3.5 sm:px-5 sm:py-4 dark:border-slate-800/70">
+          <div className="flex min-w-0 items-center gap-2.5 text-slate-900 dark:text-white">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+              <Megaphone size={18} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="truncate text-base font-semibold">Comunicados da NVU</h2>
+              <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">Publicação e gerenciamento da NVU News</p>
+            </div>
           </div>
-          <button 
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          <button
+            type="button"
+            onClick={resetAndClose}
+            disabled={isBusy}
+            className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50 dark:hover:bg-slate-800 dark:hover:text-slate-200"
           >
-            <X size={20} />
+            <X size={19} />
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[70vh]">
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-[13px] rounded-lg">
-              {error}
+        <div className="flex gap-1 border-b border-slate-100 bg-slate-50/70 px-4 py-2 dark:border-slate-800/70 dark:bg-slate-900/20 sm:px-5">
+          <button
+            type="button"
+            onClick={openCreateView}
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold transition-colors ${activeView === "create"
+              ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:text-white dark:ring-slate-700"
+              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"}`}
+          >
+            <Plus size={14} />
+            {editingCommunication ? "Editar" : "Novo comunicado"}
+          </button>
+          <button
+            type="button"
+            onClick={openPublishedView}
+            className={`inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold transition-colors ${activeView === "published"
+              ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:text-white dark:ring-slate-700"
+              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"}`}
+          >
+            <Megaphone size={14} />
+            Publicados
+            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-200">
+              {communications.length > 99 ? "99+" : communications.length}
+            </span>
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {activeView === "create" ? (
+            <form id="communication-form" onSubmit={handleSubmit} className="space-y-4 p-4 sm:p-5">
+              {editingCommunication && (
+                <div className="flex items-start justify-between gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-[12px] text-blue-700 dark:border-blue-500/25 dark:bg-blue-500/10 dark:text-blue-300">
+                  <div>
+                    <p className="font-semibold">Editando comunicado publicado</p>
+                    <p className="mt-0.5 opacity-80">A data original será preservada na NVU News.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="shrink-0 rounded-lg px-2 py-1 font-semibold hover:bg-blue-100 dark:hover:bg-blue-500/10"
+                  >
+                    Cancelar edição
+                  </button>
+                </div>
+              )}
+
+              {error && (
+                <div className="rounded-xl bg-red-50 px-3 py-2.5 text-[13px] text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                  {error}
+                </div>
+              )}
+
+              <div>
+                <label className="mb-1.5 block text-[12px] font-semibold text-slate-700 dark:text-slate-300">
+                  Título
+                </label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Ex.: Atualização importante na plataforma"
+                  maxLength={110}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 dark:border-slate-700 dark:bg-[#09090b] dark:text-white"
+                />
+                <p className="mt-1 text-right text-[10px] text-slate-400">{title.length}/110</p>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-[12px] font-semibold text-slate-700 dark:text-slate-300">
+                  Comunicado
+                </label>
+                <textarea
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  placeholder="Escreva a informação de forma clara e objetiva."
+                  rows={7}
+                  maxLength={3000}
+                  className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm leading-relaxed text-slate-900 outline-none transition focus:border-blue-500 dark:border-slate-700 dark:bg-[#09090b] dark:text-white"
+                />
+                <p className="mt-1 text-right text-[10px] text-slate-400">{message.length}/3000</p>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-[12px] font-semibold text-slate-700 dark:text-slate-300">
+                  Simulador
+                </label>
+                <select
+                  value={selectedSimulator}
+                  onChange={(event) => setSelectedSimulator(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 dark:border-slate-700 dark:bg-[#09090b] dark:text-white"
+                >
+                  <option value="all">Todos os simuladores</option>
+                  {simulatorOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+            </form>
+          ) : viewingCommunication ? (
+            <div className="p-4 sm:p-5">
+              <button
+                type="button"
+                onClick={() => setViewingCommunication(null)}
+                className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-semibold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+              >
+                <ChevronLeft size={15} />
+                Voltar aos comunicados
+              </button>
+
+              <article className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-[#101014] sm:p-5">
+                <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 dark:border-slate-800 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider text-blue-700 dark:border-blue-500/25 dark:bg-blue-500/10 dark:text-blue-300">
+                      Comunicado oficial
+                    </span>
+                    <h3 className="mt-3 text-lg font-semibold leading-tight text-slate-950 dark:text-white">
+                      {viewingCommunication.titulo}
+                    </h3>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => startEditing(viewingCommunication)}>
+                      <Pencil size={14} className="mr-1.5" /> Editar
+                    </Button>
+                    <Button type="button" size="sm" variant="danger" onClick={() => setDeleteTarget(viewingCommunication)}>
+                      <Trash2 size={14} className="mr-1.5" /> Excluir
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 dark:bg-slate-800">
+                    <CalendarDays size={13} />
+                    {formatPublicationDate(viewingCommunication.sortAt || viewingCommunication.createdAt || viewingCommunication.dataReferencia)}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1.5 dark:bg-slate-800">
+                    <Gamepad2 size={13} />
+                    {communicationSimulatorLabel(viewingCommunication)}
+                  </span>
+                </div>
+
+                <p className="mt-5 whitespace-pre-wrap text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+                  {viewingCommunication.mensagem}
+                </p>
+              </article>
+            </div>
+          ) : (
+            <div className="p-4 sm:p-5">
+              <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_220px]">
+                <label className="relative block">
+                  <span className="sr-only">Buscar comunicado</span>
+                  <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="search"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Buscar título ou conteúdo"
+                    className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 outline-none transition focus:border-blue-500 dark:border-slate-700 dark:bg-[#09090b] dark:text-white"
+                  />
+                </label>
+                <select
+                  value={simulatorFilter}
+                  onChange={(event) => setSimulatorFilter(event.target.value)}
+                  aria-label="Filtrar por simulador"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 dark:border-slate-700 dark:bg-[#09090b] dark:text-white"
+                >
+                  <option value="all">Todos os simuladores</option>
+                  {simulatorOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {communicationsError && (
+                <div className="mt-4 rounded-xl bg-red-50 px-3 py-2.5 text-[13px] text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                  {communicationsError}
+                </div>
+              )}
+
+              {isLoadingCommunications ? (
+                <div className="flex items-center justify-center gap-2 py-14 text-sm text-slate-500 dark:text-slate-400">
+                  <Loader2 size={18} className="animate-spin" />
+                  Carregando comunicados...
+                </div>
+              ) : filteredCommunications.length === 0 ? (
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-300 px-4 py-12 text-center dark:border-slate-700">
+                  <Megaphone size={24} className="mx-auto text-slate-400" />
+                  <p className="mt-3 text-sm font-semibold text-slate-700 dark:text-slate-200">Nenhum comunicado encontrado</p>
+                  <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">Publique um novo comunicado ou ajuste os filtros.</p>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-2.5">
+                  {filteredCommunications.map((communication) => (
+                    <article
+                      key={communication.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-3.5 dark:border-slate-700 dark:bg-[#101014] sm:p-4"
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                            <span className="inline-flex items-center gap-1"><Gamepad2 size={11} /> {communicationSimulatorLabel(communication)}</span>
+                            <span aria-hidden="true">•</span>
+                            <span>{formatPublicationDate(communication.sortAt || communication.createdAt || communication.dataReferencia)}</span>
+                          </div>
+                          <h3 className="mt-1.5 line-clamp-1 text-sm font-semibold text-slate-950 dark:text-white">
+                            {communication.titulo}
+                          </h3>
+                          <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-slate-500 dark:text-slate-400">
+                            {communication.mensagem}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setViewingCommunication(communication)}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                          >
+                            <Eye size={13} /> Visualizar
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Editar ${communication.titulo}`}
+                            title="Editar"
+                            onClick={() => startEditing(communication)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Excluir ${communication.titulo}`}
+                            title="Excluir"
+                            onClick={() => setDeleteTarget(communication)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-500/25 dark:hover:bg-red-500/10"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           )}
-
-          <form id="news-form" onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                Título
-              </label>
-              <input 
-                type="text" 
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ex: Nova atualização disponível"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#09090b] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
-                maxLength={100}
-              />
-            </div>
-
-            <div>
-              <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                Mensagem
-              </label>
-              <textarea 
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder="Detalhes do comunicado..."
-                rows={4}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#09090b] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Categoria
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#09090b] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
-                >
-                  <option value="Atualização">Atualização</option>
-                  <option value="Comunicado">Comunicado Oficial</option>
-                  <option value="Destaque">Destaque</option>
-                </select>
-              </div>
-              
-              <div>
-                <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Visibilidade
-                </label>
-                <select
-                  value={visibility}
-                  onChange={(e) => setVisibility(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#09090b] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
-                >
-                  <option value="publico">Público</option>
-                  <option value="privado">Privado</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[13px] font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                Público-alvo
-              </label>
-              <select
-                value={targetAudience}
-                onChange={(e) => setTargetAudience(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#09090b] px-3.5 py-2.5 text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
-              >
-                <option value="geral">Geral (Todos)</option>
-                <option value="empresas">Apenas Empresas (Admins)</option>
-                <option value="motoristas">Apenas Motoristas</option>
-              </select>
-            </div>
-          </form>
         </div>
 
-        <div className="p-6 border-t border-slate-100 dark:border-slate-800/60 bg-slate-50 dark:bg-slate-900/20 flex justify-end gap-3">
-          <Button 
-            type="button" 
-            variant="outline" 
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="border-slate-200 dark:border-slate-700"
-          >
-            Cancelar
-          </Button>
-          <Button 
-            type="submit" 
-            form="news-form"
-            disabled={isSubmitting}
-            className="bg-blue-600 hover:bg-blue-700 text-white min-w-[120px]"
-          >
-            {isSubmitting ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              "Publicar"
-            )}
-          </Button>
+        <div className="flex min-h-[72px] items-center justify-end gap-2.5 border-t border-slate-100 bg-slate-50/70 p-4 dark:border-slate-800/70 dark:bg-slate-900/20 sm:p-5">
+          {activeView === "create" ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={editingCommunication ? openPublishedView : resetAndClose}
+                disabled={isSubmitting}
+                className="border-slate-200 dark:border-slate-700"
+              >
+                {editingCommunication ? "Voltar" : "Cancelar"}
+              </Button>
+              <Button
+                type="submit"
+                form="communication-form"
+                disabled={isSubmitting}
+                className="min-w-[130px] bg-blue-600 text-white hover:bg-blue-700"
+              >
+                {isSubmitting
+                  ? <Loader2 size={16} className="animate-spin" />
+                  : editingCommunication ? "Salvar alterações" : "Publicar"}
+              </Button>
+            </>
+          ) : (
+            <Button type="button" onClick={openCreateView} className="bg-blue-600 text-white hover:bg-blue-700">
+              <Plus size={15} className="mr-1.5" /> Novo comunicado
+            </Button>
+          )}
         </div>
       </div>
+
+      {deleteTarget && (
+        <div className="absolute inset-0 z-[110] flex items-center justify-center p-4">
+          <button
+            type="button"
+            aria-label="Cancelar exclusão"
+            className="absolute inset-0 bg-slate-950/65"
+            onClick={!isDeleting ? () => setDeleteTarget(null) : undefined}
+          />
+          <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-[#18181b]">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400">
+              <AlertTriangle size={19} />
+            </span>
+            <h3 className="mt-4 text-base font-semibold text-slate-950 dark:text-white">Excluir comunicado?</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">
+              “{deleteTarget.titulo}” será removido permanentemente da página NVU News. Esta ação não pode ser desfeita.
+            </p>
+            <div className="mt-5 flex justify-end gap-2.5">
+              <Button type="button" variant="outline" onClick={() => setDeleteTarget(null)} disabled={isDeleting}>
+                Cancelar
+              </Button>
+              <Button type="button" variant="danger" onClick={handleDelete} disabled={isDeleting} className="min-w-[105px]">
+                {isDeleting ? <Loader2 size={16} className="animate-spin" /> : "Excluir"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

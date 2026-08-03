@@ -484,4 +484,4 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
   return { success: true, userId: uid, companyId, applicationId };
 });
 
-export { generateNvuNewsBackfill, generateNvuNewsScheduled } from "./nvuNewsBackfill";
+export { generateNvuNewsBackfill, generateNvuNewsScheduled, generateNvuNewsMonthlyScheduled } from "./nvuNewsBackfill";

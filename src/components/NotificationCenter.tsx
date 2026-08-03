@@ -6,6 +6,7 @@ import {
   Clock3,
   Inbox,
   UserRoundPlus,
+  ShieldAlert,
 } from "lucide-react";
 import type { AppNotification } from "../context/AppContext";
 import { notificationTimestampMs } from "../lib/notificationScope";
@@ -45,6 +46,12 @@ const GROUPS: NotificationGroup[] = [
     label: "Inscrições do RH",
     icon: UserRoundPlus,
     types: ["RH_APPLICATION"],
+  },
+  {
+    id: "moderation",
+    label: "Moderação operacional",
+    icon: ShieldAlert,
+    types: ["TRIP_DELETED", "DRIVER_SUSPENDED"],
   },
   {
     id: "other",

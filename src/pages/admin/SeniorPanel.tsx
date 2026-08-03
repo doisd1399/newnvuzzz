@@ -970,7 +970,7 @@ export default function SeniorPanel() {
             className="h-9 px-4 text-[13px] font-semibold flex items-center gap-2 bg-white/80 dark:bg-slate-800/80"
           >
             <Megaphone size={16} />
-            Criar Comunicado
+            Gerenciar comunicados
           </Button>
     </div>
 
