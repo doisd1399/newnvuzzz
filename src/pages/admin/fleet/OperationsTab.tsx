@@ -935,7 +935,7 @@ function OperationsTab() {
                     size={18}
                     className="text-indigo-600 dark:text-indigo-400"
                   />{" "}
-                  <span>Contratos</span>
+                  <span>Operações</span>
                 </div>
                 <ChevronRight size={16} className="text-gray-400" />
               </button>
@@ -963,7 +963,7 @@ function OperationsTab() {
                     size={18}
                     className="text-blue-600 dark:text-blue-400"
                   />{" "}
-                  <span>Aprovar Motoristas</span>
+                  <span>Rh</span>
                 </div>
                 <ChevronRight size={16} className="text-gray-400" />
               </button>
@@ -1409,10 +1409,10 @@ function OperationsTab() {
                   </div>
                   <div>
                     <p className="font-bold text-gray-900 dark:text-[#fafafa] text-sm">
-                      1. Contratos
+                      1. Operações
                     </p>
                     <p className="text-[11px] text-gray-500 dark:text-[#a1a1aa]">
-                      Abrir seção de contratos
+                      Abrir seção de operações
                     </p>
                   </div>
                 </div>
@@ -1455,10 +1455,10 @@ function OperationsTab() {
                   </div>
                   <div>
                     <p className="font-bold text-gray-900 dark:text-[#fafafa] text-sm">
-                      3. Aprovar
+                      3. Rh
                     </p>
                     <p className="text-[11px] text-gray-500 dark:text-[#a1a1aa]">
-                      Aprovar motoristas
+                      Recursos Humanos
                     </p>
                   </div>
                 </div>

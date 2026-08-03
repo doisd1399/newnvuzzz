@@ -12,7 +12,6 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
-  UserRound,
 } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { StableImage } from "../components/common/StableImage";
@@ -178,6 +177,44 @@ function formatMoney(value: unknown): string {
   return CURRENCY_FORMATTER.format(Number.isFinite(numeric) ? numeric : 0);
 }
 
+function CompanyFooter({
+  logo,
+  name,
+  priority,
+  compact = false,
+}: {
+  logo: unknown;
+  name: string;
+  priority: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div className={cn(
+      "flex w-full min-w-0 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50/90 px-2 dark:border-slate-700 dark:bg-slate-900/70",
+      compact ? "min-h-7 py-1" : "min-h-8 py-1.5",
+    )}>
+      <StableImage
+        src={logo}
+        alt={name}
+        loading={priority ? "eager" : "lazy"}
+        preload={priority}
+        wrapperClassName={cn(
+          "shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318]",
+          compact ? "h-5 w-5" : "h-6 w-6",
+        )}
+        className="object-cover"
+        fallback={<span className="text-[7px] font-black text-slate-500">{name.slice(0, 2).toUpperCase()}</span>}
+      />
+      <span className={cn(
+        "min-w-0 truncate text-center font-bold text-slate-500 dark:text-slate-400",
+        compact ? "text-[9px]" : "text-[10px]",
+      )}>
+        {name}
+      </span>
+    </div>
+  );
+}
+
 function RankingRow({
   entry,
   entity,
@@ -191,6 +228,47 @@ function RankingRow({
   const companyName = String(entry?.empresaNome || "Empresa NVU");
   const photo = entity === "empresa" ? entry?.logo : entry?.foto;
   const position = Number(entry?.posicao || 0);
+
+  if (entity === "motorista") {
+    return (
+      <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-2.5 dark:border-slate-800 dark:bg-[#101014]">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-7 min-w-7 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-1 text-[10px] font-black text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+            {position > 0 ? `${position}º` : "—"}
+          </span>
+          <StableImage
+            src={photo}
+            alt={name}
+            loading={priority ? "eager" : "lazy"}
+            preload={priority}
+            wrapperClassName="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-[#111318]"
+            className="object-cover"
+            fallback={<span className="text-[10px] font-black text-slate-500">{name.slice(0, 2).toUpperCase()}</span>}
+          />
+          <div className="min-w-0 flex-1 self-stretch py-0.5">
+            <p className="truncate text-[12px] font-black leading-tight text-slate-950 dark:text-white">{name}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[9px] font-black text-slate-600 dark:text-slate-300">
+              <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900">
+                {entry?.viagens ?? 0} viagens
+              </span>
+              <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900">
+                {formatMoney(entry?.ganhos)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-2 w-full">
+          <CompanyFooter
+            logo={entry?.empresaLogo}
+            name={companyName}
+            priority={priority}
+            compact
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-w-0 items-center gap-2.5 rounded-xl border border-slate-200 bg-white px-2.5 py-2 dark:border-slate-800 dark:bg-[#101014]">
@@ -208,22 +286,6 @@ function RankingRow({
       />
       <div className="min-w-0 flex-1">
         <p className="truncate text-[12px] font-black leading-tight text-slate-950 dark:text-white">{name}</p>
-        {entity === "motorista" ? (
-          <div className="mt-1 flex min-w-0 items-center gap-1.5">
-            <StableImage
-              src={entry?.empresaLogo}
-              alt={companyName}
-              loading={priority ? "eager" : "lazy"}
-              preload={priority}
-              wrapperClassName="h-4 w-4 shrink-0 overflow-hidden rounded border border-slate-200 dark:border-slate-700"
-              className="object-cover"
-              fallback={<span className="text-[7px] font-black text-slate-500">{companyName.slice(0, 2).toUpperCase()}</span>}
-            />
-            <span className="truncate text-[9px] font-bold text-slate-500 dark:text-slate-400">{companyName}</span>
-          </div>
-        ) : (
-          <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.1em] text-slate-400">Empresa</p>
-        )}
         <div className="mt-1.5 flex flex-wrap gap-1.5 text-[9px] font-black text-slate-600 dark:text-slate-300">
           <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-900">
             {entry?.viagens ?? 0} viagens
@@ -326,48 +388,68 @@ function SpotlightCard({ post, priority }: { post: FeedItem; priority: boolean }
           {caption}
         </p>
 
-        <div className="mt-4 flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-[#0d0f13] sm:gap-4 sm:p-4">
-          <StableImage
-            src={photo}
-            alt={name}
-            loading={priority ? "eager" : "lazy"}
-            preload={priority}
-            wrapperClassName="h-[72px] w-[72px] shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318] sm:h-20 sm:w-20"
-            className="object-cover"
-            fallback={<span className="text-[17px] font-black text-slate-500">{name.slice(0, 2).toUpperCase()}</span>}
-          />
+        {entity === "motorista" ? (
+          <div className="mt-4 min-w-0 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-[#0d0f13] sm:p-4">
+            <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+              <StableImage
+                src={photo}
+                alt={name}
+                loading={priority ? "eager" : "lazy"}
+                preload={priority}
+                wrapperClassName="h-[72px] w-[72px] shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318] sm:h-20 sm:w-20"
+                className="object-cover"
+                fallback={<span className="text-[17px] font-black text-slate-500">{name.slice(0, 2).toUpperCase()}</span>}
+              />
 
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              {entity === "empresa" ? <Building2 size={14} className="shrink-0 text-slate-400" /> : <UserRound size={14} className="shrink-0 text-slate-400" />}
-              <p className="truncate text-[15px] font-black leading-tight text-slate-950 dark:text-white sm:text-[17px]">{name}</p>
+              <div className="min-w-0 flex-1 self-stretch py-1">
+                <p className="truncate text-[15px] font-black leading-tight text-slate-950 dark:text-white sm:text-[17px]">{name}</p>
+                <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] font-black text-slate-700 dark:text-slate-200">
+                  <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
+                    {winner?.viagens ?? 0} viagens
+                  </span>
+                  <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
+                    {formatMoney(winner?.ganhos)}
+                  </span>
+                </div>
+              </div>
             </div>
 
-            {entity === "motorista" && (
-              <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
-                <StableImage
-                  src={winner?.empresaLogo}
-                  alt={companyName}
-                  loading={priority ? "eager" : "lazy"}
-                  preload={priority}
-                  wrapperClassName="h-5 w-5 shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318]"
-                  className="object-cover"
-                  fallback={<span className="text-[7px] font-black text-slate-500">{companyName.slice(0, 2).toUpperCase()}</span>}
-                />
-                <span className="truncate text-[10px] font-bold text-slate-500 dark:text-slate-400">{companyName}</span>
-              </div>
-            )}
-
-            <div className="mt-2.5 flex flex-wrap gap-1.5 text-[10px] font-black text-slate-700 dark:text-slate-200">
-              <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
-                {winner?.viagens ?? 0} viagens
-              </span>
-              <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
-                {formatMoney(winner?.ganhos)}
-              </span>
+            <div className="mt-3 w-full">
+              <CompanyFooter
+                logo={winner?.empresaLogo}
+                name={companyName}
+                priority={priority}
+              />
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="mt-4 flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-[#0d0f13] sm:gap-4 sm:p-4">
+            <StableImage
+              src={photo}
+              alt={name}
+              loading={priority ? "eager" : "lazy"}
+              preload={priority}
+              wrapperClassName="h-[72px] w-[72px] shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318] sm:h-20 sm:w-20"
+              className="object-cover"
+              fallback={<span className="text-[17px] font-black text-slate-500">{name.slice(0, 2).toUpperCase()}</span>}
+            />
+
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <Building2 size={14} className="shrink-0 text-slate-400" />
+                <p className="truncate text-[15px] font-black leading-tight text-slate-950 dark:text-white sm:text-[17px]">{name}</p>
+              </div>
+              <div className="mt-2.5 flex flex-wrap gap-1.5 text-[10px] font-black text-slate-700 dark:text-slate-200">
+                <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
+                  {winner?.viagens ?? 0} viagens
+                </span>
+                <span className="rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-[#101014]">
+                  {formatMoney(winner?.ganhos)}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mt-3 grid grid-cols-2 gap-2 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">
           <span className="inline-flex min-w-0 items-center gap-1"><CalendarDays size={11} className="shrink-0" /> <span className="truncate">{periodValue}</span></span>
