@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -19,9 +19,15 @@ import {
   collection,
   deleteDoc,
   doc,
-  onSnapshot,
+  getDocs,
+  limit,
+  orderBy,
+  query,
   serverTimestamp,
+  startAfter,
   updateDoc,
+  type DocumentData,
+  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { toast } from "sonner";
 import { db } from "../../lib/firebase";
@@ -82,6 +88,9 @@ function formatPublicationDate(value: any): string {
 }
 
 type ModalView = "create" | "published";
+type CommunicationsQueryMode = "sortAt" | "documentId";
+
+const COMMUNICATIONS_PAGE_SIZE = 20;
 
 type CommunicationRecord = {
   id: string;
@@ -114,8 +123,15 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [communications, setCommunications] = useState<CommunicationRecord[]>([]);
+  const [communicationsCursor, setCommunicationsCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const [communicationsQueryMode, setCommunicationsQueryMode] = useState<CommunicationsQueryMode>("sortAt");
+  const [hasMoreCommunications, setHasMoreCommunications] = useState(false);
+  const [hasLoadedCommunications, setHasLoadedCommunications] = useState(false);
   const [isLoadingCommunications, setIsLoadingCommunications] = useState(false);
+  const [isLoadingMoreCommunications, setIsLoadingMoreCommunications] = useState(false);
   const [communicationsError, setCommunicationsError] = useState("");
+  const communicationsRequestRef = useRef(0);
+  const communicationsLoadInFlightRef = useRef(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [simulatorFilter, setSimulatorFilter] = useState("all");
   const [editingCommunication, setEditingCommunication] = useState<CommunicationRecord | null>(null);
@@ -142,37 +158,92 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
       .sort((left, right) => left.label.localeCompare(right.label, "pt-BR"));
   }, [communications, simulators]);
 
-  useEffect(() => {
-    if (!isOpen) return undefined;
+  const mapCommunicationDocuments = useCallback((documents: QueryDocumentSnapshot<DocumentData>[]) => (
+    documents
+      .map((snapshotDocument) => ({
+        id: snapshotDocument.id,
+        ...snapshotDocument.data(),
+      } as CommunicationRecord))
+      .filter((communication) => normalizeSearch(communication.status || "publicado") === "publicado")
+      .sort((left, right) => {
+        const rightDate = timestampToMillis(right.sortAt || right.createdAt || right.dataReferencia);
+        const leftDate = timestampToMillis(left.sortAt || left.createdAt || left.dataReferencia);
+        return rightDate - leftDate;
+      })
+  ), []);
 
-    setIsLoadingCommunications(true);
-    setCommunicationsError("");
-    const unsubscribe = onSnapshot(
-      collection(db, "nvu_comunicados"),
-      (snapshot) => {
-        const nextCommunications = snapshot.docs
-          .map((snapshotDocument) => ({
-            id: snapshotDocument.id,
-            ...snapshotDocument.data(),
-          } as CommunicationRecord))
-          .filter((communication) => normalizeSearch(communication.status || "publicado") === "publicado")
+  const loadCommunications = useCallback(async (reset = false) => {
+    if (!reset && (!communicationsCursor || communicationsLoadInFlightRef.current)) return;
+
+    const requestId = ++communicationsRequestRef.current;
+    const cursor = reset ? null : communicationsCursor;
+    const requestedMode = reset ? "sortAt" : communicationsQueryMode;
+    communicationsLoadInFlightRef.current = true;
+
+    if (reset) {
+      setIsLoadingCommunications(true);
+      setCommunicationsError("");
+    } else {
+      setIsLoadingMoreCommunications(true);
+    }
+
+    const executePage = async (mode: CommunicationsQueryMode) => {
+      const constraints = mode === "sortAt"
+        ? [orderBy("sortAt", "desc"), ...(cursor ? [startAfter(cursor)] : []), limit(COMMUNICATIONS_PAGE_SIZE)]
+        : [...(cursor ? [startAfter(cursor)] : []), limit(COMMUNICATIONS_PAGE_SIZE)];
+      return getDocs(query(collection(db, "nvu_comunicados"), ...constraints));
+    };
+
+    try {
+      let mode = requestedMode;
+      let snapshot;
+      try {
+        snapshot = await executePage(mode);
+      } catch (primaryError) {
+        if (mode !== "sortAt" || cursor) throw primaryError;
+        console.warn("[NVU NEWS] Ordenação por sortAt indisponível; usando paginação compatível.", primaryError);
+        mode = "documentId";
+        snapshot = await executePage(mode);
+      }
+
+      if (requestId !== communicationsRequestRef.current) return;
+
+      const nextCommunications = mapCommunicationDocuments(snapshot.docs);
+      setCommunications((current) => {
+        const merged = reset ? nextCommunications : [...current, ...nextCommunications];
+        return Array.from(new Map(merged.map((communication) => [communication.id, communication])).values())
           .sort((left, right) => {
             const rightDate = timestampToMillis(right.sortAt || right.createdAt || right.dataReferencia);
             const leftDate = timestampToMillis(left.sortAt || left.createdAt || left.dataReferencia);
             return rightDate - leftDate;
           });
-        setCommunications(nextCommunications);
+      });
+      setCommunicationsQueryMode(mode);
+      setCommunicationsCursor(snapshot.docs.at(-1) || null);
+      setHasMoreCommunications(snapshot.docs.length === COMMUNICATIONS_PAGE_SIZE);
+      setHasLoadedCommunications(true);
+      setCommunicationsError("");
+    } catch (snapshotError) {
+      if (requestId !== communicationsRequestRef.current) return;
+      console.error("[NVU NEWS] Erro ao carregar comunicados:", snapshotError);
+      setCommunicationsError("Não foi possível carregar os comunicados publicados.");
+    } finally {
+      if (requestId === communicationsRequestRef.current) {
+        communicationsLoadInFlightRef.current = false;
         setIsLoadingCommunications(false);
-      },
-      (snapshotError) => {
-        console.error("[NVU NEWS] Erro ao carregar comunicados:", snapshotError);
-        setCommunicationsError("Não foi possível carregar os comunicados publicados.");
-        setIsLoadingCommunications(false);
-      },
-    );
+        setIsLoadingMoreCommunications(false);
+      }
+    }
+  }, [
+    communicationsCursor,
+    communicationsQueryMode,
+    mapCommunicationDocuments,
+  ]);
 
-    return unsubscribe;
-  }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen || activeView !== "published" || hasLoadedCommunications) return;
+    void loadCommunications(true);
+  }, [activeView, hasLoadedCommunications, isOpen, loadCommunications]);
 
   const filteredCommunications = useMemo(() => {
     const normalizedQuery = normalizeSearch(searchTerm);
@@ -208,7 +279,14 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
     setDeleteTarget(null);
     setSearchTerm("");
     setSimulatorFilter("all");
+    setCommunications([]);
+    setCommunicationsCursor(null);
+    setCommunicationsQueryMode("sortAt");
+    setHasMoreCommunications(false);
+    setHasLoadedCommunications(false);
     setCommunicationsError("");
+    communicationsRequestRef.current += 1;
+    communicationsLoadInFlightRef.current = false;
     onClose();
   };
 
@@ -291,6 +369,8 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
       }
 
       resetForm();
+      setHasLoadedCommunications(false);
+      await loadCommunications(true);
       setActiveView("published");
     } catch (submissionError) {
       console.error("[NVU NEWS] Erro ao salvar comunicado:", submissionError);
@@ -307,6 +387,7 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
     setIsDeleting(true);
     try {
       await deleteDoc(doc(db, "nvu_comunicados", deleteTarget.id));
+      setCommunications((current) => current.filter((communication) => communication.id !== deleteTarget.id));
       if (viewingCommunication?.id === deleteTarget.id) setViewingCommunication(null);
       if (editingCommunication?.id === deleteTarget.id) resetForm();
       setDeleteTarget(null);
@@ -378,7 +459,7 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
             <Megaphone size={14} />
             Publicados
             <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-200">
-              {communications.length > 99 ? "99+" : communications.length}
+              {hasMoreCommunications ? `${communications.length}+` : communications.length}
             </span>
           </button>
         </div>
@@ -544,6 +625,19 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
                   <Megaphone size={24} className="mx-auto text-slate-400" />
                   <p className="mt-3 text-sm font-semibold text-slate-700 dark:text-slate-200">Nenhum comunicado encontrado</p>
                   <p className="mt-1 text-[12px] text-slate-500 dark:text-slate-400">Publique um novo comunicado ou ajuste os filtros.</p>
+                  {hasMoreCommunications && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void loadCommunications(false)}
+                      disabled={isLoadingMoreCommunications}
+                      className="mt-4 min-w-[160px] border-slate-200 dark:border-slate-700"
+                    >
+                      {isLoadingMoreCommunications
+                        ? <Loader2 size={16} className="animate-spin" />
+                        : "Carregar mais"}
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <div className="mt-4 space-y-2.5">
@@ -596,6 +690,21 @@ export function CreateNewsModal({ isOpen, onClose }: CreateNewsModalProps) {
                       </div>
                     </article>
                   ))}
+                  {hasMoreCommunications && (
+                    <div className="flex justify-center pt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => void loadCommunications(false)}
+                        disabled={isLoadingMoreCommunications}
+                        className="min-w-[160px] border-slate-200 dark:border-slate-700"
+                      >
+                        {isLoadingMoreCommunications
+                          ? <Loader2 size={16} className="animate-spin" />
+                          : "Carregar mais"}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

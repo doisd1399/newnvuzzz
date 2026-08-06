@@ -1,6 +1,11 @@
 import { getDownloadURL, ref, uploadBytesResumable } from "firebase/storage";
 import imageCompression from "browser-image-compression";
 import { auth, storage } from "../lib/firebase";
+import {
+  FILE_ACCESS_ERROR_CODE,
+  isFileAccessError,
+  normalizeFileAccessError,
+} from "../lib/fileAccess";
 
 export const AUTHENTICATED_STORAGE_RULE_MAX_BYTES = 2_000_000;
 export const DEFAULT_UPLOAD_MAX_BYTES = 1_800_000;
@@ -48,6 +53,11 @@ const supportedSourceTypes = new Set([
 ]);
 
 const normalizeFirebaseStorageError = (error: unknown): UploadError => {
+  if (isFileAccessError(error)) {
+    const fileError = normalizeFileAccessError(error);
+    return new UploadError(fileError.message, FILE_ACCESS_ERROR_CODE);
+  }
+
   const rawError = error as {
     code?: unknown;
     message?: unknown;
@@ -152,6 +162,11 @@ export const uploadService = {
         { type: "image/webp" },
       );
     } catch (error) {
+      if (isFileAccessError(error)) {
+        const fileError = normalizeFileAccessError(error);
+        throw new UploadError(fileError.message, FILE_ACCESS_ERROR_CODE);
+      }
+
       // A small original file can still be uploaded safely. A large original
       // must never be sent after compression failure because Storage will deny
       // it and the user would only see a generic upload failure.

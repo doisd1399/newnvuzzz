@@ -8,6 +8,7 @@ import React, {
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import {
   ChevronLeft,
   Bell,
@@ -169,13 +170,14 @@ const getFleetNavigation = (state: unknown): FleetNavigation => {
 export default function Fleet() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { currentUser } = useSessionStore();
   const {
     activeCompanyId,
     setActiveCompanyId,
     companies,
-    currentUser,
     memberships,
-  } = useSessionStore();
+    recruitmentApplications,
+  } = useCompanyStore();
   const [activeTab, setActiveTab] = useState<Tab>(() =>
     getFleetNavigation(location.state).activeTab,
   );
@@ -243,9 +245,15 @@ export default function Fleet() {
     }).connection;
     if (connection?.saveData || connection?.effectiveType === "2g") return;
 
+    // The company profile is a frequent first tap and its chunk is small.
+    // Warm it shortly after the operational shell commits instead of making
+    // mobile users wait for a long idle callback that may never fire.
+    const companyTimer = window.setTimeout(() => {
+      void loadCompanyTab().catch(() => undefined);
+    }, 180);
+
     const warmAllPanels = () => {
       const loaders = [
-        loadCompanyTab,
         loadRecruitmentTab,
         loadTripHistory,
         loadDriversTab,
@@ -278,10 +286,16 @@ export default function Fleet() {
     };
     if (idleApi.requestIdleCallback) {
       const idleId = idleApi.requestIdleCallback(warmAllPanels, { timeout: 1400 });
-      return () => idleApi.cancelIdleCallback?.(idleId);
+      return () => {
+        window.clearTimeout(companyTimer);
+        idleApi.cancelIdleCallback?.(idleId);
+      };
     }
     const timer = window.setTimeout(warmAllPanels, 900);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(companyTimer);
+      window.clearTimeout(timer);
+    };
   }, []);
 
   const handleContractEditComplete = React.useCallback(() => {
@@ -289,6 +303,18 @@ export default function Fleet() {
   }, []);
 
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
+
+  const pendingRecruitmentCount = React.useMemo(
+    () =>
+      recruitmentApplications.filter(
+        (application) =>
+          application.companyId === activeCompanyId &&
+          application.status === "pending" &&
+          application.isCurrent !== false &&
+          application.type !== "company_registration",
+      ).length,
+    [activeCompanyId, recruitmentApplications],
+  );
 
   useEffect(() => {
     const nextNavigation = getFleetNavigation(location.state);
@@ -521,6 +547,16 @@ export default function Fleet() {
                     <span className="text-[11px] sm:text-[12px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
                       {activeTabDetails.label}
                     </span>
+                    {activeTab === "hr" && pendingRecruitmentCount > 0 && (
+                      <span
+                        className="inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full bg-slate-100 dark:bg-[#2A2F3A] border border-slate-200 dark:border-[#3A3F4A] text-[9px] leading-none font-semibold text-slate-600 dark:text-slate-300"
+                        aria-label={`${pendingRecruitmentCount} inscrições pendentes`}
+                      >
+                        {pendingRecruitmentCount > 99
+                          ? "99+"
+                          : pendingRecruitmentCount}
+                      </span>
+                    )}
                     <ChevronDown
                       size={14}
                       className={cn(
@@ -647,16 +683,33 @@ export default function Fleet() {
                             : "text-slate-500",
                         )}
                       />
-                      <span
-                        className={cn(
-                          "text-[12px] font-semibold whitespace-nowrap",
-                          activeTab === tab.id
-                            ? "text-blue-700 dark:text-[#0cb49f]"
-                            : "text-slate-600 dark:text-slate-300",
+                      <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                        <span
+                          className={cn(
+                            "text-[12px] font-semibold whitespace-nowrap",
+                            activeTab === tab.id
+                              ? "text-blue-700 dark:text-[#0cb49f]"
+                              : "text-slate-600 dark:text-slate-300",
+                          )}
+                        >
+                          {tab.label}
+                        </span>
+                        {tab.id === "hr" && pendingRecruitmentCount > 0 && (
+                          <span
+                            className={cn(
+                              "inline-flex min-w-4 h-4 px-1 items-center justify-center rounded-full border text-[9px] leading-none font-semibold",
+                              activeTab === tab.id
+                                ? "bg-blue-50 dark:bg-[#0cb49f]/10 border-blue-100 dark:border-[#0cb49f]/20 text-blue-600 dark:text-[#0cb49f]"
+                                : "bg-slate-100 dark:bg-[#27272a] border-slate-200 dark:border-[#3f3f46] text-slate-500 dark:text-slate-400",
+                            )}
+                            aria-label={`${pendingRecruitmentCount} inscrições pendentes`}
+                          >
+                            {pendingRecruitmentCount > 99
+                              ? "99+"
+                              : pendingRecruitmentCount}
+                          </span>
                         )}
-                      >
-                        {tab.label}
-                      </span>
+                      </div>
                     </button>
                   );
                 })}

@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { StableImage } from "../../components/common/StableImage";
@@ -13,22 +14,28 @@ import {
 
 export default function JoinCompany() {
   const navigate = useNavigate();
+  const { currentUser } = useSessionStore();
+  const { simulators } = useOperationalStore();
   const {
-    currentUser,
-    companies: _companies, // Not used here directly anymore since we need all companies
     allCompanies,
-  } = useSessionStore();
-  const {
-    simulators,
+    companiesLoading,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
     allCompanyMembers,
     requestJoinCompany,
     cancelRequestJoinCompany,
-  } = useOperationalStore();
-  const { driverRequests } = useActivityStore();
+    driverRequests,
+  } = useCompanyStore();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedSimulatorId, setSelectedSimulatorId] = useState("");
   const [isRequestingId, setIsRequestingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (companyCatalogLoaded || companyCatalogAttempted) return;
+    void loadCompanyCatalog();
+  }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog]);
 
   const activeSimulators = simulators.filter((s:any) => s.active !== false).sort((a:any, b:any) => a.name.localeCompare(b.name));
 
@@ -176,7 +183,15 @@ export default function JoinCompany() {
 
       {/* LIST */}
       <div className="space-y-3 max-w-2xl mx-auto px-4 sm:px-0">
-        {!selectedSimulatorId ? (
+        {!companyCatalogAttempted || companiesLoading ? (
+          <div className="text-center py-12 text-sm text-gray-500 dark:text-[#a1a1aa]">
+            Carregando empresas...
+          </div>
+        ) : !companyCatalogLoaded ? (
+          <div className="text-center py-12 text-sm text-red-500 dark:text-red-400">
+            Não foi possível carregar as empresas. Reabra esta página para tentar novamente.
+          </div>
+        ) : !selectedSimulatorId ? (
           <div className="text-center py-12 px-4 rounded-2xl border border-dashed border-gray-200 dark:border-[#2A2F3A] bg-gray-50 dark:bg-[#1A1F26]">
             <Building2 size={32} className="mx-auto text-gray-300 mb-3" />
             <p className="text-[15px] font-medium text-gray-900 dark:text-[#fafafa]">

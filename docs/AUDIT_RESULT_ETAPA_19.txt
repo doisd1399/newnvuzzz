@@ -1,0 +1,3 @@
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.

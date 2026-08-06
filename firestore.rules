@@ -311,7 +311,7 @@ service cloud.firestore {
 
     match /simulators/{id} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAuthenticated() || hasLegacySeniorPanelAccess() || isSenior() || isAdmin();
     }
     // Central NVU compacta. As classificações são gravadas somente pelas
     // Cloud Functions. Comunicados são publicados manualmente pelo Painel Sênior.
@@ -394,6 +394,25 @@ service cloud.firestore {
         allow delete: if isAuthenticated() &&
           (resource.data.autorId == request.auth.uid || hasLegacySeniorPanelAccess() || isSenior());
       }
+    }
+
+    // Rankings consolidados: leitura para usuários autenticados. Esta regra
+    // específica não concede escrita; o fallback legado geral permanece fora
+    // do escopo desta etapa de otimização.
+    match /ranking_aggregates/{aggregateId} {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    match /ranking_aggregate_controls/{controlId} {
+      allow read, write: if false;
+    }
+
+    // Auditoria de imagens órfãs em modo dry-run. Somente Cloud Functions
+    // (Admin SDK) podem registrar ou revisar candidatos; nenhum cliente tem
+    // acesso aos caminhos internos do Storage.
+    match /storage_cleanup_candidates/{candidateId} {
+      allow read, write: if false;
     }
 
     // Default fallback

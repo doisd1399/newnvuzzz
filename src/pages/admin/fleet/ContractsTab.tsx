@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
+import { useOperationalStore } from "../../../context/AppContext";
+import { useCompanyStore } from "../../../context/CompanyContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -36,7 +37,7 @@ function ContractsTab({
   editContractId,
   onEditComplete,
 }: ContractsTabProps = {}) {
-  const { companies, activeCompanyId } = useSessionStore();
+  const { companies, activeCompanyId } = useCompanyStore();
   const {
     contracts,
     sequences,

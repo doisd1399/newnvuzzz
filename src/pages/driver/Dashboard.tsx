@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import {
   Card,
   CardContent,
@@ -52,9 +53,10 @@ import ErrorBoundary from "../../components/ErrorBoundary";
 import { OperationalSuspensionNotice } from "../../components/OperationalSuspensionNotice";
 import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import TripHistory from "./TripHistory";
+import { OperationProgressBar } from "../../components/common/OperationProgressBar";
 
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
-import { useTripHistory } from "../../hooks/useTripHistory";
+import { useDriverTrips } from "../../hooks/useDriverTrips";
 import { normalizeTrip } from "../../lib/tripNormalizer";
 import {
   OperationResultModal,
@@ -64,11 +66,23 @@ import {
 function DashboardComponent({
   isIntegrated = false,
   tripHistoryOverride,
+  tripHistoryLoadingOverride,
+  progressAnimationKey,
 }: {
   isIntegrated?: boolean;
   tripHistoryOverride?: any[];
+  tripHistoryLoadingOverride?: boolean;
+  progressAnimationKey?: string;
 }) {
-  const { currentUser, companies, activeCompanyId } = useSessionStore();
+  const { currentUser } = useSessionStore();
+  const {
+    companies,
+    activeCompanyId,
+    requestJoinCompany,
+    cancelRequestJoinCompany,
+    allCompanyMembers,
+    driverRequests,
+  } = useCompanyStore();
   const { suspension: operationalSuspension } = useOperationalSuspension(
     currentUser as any,
   );
@@ -81,22 +95,25 @@ function DashboardComponent({
     trailers,
     startJob,
     finishJob,
-    requestJoinCompany,
-    cancelRequestJoinCompany,
     users,
     updateUserOnlineStatus,
-    allCompanyMembers,
+    jobsReady,
+    contractsReady,
   } = useOperationalStore();
-  const { jobDemands, driverRequests } = useActivityStore();
+  const { jobDemands } = useActivityStore();
   // The integrated profile already owns the company-trip cache. Reusing that
   // snapshot avoids mounting a second listener and a second state update while
   // the operational header is opening.
-  const tripHistoryState = useTripHistory(
-    isIntegrated ? null : activeCompanyId,
+  const driverTripsState = useDriverTrips(
+    isIntegrated ? null : currentUser?.id,
+    { enabled: !isIntegrated },
   );
   const historicoTrips = isIntegrated
     ? tripHistoryOverride || []
-    : tripHistoryState.historicoTrips;
+    : driverTripsState.trips;
+  const tripHistoryLoading = isIntegrated
+    ? Boolean(tripHistoryLoadingOverride)
+    : driverTripsState.loading;
   const normalizedCompanyTrips = useMemo(
     () => historicoTrips.map((trip: any) => normalizeTrip(trip)).filter((trip) => trip.isValid),
     [historicoTrips],
@@ -130,12 +147,10 @@ function DashboardComponent({
 
   // --- MOVED HOOKS TO TOP ---
   const myJob = useMemo(() => {
-    const contractsSet = new Set(contracts.map(c => c.id));
     const validJobs = jobs.filter(
       (j) =>
         j.driverId === currentUser?.id &&
-        (j.status === "active" || j.status === "awaiting_completion") &&
-        contractsSet.has(j.contractId),
+        (j.status === "active" || j.status === "awaiting_completion"),
     );
 
     // Prioritize active, then sort by newest
@@ -146,15 +161,13 @@ function DashboardComponent({
     });
 
     return validJobs[0];
-  }, [jobs, currentUser?.id, contracts]);
+  }, [jobs, currentUser?.id]);
 
   const pendingDriverJobs = useMemo(() => {
-    const contractsSet = new Set(contracts.map(c => c.id));
     const valid = jobs.filter(
       (j) =>
         j.driverId === currentUser?.id &&
-        j.status === "pending" &&
-        contractsSet.has(j.contractId),
+        j.status === "pending",
     );
     valid.sort((a, b) => {
       const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -162,7 +175,7 @@ function DashboardComponent({
       return dateB - dateA; // Oldest first? Actually dateA - dateB means oldest is first.
     });
     return valid;
-  }, [jobs, currentUser?.id, contracts]);
+  }, [jobs, currentUser?.id]);
 
   const contract = useMemo(
     () => (myJob ? contracts.find((c) => c.id === myJob.contractId) : null),
@@ -440,6 +453,43 @@ function DashboardComponent({
 
   // myPendingRequest and !activeCompanyId logical blocks removed from here.
   // They are now isolated into JoinCompany.tsx and handled by DriverLayout.tsx router.
+
+  const activeOperationResolved =
+    jobsReady && (!myJob || Boolean(contract) || contractsReady);
+
+  // Never paint the actionable "Solicitar Novo Trabalho" state before the
+  // scoped job/contract snapshots have settled. A cached operation remains
+  // visible immediately; only a first-ever uncached entry receives this
+  // neutral, fixed-height synchronization card.
+  if ((!myJob || !contract) && !activeOperationResolved) {
+    return (
+      <div className="space-y-3 sm:space-y-4 w-full max-w-7xl mx-auto pb-4 pt-0">
+        {!isIntegrated && renderTopControls(false)}
+        <OperationalSuspensionNotice user={currentUser as any} />
+        <Card className="border border-slate-200 dark:border-[#2A2F3A] shadow-sm bg-white dark:bg-[#1A1F26] rounded-2xl overflow-hidden">
+          <CardContent className="p-4 sm:p-5">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-white/5 flex items-center justify-center shrink-0">
+                <Loader2 size={17} className="animate-spin text-slate-500 dark:text-slate-400" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] sm:text-sm font-bold text-slate-800 dark:text-slate-100">
+                  Sincronizando operação atual
+                </p>
+                <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Confirmando seu trabalho ativo sem alterar a tela.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2" aria-hidden="true">
+              <div className="h-12 rounded-xl bg-slate-100/80 dark:bg-white/5 animate-pulse" />
+              <div className="h-12 rounded-xl bg-slate-100/80 dark:bg-white/5 animate-pulse" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (!myJob || !contract) {
     const lastJob = completedJobs[0];
@@ -811,7 +861,9 @@ function DashboardComponent({
   const isPending = myJob.status === "pending";
   const isAwaitingCompletion = myJob.status === "awaiting_completion";
   const isActive = myJob.status === "active" || isAwaitingCompletion;
-  const realProgress = currentOperationTrips.length;
+  const realProgress = tripHistoryLoading
+    ? Math.max(0, Number(myJob.progress) || 0)
+    : currentOperationTrips.length;
   const progressPercent =
     Math.round(
       (realProgress / Math.max(1, contract.totalDeliveries || 1)) * 100,
@@ -1137,15 +1189,13 @@ function DashboardComponent({
 
             {/* Compact Progress bar */}
             <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
-              <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
-                <div
-                  className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
-                  style={{
-                    transform: `scaleX(${Math.min(100, Math.max(3, progressPercent)) / 100})`,
-                    willChange: "transform",
-                  }}
-                ></div>
-              </div>
+              <OperationProgressBar
+                percent={progressPercent}
+                replayKey={
+                  progressAnimationKey ??
+                  `${location.key}:${location.pathname}:${myJob.id}`
+                }
+              />
               <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
                 Progresso da operação
               </p>
@@ -1415,6 +1465,8 @@ function DashboardComponent({
 export default function Dashboard(props: {
   isIntegrated?: boolean;
   tripHistoryOverride?: any[];
+  tripHistoryLoadingOverride?: boolean;
+  progressAnimationKey?: string;
 }) {
   return (
     <ErrorBoundary>

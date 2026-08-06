@@ -1,6 +1,7 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useActivityStore, useSessionStore } from "../context/AppContext";
+import { useSessionStore } from "../context/AppContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import { Button } from "../components/ui/Button";
 import { repairApprovedMembership } from "../services/recruitmentAccessService";
 import { toast } from "sonner";
@@ -23,7 +24,7 @@ export default function ApplicationStatus() {
     memberships,
     logOutApp,
   } = useSessionStore();
-  const { recruitmentApplications } = useActivityStore();
+  const { recruitmentApplications } = useCompanyStore();
   const location = useLocation();
   const navigate = useNavigate();
   const [repairingAccess, setRepairingAccess] = React.useState(false);
@@ -78,6 +79,10 @@ export default function ApplicationStatus() {
 
   const handleApply = () => {
     navigate("/apply");
+  };
+
+  const handleBackToStart = () => {
+    navigate("/", { replace: true });
   };
 
   const handleContinueApproved = React.useCallback(async () => {
@@ -231,11 +236,11 @@ export default function ApplicationStatus() {
                 Você receberá acesso ao sistema após aprovação do RH.
               </p>
               <Button
-                onClick={handleLogout}
+                onClick={handleBackToStart}
                 variant="outline"
                 className="w-full h-12 rounded-xl font-semibold text-slate-600 dark:text-[#f4f4f5] hover:text-slate-900 dark:hover:text-[#fafafa]"
               >
-                Sair da Conta
+                Voltar para o início
               </Button>
             </div>
           ) : (

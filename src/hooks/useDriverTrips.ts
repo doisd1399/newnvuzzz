@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { TripsRepository } from "../repositories/TripsRepository";
+import { getTripMetricDate } from "../lib/tripNormalizer";
 import {
   isAuthTeardownActive,
   onAuthTeardown,
@@ -19,6 +20,9 @@ type DriverTripsEntry = DriverTripsState & {
 };
 
 const RELEASE_DELAY_MS = 120_000;
+const PERSISTED_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const PERSISTED_TRIP_LIMIT = 180;
+const PERSISTED_CACHE_PREFIX = "nvu.instant.v1.driver-trips.";
 const cache = new Map<string, DriverTripsEntry>();
 let teardownAttached = false;
 
@@ -26,6 +30,55 @@ const EMPTY_STATE: DriverTripsState = {
   trips: [],
   loading: false,
   error: null,
+};
+
+const persistedCacheKey = (driverId: string) =>
+  `${PERSISTED_CACHE_PREFIX}${encodeURIComponent(driverId)}`;
+
+const stripHeavyTripFields = (trip: any) => {
+  const compact: Record<string, unknown> = {};
+  Object.entries(trip || {}).forEach(([key, value]) => {
+    if (typeof value === "string" && value.length > 40_000) return;
+    compact[key] = value;
+  });
+  return compact;
+};
+
+const readPersistedTrips = (driverId: string): any[] => {
+  try {
+    const raw = sessionStorage.getItem(persistedCacheKey(driverId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { trips?: any[]; cachedAt?: number };
+    if (
+      !Array.isArray(parsed.trips) ||
+      typeof parsed.cachedAt !== "number" ||
+      Date.now() - parsed.cachedAt > PERSISTED_CACHE_MAX_AGE_MS
+    ) {
+      sessionStorage.removeItem(persistedCacheKey(driverId));
+      return [];
+    }
+    return parsed.trips;
+  } catch {
+    return [];
+  }
+};
+
+const writePersistedTrips = (driverId: string, trips: any[]) => {
+  try {
+    const compactTrips = [...trips]
+      .sort(
+        (a, b) =>
+          getTripMetricDate(b).getTime() - getTripMetricDate(a).getTime(),
+      )
+      .slice(0, PERSISTED_TRIP_LIMIT)
+      .map(stripHeavyTripFields);
+    sessionStorage.setItem(
+      persistedCacheKey(driverId),
+      JSON.stringify({ trips: compactTrips, cachedAt: Date.now() }),
+    );
+  } catch {
+    // Persistent cache is only an acceleration layer.
+  }
 };
 
 function notify(entry: DriverTripsEntry) {
@@ -62,7 +115,7 @@ function ensureEntry(driverId: string) {
 
   const entry: DriverTripsEntry = {
     driverId,
-    trips: [],
+    trips: readPersistedTrips(driverId),
     loading: true,
     error: null,
     subscribers: new Set(),
@@ -78,6 +131,7 @@ function ensureEntry(driverId: string) {
       entry.trips = trips;
       entry.loading = false;
       entry.error = null;
+      writePersistedTrips(driverId, trips);
       notify(entry);
     },
     (error) => {
@@ -109,10 +163,15 @@ export function useDriverTrips(
   const [state, setState] = useState<DriverTripsState>(() => {
     if (!normalizedId) return EMPTY_STATE;
     const existing = cache.get(normalizedId);
-    return existing ? snapshot(existing) : { ...EMPTY_STATE, loading: true };
+    if (existing) return snapshot(existing);
+    return {
+      trips: readPersistedTrips(normalizedId),
+      loading: true,
+      error: null,
+    };
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!normalizedId || isAuthTeardownActive()) {
       setState(EMPTY_STATE);
       return;

@@ -6,6 +6,10 @@ import { cn, convertFileToBase64, compressImage } from "../lib/utils";
 import { doc, updateDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
+import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../lib/fileAccess";
 
 interface Props {
   isOpen: boolean;
@@ -34,19 +38,28 @@ export function ProfileModal({ isOpen, onClose }: Props) {
   if (!isOpen || !currentUser) return null;
 
   const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 20 * 1024 * 1024) {
+    const input = e.currentTarget;
+    const selectedFile = input.files?.[0];
+    input.value = "";
+
+    if (selectedFile) {
+      if (selectedFile.size > 20 * 1024 * 1024) {
         setError("A imagem é muito grande.");
         return;
       }
       try {
+        setError("");
+        const { file } = await snapshotSelectedFile(selectedFile, {
+          maxBytes: 20 * 1024 * 1024,
+          fallbackName: `perfil-${Date.now()}.jpg`,
+        });
         const base64 = await convertFileToBase64(file);
         const compressed = await compressImage(base64, 500, 500, 0.7);
         setPhotoBase64(compressed);
-      } catch (err) {
-        console.error("Error compressing image:", err);
-        setError("Ocorreu um erro ao processar a imagem.");
+      } catch (error) {
+        const normalizedError = normalizeFileAccessError(error);
+        console.error("Error compressing image:", normalizedError);
+        setError(normalizedError.message);
       }
     }
   };

@@ -2,10 +2,11 @@ import { resolveDriverPhoto } from '../lib/resolveDriverPhoto';
 import React, { useState } from "react";
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
-  useNotificationStore,
   useOperationalStore,
   useSessionStore,
 } from "../context/AppContext";
+import { useNotificationStore } from "../context/NotificationsContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import {
   Package,
   LayoutDashboard,
@@ -22,6 +23,7 @@ import {
   Trophy,
   Newspaper,
   Activity,
+  BookOpen,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -46,16 +48,8 @@ import {
 } from "../lib/rankingPhotoWarmup";
 
 export default function DriverLayout() {
-  const {
-    companies,
-    activeCompanyId,
-    setActiveCompanyId,
-    currentUser,
-    switchRole,
-    memberships,
-    activeRole,
-    logOutApp,
-  } = useSessionStore();
+  const { currentUser, switchRole, activeRole, logOutApp } = useSessionStore();
+  const { companies, activeCompanyId, setActiveCompanyId, memberships } = useCompanyStore();
   const { notifications, markNotificationAsRead } = useNotificationStore();
   const { simulators } = useOperationalStore();
   const navigate = useNavigate();
@@ -364,6 +358,12 @@ export default function DriverLayout() {
           path: "/driver/reports",
           exact: false,
         },
+        {
+          label: "Manual",
+          icon: BookOpen,
+          path: "/driver/manual",
+          exact: false,
+        },
       ]
     : [];
 
@@ -399,7 +399,7 @@ export default function DriverLayout() {
               <div
                 data-nvu-background-brand
                 data-nvu-layout-brand
-                className="hidden md:flex items-center gap-2"
+                className="hidden md:flex items-center"
               >
                 <h1 className="font-bold text-lg text-gray-900 dark:text-[#fafafa] tracking-tight">
                   NVU
@@ -408,9 +408,9 @@ export default function DriverLayout() {
               <div
                 data-nvu-background-brand
                 data-nvu-layout-brand
-                className="md:hidden font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none"
+                className="md:hidden flex items-center font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none"
               >
-                NVU
+                <span>NVU</span>
               </div>
             </div>
 

@@ -44,6 +44,7 @@ export interface CompanyPerformanceCardProps {
   simulatorId?: string;
   simulators?: Record<string, unknown>[];
   companiesLoading?: boolean;
+  companyTripsLoading?: boolean;
 }
 
 export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard({
@@ -54,6 +55,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
   simulatorId,
   simulators = [],
   companiesLoading = false,
+  companyTripsLoading = false,
 }: CompanyPerformanceCardProps) {
   const [isPeriodSelectorOpen, setIsPeriodSelectorOpen] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState<
@@ -180,17 +182,17 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
     return historicoTrips.map(normalizeTrip).filter((t) => t.isValid);
   }, [historicoTrips]);
 
-  const simulatorTrips = useMemo(
-    () => filterTripsBySimulator(normalizedHistorico, simulatorId, allCompanies, simulators),
-    [allCompanies, normalizedHistorico, simulatorId, simulators],
-  );
-
-  const companyTrips = useMemo(
+  const companySimulatorTrips = useMemo(
     () =>
-      simulatorTrips.filter(
+      filterTripsBySimulator(
+        normalizedCompanyHistory,
+        simulatorId,
+        allCompanies,
+        simulators,
+      ).filter(
         (trip) => (trip.empresaId || trip.companyId) === companyId,
       ),
-    [companyId, simulatorTrips],
+    [allCompanies, companyId, normalizedCompanyHistory, simulatorId, simulators],
   );
 
   const allTimeCompanyTrips = useMemo(
@@ -236,7 +238,40 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
     currentCompanyPos >= 0 ? currentPeriodStatsArray[currentCompanyPos] : null;
   const previousCompanyStats =
     previousPeriodStatsArray.find((item) => item.id === companyId) || null;
-  const hasCurrentCompanyActivity = (currentCompanyStats?.trips || 0) > 0;
+
+  // Company-owned history is a much smaller query and can paint the visible
+  // KPIs before the global catalog/ranking finishes. Global stats replace the
+  // local totals once available, keeping the final result aligned with Ranking.
+  const currentTrips = useMemo(
+    () =>
+      companySimulatorTrips.filter(
+        (trip) => trip.metricDate >= sDate && trip.metricDate <= eDate,
+      ),
+    [companySimulatorTrips, eDate, sDate],
+  );
+  const previousTrips = useMemo(
+    () =>
+      companySimulatorTrips.filter(
+        (trip) =>
+          trip.metricDate >= prevSDate && trip.metricDate <= prevEDate,
+      ),
+    [companySimulatorTrips, prevEDate, prevSDate],
+  );
+  const localCurrentEarnings = useMemo(
+    () => currentTrips.reduce((total, trip) => total + trip.normalizedValor, 0),
+    [currentTrips],
+  );
+  const localPreviousEarnings = useMemo(
+    () => previousTrips.reduce((total, trip) => total + trip.normalizedValor, 0),
+    [previousTrips],
+  );
+
+  const currentEarnings = currentCompanyStats?.val ?? localCurrentEarnings;
+  const prevEarnings = previousCompanyStats?.val ?? localPreviousEarnings;
+  const viagensRealizadas = currentCompanyStats?.trips ?? currentTrips.length;
+  const companyMetricsLoading =
+    companyTripsLoading && currentTrips.length === 0 && !currentCompanyStats;
+  const hasCurrentCompanyActivity = viagensRealizadas > 0;
   const currentPositionDisplay = currentRankingLoading
     ? "…"
     : hasCurrentCompanyActivity && currentCompanyPos >= 0
@@ -246,19 +281,8 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
   const currentDiffToNext =
     hasCurrentCompanyActivity && currentCompanyPos > 0
       ? currentPeriodStatsArray[currentCompanyPos - 1].val -
-        (currentCompanyStats?.val || 0)
+        currentEarnings
       : 0;
-
-  const currentTrips = useMemo(
-    () =>
-      companyTrips.filter(
-        (t) => t.metricDate >= sDate && t.metricDate <= eDate,
-      ),
-    [companyTrips, eDate, sDate],
-  );
-
-  const currentEarnings = currentCompanyStats?.val || 0;
-  const prevEarnings = previousCompanyStats?.val || 0;
 
   const evolution =
     prevEarnings === 0
@@ -266,7 +290,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
         ? 100
         : 0
       : ((currentEarnings - prevEarnings) / prevEarnings) * 100;
-  const evolutionText = currentRankingLoading
+  const evolutionText = companyMetricsLoading
     ? "…"
     : evolution > 0
       ? `+${Math.round(evolution)}%`
@@ -283,7 +307,6 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
       ? ArrowDownRight
       : Minus;
 
-  const viagensRealizadas = currentCompanyStats?.trips || 0;
   const totalViagensGeral = allTimeCompanyTrips.length;
 
   const actualEndDate = eDate > new Date() ? new Date() : eDate;
@@ -706,7 +729,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
               </span>
             </div>
             <span className="text-[13px] sm:text-[14px] md:text-[15px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight break-all">
-              {currentRankingLoading ? "…" : formatCurrency(currentEarnings)}
+              {companyMetricsLoading ? "…" : formatCurrency(currentEarnings)}
             </span>
             <div className={cn("flex items-center gap-1 text-[11px] font-bold", evolutionTone)}>
               <EvolutionIcon size={12} strokeWidth={3} />
@@ -764,7 +787,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
               </span>
             </div>
             <span className="text-[17px] md:text-[20px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight">
-              {currentRankingLoading ? "…" : viagensRealizadas}
+              {companyMetricsLoading ? "…" : viagensRealizadas}
             </span>
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
               realizadas
@@ -784,7 +807,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
               </span>
             </div>
             <span className="text-[17px] md:text-[20px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight">
-              {currentRankingLoading
+              {companyMetricsLoading
                 ? "…"
                 : mediaDiaria.toLocaleString("pt-BR", {
                     maximumFractionDigits: 1,

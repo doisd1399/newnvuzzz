@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useActivityStore, useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useActivityStore, useOperationalStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import {
   Plus,
@@ -30,7 +31,7 @@ type StatusFilter = "all" | "ongoing" | "active" | "delayed" | "completed";
 export default function Operations() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { companies, activeCompanyId } = useSessionStore();
+  const { companies, activeCompanyId } = useCompanyStore();
   const {
     jobs,
     contracts,

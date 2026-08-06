@@ -15,8 +15,39 @@ export type NvuNewsBackfillResult = {
 };
 
 let inFlight: Promise<NvuNewsBackfillResult> | null = null;
-const HISTORY_VERSION = "nvu_news_full_history_individual_v3";
+let companyApprovalSyncInFlight: Promise<CompanyApprovalNewsSyncResult> | null = null;
+const HISTORY_VERSION = "nvu_news_recent_history_individual_v7";
+const COMPANY_APPROVAL_SYNC_VERSION = "nvu_company_approval_v4";
 const STORAGE_KEY = `nvu_news_history_checked_${HISTORY_VERSION}`;
+const IN_PROGRESS_CHECK_KEY = `nvu_news_history_in_progress_checked_${HISTORY_VERSION}`;
+const IN_PROGRESS_RECHECK_MS = 10 * 60 * 1000;
+const FAILURE_CHECK_KEY = `nvu_news_history_failure_checked_${HISTORY_VERSION}`;
+const FAILURE_RECHECK_MS = 6 * 60 * 60 * 1000;
+const COMPANY_APPROVAL_SYNC_KEY = `nvu_news_company_approval_checked_${COMPANY_APPROVAL_SYNC_VERSION}`;
+
+export type CompanyApprovalNewsSyncResult = {
+  success: boolean;
+  created: number;
+  updated: number;
+  ignored: number;
+  removed?: number;
+};
+
+
+function inProgressResult(): NvuNewsBackfillResult {
+  return {
+    success: true,
+    status: "in_progress",
+    created: 0,
+    updated: 0,
+    ignored: 0,
+    migratedCommunications: 0,
+    sourceTrips: 0,
+    generationKey: HISTORY_VERSION,
+    historyVersion: HISTORY_VERSION,
+    removedLegacyClassifications: 0,
+  };
+}
 
 async function invokeBackfill(): Promise<NvuNewsBackfillResult> {
   const callable = httpsCallable<Record<string, never>, NvuNewsBackfillResult>(
@@ -43,22 +74,89 @@ export async function ensureNvuNewsBackfill(): Promise<NvuNewsBackfillResult> {
     };
   }
 
+  if (typeof window !== "undefined") {
+    const lastInProgressCheck = Number(
+      localStorage.getItem(IN_PROGRESS_CHECK_KEY) || 0,
+    );
+    if (
+      Number.isFinite(lastInProgressCheck) &&
+      lastInProgressCheck > 0 &&
+      Date.now() - lastInProgressCheck < IN_PROGRESS_RECHECK_MS
+    ) {
+      return inProgressResult();
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    const lastFailureCheck = Number(localStorage.getItem(FAILURE_CHECK_KEY) || 0);
+    if (
+      Number.isFinite(lastFailureCheck) &&
+      lastFailureCheck > 0 &&
+      Date.now() - lastFailureCheck < FAILURE_RECHECK_MS
+    ) {
+      return inProgressResult();
+    }
+  }
+
   if (inFlight) return inFlight;
 
   inFlight = invokeBackfill()
     .then((result) => {
-      if (
-        typeof window !== "undefined" &&
-        result.status !== "in_progress" &&
-        result.historyVersion === HISTORY_VERSION
-      ) {
-        localStorage.setItem(STORAGE_KEY, "completed");
+      if (typeof window !== "undefined") {
+        if (
+          result.status !== "in_progress" &&
+          result.historyVersion === HISTORY_VERSION
+        ) {
+          localStorage.setItem(STORAGE_KEY, "completed");
+          localStorage.removeItem(IN_PROGRESS_CHECK_KEY);
+          localStorage.removeItem(FAILURE_CHECK_KEY);
+        } else if (result.status === "in_progress") {
+          localStorage.setItem(IN_PROGRESS_CHECK_KEY, String(Date.now()));
+        }
       }
       return result;
+    })
+    .catch((error) => {
+      if (typeof window !== "undefined") {
+        localStorage.setItem(FAILURE_CHECK_KEY, String(Date.now()));
+      }
+      throw error;
     })
     .finally(() => {
       inFlight = null;
     });
 
   return inFlight;
+}
+
+export async function ensureCompanyApprovalNewsSync(
+  force = false,
+): Promise<CompanyApprovalNewsSyncResult> {
+  if (
+    !force &&
+    typeof window !== "undefined" &&
+    localStorage.getItem(COMPANY_APPROVAL_SYNC_KEY) === "completed"
+  ) {
+    return { success: true, created: 0, updated: 0, ignored: 0 };
+  }
+
+  if (companyApprovalSyncInFlight) return companyApprovalSyncInFlight;
+
+  const callable = httpsCallable<
+    { companyId?: string; registrationId?: string },
+    CompanyApprovalNewsSyncResult
+  >(functions, "syncCompanyApprovalNews");
+
+  companyApprovalSyncInFlight = callable({})
+    .then((response) => {
+      if (typeof window !== "undefined") {
+        localStorage.setItem(COMPANY_APPROVAL_SYNC_KEY, "completed");
+      }
+      return response.data;
+    })
+    .finally(() => {
+      companyApprovalSyncInFlight = null;
+    });
+
+  return companyApprovalSyncInFlight;
 }

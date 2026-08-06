@@ -18,30 +18,31 @@ import {
   onAuthTeardown,
 } from "../lib/authLifecycle";
 import { normalizeTrip } from "../lib/tripNormalizer";
-import {
-  areTripSourcesReady,
-  mergeTripSources,
-} from "../lib/tripDataset";
+import { mergeTripSources } from "../lib/tripDataset";
 
 
 
 type TripDocument = Record<string, any> & { id: string };
 
-let legacyTripsCache: TripDocument[] | null = null;
-let legacyTripsPromise: Promise<TripDocument[]> | null = null;
 const companyLegacyTripsCache = new Map<string, TripDocument[]>();
 const companyLegacyTripsPromises = new Map<string, Promise<TripDocument[]>>();
 const driverLegacyTripsCache = new Map<string, TripDocument[]>();
 const driverLegacyTripsPromises = new Map<string, Promise<TripDocument[]>>();
+const rangeLegacyTripsCache = new Map<string, TripDocument[]>();
+const rangeLegacyTripsPromises = new Map<string, Promise<TripDocument[]>>();
 let compatibilityTeardownAttached = false;
 
+const COMPANY_ID_FIELDS = ["companyId", "empresaId", "company_id", "empresa_id"] as const;
+const DRIVER_ID_FIELDS = ["driverId", "motoristaId", "motorista_id", "userId", "driver_id"] as const;
+const LEGACY_DATE_FIELDS = ["dataFechamento", "date", "dataLancamento", "createdAt"] as const;
+
 const clearCompatibilityCaches = () => {
-  legacyTripsCache = null;
-  legacyTripsPromise = null;
   companyLegacyTripsCache.clear();
   companyLegacyTripsPromises.clear();
   driverLegacyTripsCache.clear();
   driverLegacyTripsPromises.clear();
+  rangeLegacyTripsCache.clear();
+  rangeLegacyTripsPromises.clear();
 };
 
 const ensureCompatibilityTeardown = () => {
@@ -63,13 +64,18 @@ const mapSnapshotDocuments = (snapshot: any): TripDocument[] =>
 
 /**
  * Firestore may deliver a locally cached snapshot before the server result.
- * The cached snapshot is useful for latency, but it is not a cross-device
- * source of truth: two Preview frames can have different local caches. Trip
- * totals therefore advance only on a server-confirmed, committed snapshot.
+ * A non-empty cached snapshot is safe to paint immediately and is then
+ * reconciled by the authoritative server snapshot. Empty cached snapshots are
+ * withheld until the server confirms them, preventing a false "sem dados"
+ * state while the network request is still in flight.
  */
 const isAuthoritativeSnapshot = (snapshot: any) =>
   snapshot?.metadata?.fromCache !== true &&
   snapshot?.metadata?.hasPendingWrites !== true;
+
+const isDisplayableSnapshot = (snapshot: any) =>
+  snapshot?.metadata?.hasPendingWrites !== true &&
+  (snapshot?.metadata?.fromCache !== true || snapshot?.docs?.length > 0);
 
 /**
  * Legacy documents can predate the canonical `completedAt` field. They are
@@ -82,134 +88,190 @@ const isAuthoritativeSnapshot = (snapshot: any) =>
  * different client at any time and every viewport must resolve the same
  * server-backed dataset.
  */
-const loadLegacyTripsOnce = async (): Promise<TripDocument[]> => {
-  ensureCompatibilityTeardown();
-  if (legacyTripsCache) return legacyTripsCache;
-  if (legacyTripsPromise) return legacyTripsPromise;
-
-  legacyTripsPromise = getDocsFromServer(collection(db, "historico_viagens"))
-    .then((snapshot) =>
-      mapSnapshotDocuments(snapshot).filter((trip) => !trip.completedAt),
-    )
-    .then((trips) => {
-      if (!isAuthTeardownActive()) {
-        legacyTripsCache = trips;
-      }
-      return trips;
-    })
-    .finally(() => {
-      legacyTripsPromise = null;
-    });
-
-  return legacyTripsPromise;
+const mergeSnapshots = (snapshots: any[]): TripDocument[] => {
+  const merged = new Map<string, TripDocument>();
+  snapshots.forEach((snapshot) => {
+    mapSnapshotDocuments(snapshot).forEach((trip) => merged.set(trip.id, trip));
+  });
+  return Array.from(merged.values());
 };
 
-const loadCompanyLegacyTripsOnce = async (
-  companyId: string,
+const loadIdentityTripsOnce = async (
+  cacheKey: string,
+  fields: readonly string[],
+  cache: Map<string, TripDocument[]>,
+  promises: Map<string, Promise<TripDocument[]>>,
 ): Promise<TripDocument[]> => {
-  ensureCompatibilityTeardown();
-  const cached = companyLegacyTripsCache.get(companyId);
+  const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  if (legacyTripsCache) {
-    const fromGlobalCache = legacyTripsCache.filter(
-      (trip) =>
-        (trip.empresaId || trip.companyId || trip.company_id) === companyId,
-    );
-    companyLegacyTripsCache.set(companyId, fromGlobalCache);
-    return fromGlobalCache;
-  }
-
-  const inFlight = companyLegacyTripsPromises.get(companyId);
+  const inFlight = promises.get(cacheKey);
   if (inFlight) return inFlight;
 
-  const fields = ["empresaId", "company_id"] as const;
-  const promise = Promise.all(
+  const promise = Promise.allSettled(
     fields.map((field) =>
       getDocsFromServer(
         query(
           collection(db, "historico_viagens"),
-          where(field, "==", companyId),
+          where(field, "==", cacheKey),
         ),
       ),
     ),
   )
-    .then((snapshots) => {
-      const merged = new Map<string, TripDocument>();
-      snapshots.forEach((snapshot) => {
-        mapSnapshotDocuments(snapshot).forEach((trip) => {
-          // Canonical documents are already covered by the live companyId
-          // listener. Keep only records that truly need a legacy alias.
-          if (!trip.companyId) merged.set(trip.id, trip);
-        });
-      });
-      return Array.from(merged.values());
+    .then((results) => {
+      const snapshots = results
+        .filter((result): result is PromiseFulfilledResult<any> =>
+          result.status === "fulfilled",
+        )
+        .map((result) => result.value);
+
+      if (snapshots.length === 0) {
+        const failure = results.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        throw failure?.reason || new Error("Falha ao carregar viagens legadas.");
+      }
+
+      if (import.meta.env.DEV) {
+        results
+          .filter((result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+          )
+          .forEach((result) =>
+            console.warn(
+              "[TripsRepository] Consulta de alias legado ignorada:",
+              result.reason,
+            ),
+          );
+      }
+
+      return mergeSnapshots(snapshots);
     })
     .then((trips) => {
-      if (!isAuthTeardownActive()) {
-        companyLegacyTripsCache.set(companyId, trips);
-      }
+      if (!isAuthTeardownActive()) cache.set(cacheKey, trips);
       return trips;
     })
     .finally(() => {
-      companyLegacyTripsPromises.delete(companyId);
+      promises.delete(cacheKey);
     });
 
-  companyLegacyTripsPromises.set(companyId, promise);
+  promises.set(cacheKey, promise);
   return promise;
 };
 
-const loadDriverLegacyTripsOnce = async (
-  driverId: string,
-): Promise<TripDocument[]> => {
+/**
+ * Loads every historical identity alias once per authenticated session.
+ * Canonical documents are intentionally allowed in the result: the merge by
+ * Firestore id removes duplicates, while alias-only documents remain visible.
+ */
+const loadLegacyTripsOnce = async (filter?: {
+  companyId?: string;
+  driverId?: string;
+}): Promise<TripDocument[]> => {
   ensureCompatibilityTeardown();
-  const cached = driverLegacyTripsCache.get(driverId);
-  if (cached) return cached;
 
-  if (legacyTripsCache) {
-    const fromGlobalCache = legacyTripsCache.filter(
-      (trip) => (trip.motoristaId || trip.driverId) === driverId,
-    );
-    driverLegacyTripsCache.set(driverId, fromGlobalCache);
-    return fromGlobalCache;
+  if (!filter || (!filter.companyId && !filter.driverId)) {
+    if (import.meta.env.DEV) {
+      console.warn(
+        "[TripsRepository] Leitura legada sem companyId/driverId bloqueada.",
+      );
+    }
+    return [];
   }
 
-  const inFlight = driverLegacyTripsPromises.get(driverId);
+  if (filter.companyId) {
+    return loadIdentityTripsOnce(
+      filter.companyId,
+      COMPANY_ID_FIELDS,
+      companyLegacyTripsCache,
+      companyLegacyTripsPromises,
+    );
+  }
+
+  return loadIdentityTripsOnce(
+    filter.driverId as string,
+    DRIVER_ID_FIELDS,
+    driverLegacyTripsCache,
+    driverLegacyTripsPromises,
+  );
+};
+
+const rangeCacheKey = (startDate: Date, endDate: Date) =>
+  `${startDate.getTime()}:${endDate.getTime()}`;
+
+/**
+ * Loads legacy trips through bounded date-range queries. This replaces the
+ * former collection-wide compatibility scan and keeps Ranking Global aligned
+ * with NVU News without restoring an unbounded client read.
+ */
+const loadLegacyTripsByDateRangeOnce = async (
+  startDate: Date,
+  endDate: Date,
+): Promise<TripDocument[]> => {
+  ensureCompatibilityTeardown();
+  const key = rangeCacheKey(startDate, endDate);
+  const cached = rangeLegacyTripsCache.get(key);
+  if (cached) return cached;
+
+  const inFlight = rangeLegacyTripsPromises.get(key);
   if (inFlight) return inFlight;
 
-  const driverFields = ["motoristaId", "driverId"] as const;
-  const promise = Promise.all(
-    driverFields.map((field) =>
+  const lowerBound = Timestamp.fromDate(startDate);
+  const upperBound = Timestamp.fromDate(endDate);
+  const promise = Promise.allSettled(
+    LEGACY_DATE_FIELDS.map((field) =>
       getDocsFromServer(
         query(
           collection(db, "historico_viagens"),
-          where(field, "==", driverId),
+          where(field, ">=", lowerBound),
+          where(field, "<=", upperBound),
         ),
       ),
     ),
   )
-    .then((snapshots) => {
-      const merged = new Map<string, TripDocument>();
-      snapshots.forEach((snapshot) => {
-        mapSnapshotDocuments(snapshot).forEach((trip) => {
-          // Canonical documents are already covered by the live driverId
-          // listener. Keep only records that truly need the legacy alias.
-          if (!trip.driverId) merged.set(trip.id, trip);
-        });
-      });
-      return Array.from(merged.values());
-    })
-    .then((trips) => {
-      if (!isAuthTeardownActive()) {
-        driverLegacyTripsCache.set(driverId, trips);
+    .then((results) => {
+      const snapshots = results
+        .filter((result): result is PromiseFulfilledResult<any> =>
+          result.status === "fulfilled",
+        )
+        .map((result) => result.value);
+
+      if (snapshots.length === 0) {
+        const failure = results.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        throw failure?.reason || new Error("Falha ao carregar compatibilidade de viagens.");
       }
+
+      if (import.meta.env.DEV) {
+        results
+          .filter((result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+          )
+          .forEach((result) =>
+            console.warn(
+              "[TripsRepository] Consulta de data legada ignorada:",
+              result.reason,
+            ),
+          );
+      }
+
+      return mergeSnapshots(snapshots);
+    })
+    .then((trips) =>
+      trips.filter((trip) => isTripInsideRange(trip, startDate, endDate)),
+    )
+    .then((trips) => {
+      if (!isAuthTeardownActive()) rangeLegacyTripsCache.set(key, trips);
       return trips;
     })
     .finally(() => {
-      driverLegacyTripsPromises.delete(driverId);
+      rangeLegacyTripsPromises.delete(key);
     });
 
-  driverLegacyTripsPromises.set(driverId, promise);
+  rangeLegacyTripsPromises.set(key, promise);
   return promise;
 };
 
@@ -238,25 +300,36 @@ export class TripsRepository {
     // dropping historical records.
     let active = true;
     let canonicalReady = false;
+    let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
     let legacyTrips: TripDocument[] = [];
 
     const emit = () => {
-      if (
-        !active ||
-        isAuthTeardownActive() ||
-        !areTripSourcesReady(canonicalReady, legacyReady)
-      )
-        return;
+      if (!active || isAuthTeardownActive()) return;
 
-      // Publish one complete dataset only after both sources have resolved.
-      // Never expose the canonical subset first: separate Preview frames can
-      // otherwise capture different totals while the compatibility scan runs.
-      onNext(mergeTripSources(canonicalTrips, legacyTrips));
+      // Stale-while-revalidate: publish useful canonical/cache data as soon as
+      // it exists. Legacy aliases are merged later without blocking the first
+      // paint. An empty cache is never treated as a confirmed empty result.
+      if (canonicalReady) {
+        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
+          onNext(
+            legacyReady
+              ? mergeTripSources(canonicalTrips, legacyTrips)
+              : canonicalTrips,
+          );
+        } else if (legacyReady && legacyTrips.length > 0) {
+          onNext(legacyTrips);
+        }
+        return;
+      }
+
+      if (legacyReady && legacyTrips.length > 0) {
+        onNext(legacyTrips);
+      }
     };
 
-    void loadCompanyLegacyTripsOnce(companyId)
+    void loadLegacyTripsOnce({ companyId })
       .then((trips) => {
         if (!active || isAuthTeardownActive()) return;
         legacyTrips = trips;
@@ -266,7 +339,9 @@ export class TripsRepository {
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
         console.warn("Falha ao carregar viagens legadas da empresa:", error);
-        onError?.(error);
+        legacyTrips = [];
+        legacyReady = true;
+        emit();
       });
 
     const unsubscribe = onSnapshot(
@@ -279,11 +354,12 @@ export class TripsRepository {
         if (
           !active ||
           isAuthTeardownActive() ||
-          !isAuthoritativeSnapshot(snapshot)
+          !isDisplayableSnapshot(snapshot)
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
         canonicalReady = true;
+        canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },
       (error) => {
@@ -314,21 +390,33 @@ export class TripsRepository {
 
     let active = true;
     let canonicalReady = false;
+    let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
     let legacyTrips: TripDocument[] = [];
 
     const emit = () => {
-      if (
-        !active ||
-        isAuthTeardownActive() ||
-        !areTripSourcesReady(canonicalReady, legacyReady)
-      )
+      if (!active || isAuthTeardownActive()) return;
+
+      if (canonicalReady) {
+        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
+          onNext(
+            legacyReady
+              ? mergeTripSources(canonicalTrips, legacyTrips)
+              : canonicalTrips,
+          );
+        } else if (legacyReady && legacyTrips.length > 0) {
+          onNext(legacyTrips);
+        }
         return;
-      onNext(mergeTripSources(canonicalTrips, legacyTrips));
+      }
+
+      if (legacyReady && legacyTrips.length > 0) {
+        onNext(legacyTrips);
+      }
     };
 
-    void loadDriverLegacyTripsOnce(driverId)
+    void loadLegacyTripsOnce({ driverId })
       .then((trips) => {
         if (!active || isAuthTeardownActive()) return;
         legacyTrips = trips;
@@ -338,7 +426,9 @@ export class TripsRepository {
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
         console.warn("Falha ao carregar viagens legadas do motorista:", error);
-        onError?.(error);
+        legacyTrips = [];
+        legacyReady = true;
+        emit();
       });
 
     const unsubscribe = onSnapshot(
@@ -351,11 +441,12 @@ export class TripsRepository {
         if (
           !active ||
           isAuthTeardownActive() ||
-          !isAuthoritativeSnapshot(snapshot)
+          !isDisplayableSnapshot(snapshot)
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
         canonicalReady = true;
+        canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },
       (error) => {
@@ -375,12 +466,12 @@ export class TripsRepository {
   }
 
   /**
-   * Realtime source for ranking/performance screens. Only canonical trips in
-   * the requested period remain live. Documents without completedAt are merged
-   * from the shared compatibility cache so old history remains visible.
+   * Realtime source for ranking/performance screens. Canonical completedAt
+   * records remain live, while bounded server reads resolve the historical
+   * date aliases and merge them atomically by document id.
    *
-   * This query uses only one range field and therefore relies on Firestore's
-   * automatic single-field index; no composite index deployment is required.
+   * Every query uses a single range field and therefore relies on Firestore's
+   * automatic single-field indexes; no composite index is required.
    */
   static listenTripsByDateRange(
     startDate: Date,
@@ -395,36 +486,48 @@ export class TripsRepository {
 
     let active = true;
     let canonicalReady = false;
+    let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
     let legacyTrips: TripDocument[] = [];
 
     const emit = () => {
-      if (
-        !active ||
-        isAuthTeardownActive() ||
-        !areTripSourcesReady(canonicalReady, legacyReady)
-      )
-        return;
+      if (!active || isAuthTeardownActive()) return;
 
-      // The range and compatibility sources form one logical dataset. The
-      // callback is intentionally withheld until both server reads resolve.
-      onNext(mergeTripSources(canonicalTrips, legacyTrips));
+      // Ranking/performance surfaces can render the bounded canonical range
+      // immediately. Compatibility aliases are merged asynchronously and
+      // update the same cache entry without forcing a loading reset.
+      if (canonicalReady) {
+        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
+          onNext(
+            legacyReady
+              ? mergeTripSources(canonicalTrips, legacyTrips)
+              : canonicalTrips,
+          );
+        } else if (legacyReady && legacyTrips.length > 0) {
+          onNext(legacyTrips);
+        }
+        return;
+      }
+
+      if (legacyReady && legacyTrips.length > 0) {
+        onNext(legacyTrips);
+      }
     };
 
-    void loadLegacyTripsOnce()
+    void loadLegacyTripsByDateRangeOnce(safeStart, safeEnd)
       .then((trips) => {
         if (!active || isAuthTeardownActive()) return;
-        legacyTrips = trips.filter((trip) =>
-          isTripInsideRange(trip, safeStart, safeEnd),
-        );
+        legacyTrips = trips;
         legacyReady = true;
         emit();
       })
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
         console.warn("Falha ao carregar compatibilidade de viagens:", error);
-        onError?.(error);
+        legacyTrips = [];
+        legacyReady = true;
+        emit();
       });
 
     const rangeQuery = query(
@@ -440,11 +543,12 @@ export class TripsRepository {
         if (
           !active ||
           isAuthTeardownActive() ||
-          !isAuthoritativeSnapshot(snapshot)
+          !isDisplayableSnapshot(snapshot)
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
         canonicalReady = true;
+        canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },
       (error) => {
@@ -474,7 +578,7 @@ export class TripsRepository {
           where("companyId", "==", companyId),
         ),
       ),
-      loadCompanyLegacyTripsOnce(companyId),
+      loadLegacyTripsOnce({ companyId }),
     ]);
 
     return mergeTripSources(mapSnapshotDocuments(canonicalSnapshot), legacyTrips);

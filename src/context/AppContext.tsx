@@ -4,10 +4,22 @@ import React, {
   useState,
   useMemo,
   useEffect,
+  useLayoutEffect,
   useRef,
 } from "react";
 import { toast } from "sonner";
 import { auth, db } from "../lib/firebase";
+import { NotificationsProvider } from "./NotificationsContext";
+import {
+  CompanyProvider,
+  mergeCompanyProfile,
+  normalizeCompanyProfile,
+  useCompanyDataController,
+  useCompanyMembersController,
+  useCompanyRecruitmentController,
+  writeCachedCompanies,
+  type CompanyStoreType,
+} from "./CompanyContext";
 import { resolveSimulatorId } from "../lib/resolveSimulator";
 import { normalizeSimulatorDocuments } from "../lib/simulatorCatalog";
 import {
@@ -21,18 +33,13 @@ import { resolveOperationalCompanyId } from "../lib/companyScope";
 import { generateCnpj } from "../lib/cnpj";
 import { preloadImages } from "../lib/imageCache";
 import { warmRankingUserProfiles } from "../lib/rankingPhotoWarmup";
+import { getRuntimePerformanceProfile } from "../lib/runtimePerformance";
 import { resolveMembershipRoles } from "../lib/membershipRoles";
 import { getOperationalSuspension } from "../lib/driverSuspension";
 import {
   resolveApprovedCompanyOwnerPhoto,
   resolvePersistedUserProfilePhoto,
 } from "../lib/profilePhotoRecovery";
-import {
-  isNotificationVisibleForContext,
-  normalizeNotificationForUi,
-  notificationIdentity,
-  notificationTimestampMs,
-} from "../lib/notificationScope";
 import {
   createCorporateNotifications,
   createNotification,
@@ -56,8 +63,7 @@ import {
   deleteField,
   writeBatch,
   arrayUnion,
-  serverTimestamp,
-  or,
+  limit,
 } from "firebase/firestore";
 
 // --- Types ---
@@ -281,29 +287,6 @@ export interface DriverRequest {
   updatedAt: string;
 }
 
-export interface AppNotification {
-  id: string;
-  userId: string;
-  companyId?: string | null;
-  targetProfile?: "driver" | "corporate";
-  titulo: string;
-  title?: string;
-  mensagem: string;
-  message?: string;
-  tipo: string;
-  type?: string;
-  lida: boolean;
-  read?: boolean;
-  createdAt?: unknown;
-  createdAtIso?: string;
-  dataHora?: unknown;
-  data?: unknown;
-  popupShownAt?: unknown;
-  popupShownAtIso?: string;
-  dedupeKey?: string | null;
-  metadata?: Record<string, unknown>;
-  sourceCollection?: "notifications" | "notificacoes";
-}
 
 // --- Initial Mock Data ---
 const MOCK_COMPANIES: CompanyProfile[] = [
@@ -461,121 +444,6 @@ const MOCK_JOBS: Job[] = [
 ];
 
 // --- Context Setup ---
-export interface AppContextType {
-  isSeniorAuthenticated: boolean;
-  setIsSeniorAuthenticated: (val: boolean) => void;
-  seniorCompanyId: string | null;
-  setSeniorCompanyId: (val: string | null) => void;
-  currentUser: User | null;
-  setCurrentUser: (user: User | null) => void;
-  activeRole: Role | null;
-  memberships: CompanyMember[];
-  allCompanyMembers: CompanyMember[];
-  switchRole: (role: Role, newCompanyId?: string) => Promise<void>;
-  promoteDriverToAdmin: (driverId: string) => Promise<void>;
-  demoteAdminToDriver: (driverId: string) => Promise<void>;
-  removeDriverFromFleet: (driverId: string, companyIdOverride?: string) => Promise<void>;
-  updateUserOnlineStatus: (isOnline: boolean) => Promise<void>;
-  authInitialized: boolean;
-  membershipsLoaded: boolean;
-  sessionReady: boolean;
-  sessionRecovering: boolean;
-  refreshSession: (reason?: string) => void;
-
-  users: User[];
-  vehicles: Vehicle[];
-  trailers: Trailer[];
-  contracts: Contract[];
-  sequences: Sequence[];
-  jobs: Job[];
-  jobDemands: JobDemand[];
-  simulators: Simulator[];
-  simulatorsLoading: boolean;
-  simulatorsError: string | null;
-  companies: CompanyProfile[];
-  companiesLoading: boolean;
-  allCompanies: CompanyProfile[];
-  activeCompanyId: string | null;
-  setActiveCompanyId: (id: string | null) => void;
-  recruitmentApplications: RecruitmentApplication[];
-
-  // Global Ranking Filters
-  globalPeriodPreset: "semana" | "mes" | "custom";
-  setGlobalPeriodPreset: (p: "semana" | "mes" | "custom") => void;
-  globalStartDateStr: string;
-  setGlobalStartDateStr: (s: string) => void;
-  globalEndDateStr: string;
-  setGlobalEndDateStr: (s: string) => void;
-
-  // Actions
-  updateRecruitmentSettings: (
-    companyId: string,
-    settings: RecruitmentSettings,
-  ) => Promise<void>;
-  submitRecruitmentApplication: (
-    data: Omit<RecruitmentApplication, "id" | "status" | "createdAt">,
-  ) => Promise<string>;
-  approveRecruitmentApplication: (applicationId: string) => Promise<void>;
-  rejectRecruitmentApplication: (applicationId: string) => Promise<void>;
-  deleteRecruitmentApplication: (applicationId: string) => Promise<void>;
-
-  createCompany: (
-    data: Omit<CompanyProfile, "id" | "cnpj">,
-  ) => Promise<void>;
-  updateCompany: (
-    id: string,
-    updates: Partial<Omit<CompanyProfile, "id" | "cnpj">>,
-  ) => Promise<void>;
-  deleteCompany: (id: string) => void;
-  createContract: (contract: Omit<Contract, "id" | "status">) => Promise<void>;
-  updateContract: (
-    id: string,
-    updates: Partial<Omit<Contract, "id">>,
-  ) => Promise<void>;
-  deleteContract: (id: string) => void;
-  createSequence: (sequence: Omit<Sequence, "id" | "createdAt">) => Promise<void>;
-  updateSequence: (id: string, updates: Partial<Omit<Sequence, "id">>) => Promise<void>;
-  deleteSequence: (id: string) => Promise<void>;
-  assignJob: (
-    contractId: string,
-    driverId: string,
-    vehicleId: string,
-    trailerId?: string,
-    customDeadlineDays?: number,
-  ) => void;
-  startJob: (jobId: string) => Promise<void>;
-  finishJob: (jobId: string) => Promise<void>;
-  cancelJob: (jobId: string) => Promise<void>;
-  deleteJob: (jobId: string) => Promise<void>;
-  requestNewJobDemand: () => Promise<void>;
-  cancelJobDemand: () => Promise<void>;
-  rejectJobDemand: (demandId: string) => Promise<void>;
-  driverRequests: DriverRequest[];
-  notifications: AppNotification[];
-  notificationsHydrated: boolean;
-  markNotificationAsRead: (notificationId: string) => Promise<void>;
-  markNotificationPopupShown: (notificationId: string) => Promise<void>;
-  requestJoinCompany: (companyId: string) => void;
-  cancelRequestJoinCompany: (requestId: string) => void;
-  approveDriver: (requestId: string) => void;
-  rejectDriver: (requestId: string) => void;
-  syncCompanyData: () => Promise<void>;
-  createManualDriver: (driverData: Partial<User>) => Promise<void>;
-  registerUser: (
-    userData: Pick<User, "name" | "email" | "password" | "role">,
-  ) => void;
-  addVehicle: (vehicle: Omit<Vehicle, "id" | "status" | "companyId">) => void;
-  updateVehicle: (id: string, updates: Partial<Omit<Vehicle, "id">>) => void;
-  deleteVehicle: (id: string) => void;
-
-  addTrailer: (trailer: Omit<Trailer, "id" | "status" | "companyId">) => void;
-  updateTrailer: (id: string, updates: Partial<Omit<Trailer, "id">>) => void;
-  deleteTrailer: (id: string) => void;
-  logOutApp: () => Promise<void>;
-}
-
-const AppContext = createContext<AppContextType | undefined>(undefined);
-
 export interface SessionStoreType {
   isSeniorAuthenticated: boolean;
   setIsSeniorAuthenticated: (val: boolean) => void;
@@ -590,26 +458,14 @@ export interface SessionStoreType {
   refreshSession: (reason?: string) => void;
   activeRole: Role | null;
   memberships: CompanyMember[];
-  companies: CompanyProfile[];
-  companiesLoading: boolean;
-  allCompanies: CompanyProfile[];
   activeCompanyId: string | null;
   setActiveCompanyId: (id: string | null) => void;
   switchRole: (role: Role, newCompanyId?: string) => Promise<void>;
   logOutApp: () => Promise<void>;
 }
 
-export interface NotificationStoreType {
-  notifications: AppNotification[];
-  notificationsHydrated: boolean;
-  markNotificationAsRead: (notificationId: string) => Promise<void>;
-  markNotificationPopupShown: (notificationId: string) => Promise<void>;
-}
-
 export interface ActivityStoreType {
   jobDemands: JobDemand[];
-  driverRequests: DriverRequest[];
-  recruitmentApplications: RecruitmentApplication[];
 }
 
 export interface RankingFilterStoreType {
@@ -621,61 +477,82 @@ export interface RankingFilterStoreType {
   setGlobalEndDateStr: (s: string) => void;
 }
 
-export type OperationalStoreType = Pick<
-  AppContextType,
-  | "users"
-  | "allCompanyMembers"
-  | "vehicles"
-  | "trailers"
-  | "contracts"
-  | "sequences"
-  | "jobs"
-  | "simulators"
-  | "simulatorsLoading"
-  | "simulatorsError"
-  | "updateRecruitmentSettings"
-  | "submitRecruitmentApplication"
-  | "approveRecruitmentApplication"
-  | "rejectRecruitmentApplication"
-  | "deleteRecruitmentApplication"
-  | "createCompany"
-  | "updateCompany"
-  | "deleteCompany"
-  | "createContract"
-  | "updateContract"
-  | "deleteContract"
-  | "createSequence"
-  | "updateSequence"
-  | "deleteSequence"
-  | "assignJob"
-  | "startJob"
-  | "finishJob"
-  | "cancelJob"
-  | "deleteJob"
-  | "requestNewJobDemand"
-  | "cancelJobDemand"
-  | "rejectJobDemand"
-  | "requestJoinCompany"
-  | "cancelRequestJoinCompany"
-  | "approveDriver"
-  | "rejectDriver"
-  | "promoteDriverToAdmin"
-  | "demoteAdminToDriver"
-  | "removeDriverFromFleet"
-  | "updateUserOnlineStatus"
-  | "createManualDriver"
-  | "registerUser"
-  | "syncCompanyData"
-  | "addVehicle"
-  | "updateVehicle"
-  | "deleteVehicle"
-  | "addTrailer"
-  | "updateTrailer"
-  | "deleteTrailer"
->;
+/** Operational data kept in AppProvider while the remaining feature slices are
+ * extracted. Company and notification contracts deliberately do not appear
+ * here, preventing the old monolithic compatibility context from returning.
+ */
+export interface OperationalStoreType {
+  users: User[];
+  vehicles: Vehicle[];
+  trailers: Trailer[];
+  contracts: Contract[];
+  sequences: Sequence[];
+  jobs: Job[];
+  simulators: Simulator[];
+  simulatorsLoading: boolean;
+  simulatorsError: string | null;
+  /** True only after the first authoritative scoped snapshots have settled. */
+  operationalDataReady: boolean;
+  /** True while a cached/previous scoped snapshot remains visible during refresh. */
+  operationalDataRefreshing: boolean;
+  jobsReady: boolean;
+  contractsReady: boolean;
+  usersReady: boolean;
+  createContract: (
+    contract: Omit<Contract, "id" | "status">,
+  ) => Promise<void>;
+  updateContract: (
+    id: string,
+    updates: Partial<Omit<Contract, "id">>,
+  ) => Promise<void>;
+  deleteContract: (id: string) => Promise<void>;
+  createSequence: (
+    sequence: Omit<Sequence, "id" | "createdAt">,
+  ) => Promise<void>;
+  updateSequence: (
+    id: string,
+    updates: Partial<Omit<Sequence, "id">>,
+  ) => Promise<void>;
+  deleteSequence: (id: string) => Promise<void>;
+  assignJob: (
+    contractId: string,
+    driverId: string,
+    vehicleId: string,
+    trailerId?: string,
+    customDeadlineDays?: number,
+  ) => Promise<void>;
+  startJob: (jobId: string) => Promise<void>;
+  finishJob: (jobId: string) => Promise<void>;
+  cancelJob: (jobId: string) => Promise<void>;
+  deleteJob: (jobId: string) => Promise<void>;
+  requestNewJobDemand: () => Promise<void>;
+  cancelJobDemand: () => Promise<void>;
+  rejectJobDemand: (demandId: string) => Promise<void>;
+  updateUserOnlineStatus: (isOnline: boolean) => Promise<void>;
+  createManualDriver: (driverData: Partial<User>) => Promise<void>;
+  registerUser: (
+    userData: Pick<User, "name" | "email" | "password" | "role">,
+  ) => void;
+  syncCompanyData: () => Promise<void>;
+  addVehicle: (
+    vehicle: Omit<Vehicle, "id" | "status" | "companyId">,
+  ) => Promise<void>;
+  updateVehicle: (
+    id: string,
+    updates: Partial<Omit<Vehicle, "id">>,
+  ) => Promise<void>;
+  deleteVehicle: (id: string) => Promise<void>;
+  addTrailer: (
+    trailer: Omit<Trailer, "id" | "status" | "companyId">,
+  ) => Promise<void>;
+  updateTrailer: (
+    id: string,
+    updates: Partial<Omit<Trailer, "id">>,
+  ) => Promise<void>;
+  deleteTrailer: (id: string) => Promise<void>;
+}
 
 const SessionContext = createContext<SessionStoreType | undefined>(undefined);
-const NotificationStoreContext = createContext<NotificationStoreType | undefined>(undefined);
 const ActivityContext = createContext<ActivityStoreType | undefined>(undefined);
 const RankingFilterContext = createContext<RankingFilterStoreType | undefined>(undefined);
 const OperationalContext = createContext<OperationalStoreType | undefined>(undefined);
@@ -699,7 +576,6 @@ const SESSION_CACHE_VERSION = "v5";
 const SESSION_UID_KEY = "nvu.session.uid";
 const SESSION_USER_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SESSION_MEMBERSHIP_CACHE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-const PUBLIC_COMPANIES_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 const sessionUserCacheKey = (uid: string) =>
   `nvu.session.${SESSION_CACHE_VERSION}.user.${uid}`;
 const sessionMembershipCacheKey = (uid: string) =>
@@ -708,7 +584,6 @@ const sessionActiveCompanyKey = (uid: string) =>
   `nvu.session.${SESSION_CACHE_VERSION}.active-company.${uid}`;
 const sessionActiveRoleKey = (uid: string) =>
   `nvu.session.${SESSION_CACHE_VERSION}.active-role.${uid}`;
-const COMPANIES_CACHE_KEY = "nvu.public.companies.v4";
 
 const readLocalStorageValue = (key: string): string | null => {
   try {
@@ -771,34 +646,6 @@ const isFreshCache = (cachedAt: unknown, maxAgeMs: number) =>
   Number.isFinite(cachedAt) &&
   cachedAt > 0 &&
   Date.now() - cachedAt <= maxAgeMs;
-
-const readCachedCompanies = (): CompanyProfile[] => {
-  try {
-    const raw = localStorage.getItem(COMPANIES_CACHE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as {
-      companies?: CompanyProfile[];
-      cachedAt?: number;
-    };
-    return Array.isArray(parsed.companies) &&
-      isFreshCache(parsed.cachedAt, PUBLIC_COMPANIES_CACHE_MAX_AGE_MS)
-      ? parsed.companies
-      : [];
-  } catch {
-    return [];
-  }
-};
-
-const writeCachedCompanies = (companies: CompanyProfile[]) => {
-  try {
-    localStorage.setItem(
-      COMPANIES_CACHE_KEY,
-      JSON.stringify({ companies, cachedAt: Date.now() }),
-    );
-  } catch {
-    // Public company cache is best-effort only.
-  }
-};
 
 const normalizeAuthenticatedUser = (
   raw: Record<string, unknown>,
@@ -1141,6 +988,220 @@ const recoverApprovedCompanyOwnerPhoto = async (
   return ownerPhoto;
 };
 
+const MAX_PENDING_REQUESTS = 100;
+
+type OperationalReadiness = {
+  vehicles: boolean;
+  trailers: boolean;
+  contracts: boolean;
+  sequences: boolean;
+  jobs: boolean;
+  demands: boolean;
+  users: boolean;
+};
+
+const EMPTY_OPERATIONAL_READINESS: OperationalReadiness = {
+  vehicles: false,
+  trailers: false,
+  contracts: false,
+  sequences: false,
+  jobs: false,
+  demands: false,
+  users: false,
+};
+
+type OperationalScopeSnapshot = {
+  cachedAt: number;
+  restoredFromSession?: boolean;
+  users?: User[];
+  vehicles?: Vehicle[];
+  trailers?: Trailer[];
+  contracts?: Contract[];
+  sequences?: Sequence[];
+  jobs?: Job[];
+  jobDemands?: JobDemand[];
+};
+
+const OPERATIONAL_SCOPE_CACHE_TTL_MS = 10 * 60 * 1000;
+const OPERATIONAL_SCOPE_SESSION_VERSION = "v1";
+const OPERATIONAL_SCOPE_SESSION_PREFIX =
+  `nvu.instant.${OPERATIONAL_SCOPE_SESSION_VERSION}.operational.`;
+const operationalScopeCache = new Map<string, OperationalScopeSnapshot>();
+const operationalScopePersistTimers = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
+
+const buildOperationalScopeKey = (
+  uid: string,
+  companyId: string | null,
+  role: Role | null,
+) => `${uid}|${companyId || "none"}|${role || "none"}`;
+
+const operationalScopeSessionKey = (key: string) =>
+  `${OPERATIONAL_SCOPE_SESSION_PREFIX}${encodeURIComponent(key)}`;
+
+const readPersistedOperationalScopeSnapshot = (
+  key: string,
+): OperationalScopeSnapshot | null => {
+  try {
+    const raw = sessionStorage.getItem(operationalScopeSessionKey(key));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OperationalScopeSnapshot;
+    if (
+      !parsed ||
+      !isFreshCache(parsed.cachedAt, OPERATIONAL_SCOPE_CACHE_TTL_MS)
+    ) {
+      sessionStorage.removeItem(operationalScopeSessionKey(key));
+      return null;
+    }
+    return {
+      ...parsed,
+      restoredFromSession: true,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const compactOperationalSnapshot = (
+  snapshot: OperationalScopeSnapshot,
+): OperationalScopeSnapshot => {
+  const activeStatuses = new Set([
+    "active",
+    "awaiting_completion",
+    "pending",
+    "delayed",
+  ]);
+  const sortByRecent = <T extends { createdAt?: string; assignedAt?: string }>(
+    items: T[],
+  ) =>
+    [...items].sort((a, b) => {
+      const aActive = activeStatuses.has(String((a as any).status || ""));
+      const bActive = activeStatuses.has(String((b as any).status || ""));
+      if (aActive !== bActive) return aActive ? -1 : 1;
+      const aTime = new Date(a.assignedAt || a.createdAt || 0).getTime() || 0;
+      const bTime = new Date(b.assignedAt || b.createdAt || 0).getTime() || 0;
+      return bTime - aTime;
+    });
+
+  const jobs = snapshot.jobs
+    ? (() => {
+        const sortedJobs = sortByRecent(snapshot.jobs);
+        const activeJobs = sortedJobs.filter((job) =>
+          activeStatuses.has(String(job.status || "")),
+        );
+        const recentInactiveJobs = sortedJobs
+          .filter(
+            (job) => !activeStatuses.has(String(job.status || "")),
+          )
+          .slice(0, 80);
+        return [...activeJobs, ...recentInactiveJobs];
+      })()
+    : undefined;
+  const referencedContractIds = new Set(
+    (jobs || []).map((job) => String(job.contractId || "")).filter(Boolean),
+  );
+  const referencedVehicleIds = new Set(
+    (jobs || []).map((job) => String(job.vehicleId || "")).filter(Boolean),
+  );
+  const referencedTrailerIds = new Set(
+    (jobs || [])
+      .map((job) => String(job.trailerId || ""))
+      .filter(Boolean),
+  );
+
+  const prioritizeReferenced = <T extends { id: string }>(
+    items: T[] | undefined,
+    referenced: Set<string>,
+    max: number,
+  ) => {
+    if (!items) return undefined;
+    return [...items]
+      .sort((a, b) => {
+        const aReferenced = referenced.has(String(a.id));
+        const bReferenced = referenced.has(String(b.id));
+        return aReferenced === bReferenced ? 0 : aReferenced ? -1 : 1;
+      })
+      .slice(0, max);
+  };
+
+  return {
+    cachedAt: snapshot.cachedAt,
+    jobs,
+    contracts: prioritizeReferenced(
+      snapshot.contracts,
+      referencedContractIds,
+      120,
+    ),
+    vehicles: prioritizeReferenced(
+      snapshot.vehicles,
+      referencedVehicleIds,
+      100,
+    ),
+    trailers: prioritizeReferenced(
+      snapshot.trailers,
+      referencedTrailerIds,
+      100,
+    ),
+    sequences: snapshot.sequences?.slice(0, 120),
+    jobDemands: snapshot.jobDemands?.slice(0, 50),
+    users: snapshot.users?.slice(0, 160),
+  };
+};
+
+const schedulePersistOperationalScopeSnapshot = (
+  key: string,
+  snapshot: OperationalScopeSnapshot,
+) => {
+  const currentTimer = operationalScopePersistTimers.get(key);
+  if (currentTimer) clearTimeout(currentTimer);
+
+  const timer = setTimeout(() => {
+    operationalScopePersistTimers.delete(key);
+    try {
+      sessionStorage.setItem(
+        operationalScopeSessionKey(key),
+        JSON.stringify(compactOperationalSnapshot(snapshot)),
+      );
+    } catch {
+      // Session cache is a best-effort acceleration only.
+    }
+  }, 80);
+  operationalScopePersistTimers.set(key, timer);
+};
+
+const readOperationalScopeSnapshot = (key: string) => {
+  let snapshot = operationalScopeCache.get(key);
+  if (!snapshot) {
+    snapshot = readPersistedOperationalScopeSnapshot(key) || undefined;
+    if (snapshot) operationalScopeCache.set(key, snapshot);
+  }
+  if (
+    !snapshot ||
+    Date.now() - snapshot.cachedAt > OPERATIONAL_SCOPE_CACHE_TTL_MS
+  ) {
+    operationalScopeCache.delete(key);
+    return null;
+  }
+  return snapshot;
+};
+
+const mergeOperationalScopeSnapshot = (
+  key: string,
+  patch: Partial<Omit<OperationalScopeSnapshot, "cachedAt">>,
+) => {
+  const current = readOperationalScopeSnapshot(key);
+  const next: OperationalScopeSnapshot = {
+    ...(current || { cachedAt: Date.now() }),
+    ...patch,
+    restoredFromSession: false,
+    cachedAt: Date.now(),
+  };
+  operationalScopeCache.set(key, next);
+  schedulePersistOperationalScopeSnapshot(key, next);
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
@@ -1195,6 +1256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     readSessionStorageValue("seniorCompanyId"),
   );
   const profilePhotoRepairAttemptedRef = useRef<Set<string>>(new Set());
+  const deferredPhotoWarmSignatureRef = useRef("");
 
   // Logout is a controlled teardown. These refs let us stop authenticated
   // Firestore listeners before Firebase Auth revokes the session, avoiding the
@@ -1204,6 +1266,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const membershipsUnsubscribeRef = useRef<(() => void) | null>(null);
   const privateSubscriptionsUnsubscribeRef = useRef<(() => void) | null>(null);
   const privateSubscriptionsGenerationRef = useRef(0);
+  const priorityContractLoadsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const priorityContractResolvedRef = useRef<Set<string>>(new Set());
   // Shared company data (users, vehicles, contracts and members) remains
   // valid across an admin <-> driver switch inside the same company. Keep it
   // visible while role-specific listeners reconnect so the destination does
@@ -1217,6 +1281,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const membershipsRef = useRef<CompanyMember[]>([]);
   const authObserverGenerationRef = useRef(0);
   const lastSessionRefreshAtRef = useRef(0);
+  const sessionHiddenAtRef = useRef<number | null>(null);
   const [sessionRecovering, setSessionRecovering] = useState(false);
   const [sessionRefreshEpoch, setSessionRefreshEpoch] = useState(0);
 
@@ -1260,7 +1325,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const refreshSession = (reason = "manual") => {
     if (isLoggingOutRef.current || isAuthTeardownActive() || !auth.currentUser) return;
     const now = Date.now();
-    if (reason !== "manual" && now - lastSessionRefreshAtRef.current < 2500) return;
+    const minimumIntervalMs =
+      reason === "manual"
+        ? 0
+        : reason === "online"
+          ? 5_000
+          : 15_000;
+    if (now - lastSessionRefreshAtRef.current < minimumIntervalMs) return;
     lastSessionRefreshAtRef.current = now;
     setSessionRecovering(true);
     setSessionRefreshEpoch((value) => value + 1);
@@ -1268,17 +1339,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   useEffect(() => {
     const handleOnline = () => refreshSession("online");
-    const handleVisible = () => {
-      if (document.visibilityState === "visible") refreshSession("visible");
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        sessionHiddenAtRef.current = Date.now();
+        return;
+      }
+
+      const hiddenAt = sessionHiddenAtRef.current;
+      sessionHiddenAtRef.current = null;
+      // A quick tab/devtools focus change does not invalidate Firebase Auth.
+      // Rebuilding every listener after those short interruptions caused
+      // visible mobile work and duplicate reads inside AI Studio Preview.
+      if (hiddenAt && Date.now() - hiddenAt >= 12_000) {
+        refreshSession("visible");
+      }
     };
     const handleRequestedRefresh = () => refreshSession("app-resume");
 
     window.addEventListener("online", handleOnline);
-    document.addEventListener("visibilitychange", handleVisible);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("nvu-session-refresh", handleRequestedRefresh);
     return () => {
       window.removeEventListener("online", handleOnline);
-      document.removeEventListener("visibilitychange", handleVisible);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("nvu-session-refresh", handleRequestedRefresh);
     };
   }, []);
@@ -1523,8 +1606,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         setJobs([]);
         setJobDemands([]);
         setDriverRequests([]);
-        setNotifications([]);
-        setNotificationsHydrated(false);
         setRecruitmentApplications([]);
         setMembershipsLoaded(true);
         setSessionRecovering(false);
@@ -1578,25 +1659,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [sequences, setSequences] = useState<Sequence[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobDemands, setJobDemands] = useState<JobDemand[]>([]);
+  const [operationalReadiness, setOperationalReadiness] =
+    useState<OperationalReadiness>(EMPTY_OPERATIONAL_READINESS);
   const [simulators, setSimulators] = useState<Simulator[]>([]);
   const [simulatorsLoading, setSimulatorsLoading] = useState(true);
   const [simulatorsError, setSimulatorsError] = useState<string | null>(null);
-  const [companies, setCompanies] = useState<CompanyProfile[]>(() =>
-    readCachedCompanies(),
-  );
-  const [companiesLoading, setCompaniesLoading] = useState(
-    () => readCachedCompanies().length === 0,
-  );
-  const [driverRequests, setDriverRequests] = useState<DriverRequest[]>([]);
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [notificationsHydrated, setNotificationsHydrated] = useState(false);
-  const [allCompanyMembers, setAllCompanyMembers] = useState<CompanyMember[]>(
-    [],
-  );
-
-  const [recruitmentApplications, setRecruitmentApplications] = useState<
-    RecruitmentApplication[]
-  >([]);
+  const {
+    companies,
+    setCompanies,
+    companiesLoading,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
+    companiesRef,
+    companyCatalogLoadedRef,
+  } = useCompanyDataController({
+    authInitialized,
+    membershipsLoaded,
+    currentUser,
+    memberships,
+    activeCompanyId,
+  });
 
   useEffect(() => {
     if (isSeniorAuthenticated) {
@@ -1630,7 +1713,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     removeLocalStorageValue("activeRole");
   }, [activeCompanyId, activeRole, currentUser?.id, firebaseSessionUid]);
 
-  
   // --- Simulators Subscription ---
   // Firebase is the single source of truth.
   // No automatic creation, seed, or hardcoded simulators.
@@ -1666,38 +1748,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     return () => unsub();
-  }, []);
-
-  // --- Global Public Companies Subscription ---
-  useEffect(() => {
-    setCompaniesLoading(true);
-    const unsubCompanies = onSnapshot(
-      collection(db, "frotas"),
-      (snap) => {
-        const data = snap.docs.map((doc) => {
-          const raw = doc.data();
-          return {
-            ...raw,
-            id: doc.id,
-            companyName: raw.companyName || raw.fleetName || "Sem Nome",
-          } as CompanyProfile;
-        });
-        const nextCompanies = Array.isArray(data) ? data : [];
-        setCompanies(nextCompanies);
-        writeCachedCompanies(nextCompanies);
-        setCompaniesLoading(false);
-      },
-      (error) => {
-        if (isAuthTeardownActive()) return;
-        console.error("Error fetching global frotas snapshot:", error);
-        // Keep the last public snapshot visible during transient network errors.
-        setCompanies((current) =>
-          current.length > 0 ? current : readCachedCompanies(),
-        );
-        setCompaniesLoading(false);
-      },
-    );
-    return () => unsubCompanies();
   }, []);
 
   // --- Real-time Firestore Subscriptions (Authenticated) ---
@@ -1979,11 +2029,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   ]);
 
 
-  // Warm the identity that is visible on every screen immediately. Ranking
-  // photos are warmed in the same pass so switching to the internal ranking
-  // does not first paint initials and then replace them with the bitmap.
-  // Broader/non-critical fleet avatars remain deferred below.
+  const { allCompanyMembers, setAllCompanyMembers } =
+    useCompanyMembersController({
+      userId: currentUserId,
+      targetCompanyId,
+      isActive: isActiveUser,
+    });
+  const {
+    driverRequests,
+    setDriverRequests,
+    recruitmentApplications,
+    setRecruitmentApplications,
+  } = useCompanyRecruitmentController({
+    userId: currentUserId,
+    userEmail: currentUser?.email,
+    activeRole,
+    targetCompanyId,
+    isActive: isActiveUser,
+  });
+
+
+  // Warm only the identity visible on every screen immediately. Broader fleet
+  // photo work is bounded by runtime capability so mobile WebViews are not
+  // interrupted by speculative decoding after each users/jobs snapshot.
   useEffect(() => {
+    const runtime = getRuntimePerformanceProfile();
     const memberIds = new Set(
       allCompanyMembers
         .filter((member) => member.companyId === activeCompanyId)
@@ -2002,15 +2072,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       user?.photo ||
       "";
 
-    void preloadImages(
-      [
-        resolveUserPhoto(currentUser),
-        activeCompany?.logoUrl,
-        activeCompany?.logoURL,
-        (activeCompany as any)?.logo,
-      ],
-      2,
+    const identityImages = Array.from(
+      new Set(
+        [
+          resolveUserPhoto(currentUser),
+          activeCompany?.logoUrl,
+          activeCompany?.logoURL,
+          (activeCompany as any)?.logo,
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
     );
+    if (identityImages.length > 0) {
+      void preloadImages(
+        identityImages,
+        runtime.mobileViewport ? 1 : 2,
+        "high",
+      );
+    }
+
+    const maxDeferredPhotos = runtime.constrained
+      ? 0
+      : runtime.mobileViewport
+        ? 18
+        : 60;
+    if (maxDeferredPhotos === 0) return;
 
     const companyUsers = users.filter(
       (user) =>
@@ -2024,15 +2111,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     const activeJobDrivers = users.filter((user) =>
       activeJobDriverIds.has(user.id),
     );
-    const deferredPhotos = Array.from(
-      new Set(
+    const deferredUsers = Array.from(
+      new Map<string, User>(
         [...companyUsers, ...activeJobDrivers]
-          .map(resolveUserPhoto)
-          .filter(Boolean),
-      ),
-    ).slice(0, 60);
-
-    if (deferredPhotos.length === 0) return;
+          .filter((user) => Boolean(resolveUserPhoto(user)))
+          .map((user) => [user.id, user] as const),
+      ).values(),
+    ).slice(0, maxDeferredPhotos);
+    const deferredPhotos = Array.from(
+      new Set(deferredUsers.map(resolveUserPhoto).filter(Boolean)),
+    );
+    const signature = [activeCompanyId || "", ...deferredPhotos].join("|");
+    if (
+      deferredPhotos.length === 0 ||
+      deferredPhotoWarmSignatureRef.current === signature
+    ) {
+      return;
+    }
+    deferredPhotoWarmSignatureRef.current = signature;
 
     const idleApi = window as Window & {
       requestIdleCallback?: (
@@ -2041,32 +2137,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       ) => number;
       cancelIdleCallback?: (id: number) => void;
     };
-
+    let idleId: number | null = null;
     const warmDeferredPhotos = () => {
-      // Ranking avatars are useful after the first screen is stable, but
-      // warming the whole company immediately after login competes with the
-      // identity/operation render. Keep the same cache behavior and move only
-      // this non-critical work to an idle slice.
-      void warmRankingUserProfiles(
-        [...companyUsers, ...activeJobDrivers],
-        8,
+      if (!runtime.mobileViewport) {
+        void warmRankingUserProfiles(deferredUsers, 6);
+      }
+      void preloadImages(
+        deferredPhotos,
+        runtime.backgroundImageConcurrency,
+        "low",
       );
-      void preloadImages(deferredPhotos, 3);
     };
+    const timer = window.setTimeout(() => {
+      if (idleApi.requestIdleCallback) {
+        idleId = idleApi.requestIdleCallback(warmDeferredPhotos, {
+          timeout: runtime.mobileViewport ? 4800 : 2800,
+        });
+      } else {
+        warmDeferredPhotos();
+      }
+    }, runtime.mobileViewport ? 3600 : 1800);
 
-    if (idleApi.requestIdleCallback) {
-      const idleId = idleApi.requestIdleCallback(
-        warmDeferredPhotos,
-        { timeout: 2600 },
-      );
-      return () => idleApi.cancelIdleCallback?.(idleId);
-    }
-
-    const timer = window.setTimeout(
-      warmDeferredPhotos,
-      1800,
-    );
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
+    };
   }, [
     currentUser,
     activeCompanyId,
@@ -2076,7 +2171,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     jobs,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!currentUserId) {
       privateDataScopeRef.current = null;
       privateSubscriptionsGenerationRef.current += 1;
@@ -2088,12 +2183,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       setJobs([]);
       setJobDemands([]);
       setUsers([]);
-      setAllCompanyMembers([]);
       setFetchedMissingUsers([]);
-      setDriverRequests([]);
-      setNotifications([]);
-      setNotificationsHydrated(false);
-      setRecruitmentApplications([]);
+      setOperationalReadiness(EMPTY_OPERATIONAL_READINESS);
+      operationalScopeCache.clear();
+      operationalScopePersistTimers.forEach((timer) => clearTimeout(timer));
+      operationalScopePersistTimers.clear();
+      priorityContractLoadsRef.current.clear();
+      priorityContractResolvedRef.current.clear();
       return;
     }
 
@@ -2116,10 +2212,146 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       privateSubscriptionsGenerationRef.current === subscriptionGeneration &&
       canProcessAuthenticatedCallback(uid);
 
-    // Never expose data from another account/company. When only the role
-    // changes inside the same company, shared collections remain available
-    // immediately; only role-scoped collections are reset.
-    if (!sameCompanyScope) {
+    const hydratePriorityDriverContract = (nextJobs: Job[]) => {
+      if (activeRole !== "driver" || !targetCompanyId) return;
+
+      const priorityJob = nextJobs
+        .filter(
+          (job) =>
+            job.driverId === uid &&
+            ["active", "awaiting_completion", "pending", "delayed"].includes(
+              job.status,
+            ),
+        )
+        .sort((a, b) => {
+          const priority = (status: string) =>
+            status === "active"
+              ? 0
+              : status === "awaiting_completion"
+                ? 1
+                : status === "delayed"
+                  ? 2
+                  : 3;
+          const statusDiff = priority(a.status) - priority(b.status);
+          if (statusDiff !== 0) return statusDiff;
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        })[0];
+
+      const contractId = String(priorityJob?.contractId || "").trim();
+      if (!contractId) return;
+
+      const requestKey = `${operationalScopeKey}|${contractId}`;
+      if (
+        priorityContractResolvedRef.current.has(requestKey) ||
+        priorityContractLoadsRef.current.has(requestKey)
+      ) {
+        return;
+      }
+
+      const request = getDoc(doc(db, "contratos", contractId))
+        .then((contractSnapshot) => {
+          if (!canPublishPrivateSnapshot() || !contractSnapshot.exists()) return;
+          const contract = {
+            ...contractSnapshot.data(),
+            id: contractSnapshot.id,
+          } as Contract;
+          if (contract.deleted) return;
+
+          priorityContractResolvedRef.current.add(requestKey);
+          setContracts((current) => {
+            const next = current.some((item) => item.id === contract.id)
+              ? current.map((item) =>
+                  item.id === contract.id ? contract : item,
+                )
+              : [contract, ...current];
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              contracts: next,
+            });
+            return next;
+          });
+        })
+        .catch((error) => {
+          if (
+            canPublishPrivateSnapshot() &&
+            error?.code !== "permission-denied"
+          ) {
+            console.warn(
+              "[NVU] Falha ao antecipar contrato da operação ativa:",
+              error,
+            );
+          }
+        })
+        .finally(() => {
+          priorityContractLoadsRef.current.delete(requestKey);
+        });
+
+      priorityContractLoadsRef.current.set(requestKey, request);
+    };
+
+    // Rehydrate the exact user/company/role scope before attaching the live
+    // listeners. Returning to a profile within the same session therefore
+    // keeps its last complete snapshot visible instead of painting a false
+    // empty state for one or two seconds. Firebase remains authoritative and
+    // replaces this snapshot as soon as each listener emits.
+    const operationalScopeKey = buildOperationalScopeKey(
+      uid,
+      targetCompanyId,
+      activeRole,
+    );
+    const cachedScope = readOperationalScopeSnapshot(operationalScopeKey);
+
+    if (cachedScope) {
+      if (cachedScope.vehicles) setVehicles(cachedScope.vehicles);
+      if (cachedScope.trailers) setTrailers(cachedScope.trailers);
+      if (cachedScope.contracts) setContracts(cachedScope.contracts);
+      if (cachedScope.sequences) setSequences(cachedScope.sequences);
+      if (cachedScope.jobs) setJobs(cachedScope.jobs);
+      if (cachedScope.jobDemands) setJobDemands(cachedScope.jobDemands);
+      if (cachedScope.users) setUsers(cachedScope.users);
+      const cachedActiveDriverJob =
+        activeRole === "driver"
+          ? cachedScope.jobs?.find(
+              (job) =>
+                job.driverId === uid &&
+                [
+                  "active",
+                  "awaiting_completion",
+                  "pending",
+                  "delayed",
+                ].includes(job.status),
+            )
+          : undefined;
+      const cachedActiveContract = cachedActiveDriverJob
+        ? cachedScope.contracts?.some(
+            (contract) => contract.id === cachedActiveDriverJob.contractId,
+          )
+        : false;
+      const restoredAdminScope =
+        cachedScope.restoredFromSession && activeRole === "admin";
+      setOperationalReadiness({
+        vehicles: Boolean(cachedScope.vehicles),
+        trailers: Boolean(cachedScope.trailers),
+        // Non-empty cached critical data can paint immediately. Cached empty
+        // arrays remain "refreshing" until Firestore confirms the current
+        // server state, preventing a false "solicitar trabalho" screen.
+        contracts: restoredAdminScope
+          ? Array.isArray(cachedScope.contracts)
+          : cachedScope.restoredFromSession
+            ? Boolean(cachedActiveContract)
+          : Boolean(cachedScope.contracts?.length),
+        sequences: Boolean(cachedScope.sequences),
+        jobs: restoredAdminScope
+          ? Array.isArray(cachedScope.jobs)
+          : cachedScope.restoredFromSession
+            ? Boolean(cachedActiveDriverJob)
+          : Boolean(cachedScope.jobs?.length),
+        demands: Boolean(cachedScope.jobDemands?.length),
+        users: Boolean(cachedScope.users),
+      });
+    } else if (!sameCompanyScope) {
+      // Never expose data from another account or company.
       setVehicles([]);
       setTrailers([]);
       setContracts([]);
@@ -2127,19 +2359,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       setJobs([]);
       setJobDemands([]);
       setUsers([]);
-      setAllCompanyMembers([]);
       setFetchedMissingUsers([]);
-      setDriverRequests([]);
-      setNotifications([]);
-      setNotificationsHydrated(false);
-      setRecruitmentApplications([]);
+      setOperationalReadiness(EMPTY_OPERATIONAL_READINESS);
     } else if (roleChangedWithinCompany) {
-      setJobs([]);
-      setJobDemands([]);
-      setDriverRequests([]);
-      setNotifications([]);
-      setNotificationsHydrated(false);
-      setRecruitmentApplications([]);
+      // Shared company collections are still valid. When entering the driver
+      // profile, the admin snapshot can be narrowed synchronously to the
+      // current driver, making an active operation visible in the first frame.
+      // The new scoped listener then confirms/replaces it.
+      if (activeRole === "driver") {
+        setJobs((current) =>
+          current.filter(
+            (job) =>
+              job.companyId === targetCompanyId && job.driverId === uid,
+          ),
+        );
+        setJobDemands((current) =>
+          current.filter(
+            (demand) =>
+              demand.companyId === targetCompanyId && demand.driverId === uid,
+          ),
+        );
+      }
+      setOperationalReadiness((current) => ({
+        ...current,
+        jobs: false,
+        demands: false,
+      }));
+    }
+
+    if (cachedScope?.jobs?.length) {
+      hydratePriorityDriverContract(cachedScope.jobs);
     }
 
     let unsubVehicles: () => void = () => {};
@@ -2149,20 +2398,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     let unsubJobs: () => void = () => {};
     let unsubDemands: () => void = () => {};
     let unsubUsers: () => void = () => {};
-    let unsubAllCompanyMembers: () => void = () => {};
     
 
-    const handleSnapError = (prefix: string) => (error: any) => {
-      if (
-        !canPublishPrivateSnapshot() ||
-        isLoggingOutRef.current ||
-        isAuthTeardownActive() ||
-        !auth.currentUser
-      ) return;
-      if (error.code !== "permission-denied") {
-        console.error(`${prefix}:`, error);
-      }
-    };
+    const handleSnapError =
+      (prefix: string, readinessKey?: keyof OperationalReadiness) =>
+      (error: any) => {
+        if (
+          !canPublishPrivateSnapshot() ||
+          isLoggingOutRef.current ||
+          isAuthTeardownActive() ||
+          !auth.currentUser
+        ) return;
+        if (readinessKey) {
+          // A failed listener must not leave the destination in an endless
+          // synchronization state. Any exact cached snapshot remains visible.
+          setOperationalReadiness((current) => ({
+            ...current,
+            [readinessKey]: true,
+          }));
+        }
+        if (error.code !== "permission-denied") {
+          console.error(`${prefix}:`, error);
+        }
+      };
 
     if (isActive) {
       // For dependent resources (vehicles, trailers, contracts, jobs), Admins and Drivers fetch by companyId.
@@ -2178,13 +2436,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           vehicleQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setVehicles(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as Vehicle,
-              ),
+            const nextVehicles = snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as Vehicle,
             );
+            setVehicles(nextVehicles);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              vehicles: nextVehicles,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              vehicles: true,
+            }));
           },
-          handleSnapError("Error fetching veiculos snap"),
+          handleSnapError("Error fetching veiculos snap", "vehicles"),
         );
 
       const trailerQuery = activeCompanyId
@@ -2199,13 +2463,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           trailerQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setTrailers(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as Trailer,
-              ),
+            const nextTrailers = snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as Trailer,
             );
+            setTrailers(nextTrailers);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              trailers: nextTrailers,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              trailers: true,
+            }));
           },
-          handleSnapError("Error fetching reboques snap"),
+          handleSnapError("Error fetching reboques snap", "trailers"),
         );
 
       const contractQuery = activeCompanyId
@@ -2227,13 +2497,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           sequenceQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setSequences(
-              snap.docs
-                .map((doc) => ({ ...doc.data(), id: doc.id }) as Sequence)
-                .filter((s) => !s.deleted)
-            );
+            const nextSequences = snap.docs
+              .map((doc) => ({ ...doc.data(), id: doc.id }) as Sequence)
+              .filter((sequence) => !sequence.deleted);
+            setSequences(nextSequences);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              sequences: nextSequences,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              sequences: true,
+            }));
           },
-          handleSnapError("Error fetching sequencias snap")
+          handleSnapError("Error fetching sequencias snap", "sequences")
         );
 
       if (contractQuery)
@@ -2241,13 +2517,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           contractQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setContracts(
-              snap.docs
-                .map((doc) => ({ ...doc.data(), id: doc.id }) as Contract)
-                .filter((c) => !c.deleted)
-            );
+            const nextContracts = snap.docs
+              .map((doc) => ({ ...doc.data(), id: doc.id }) as Contract)
+              .filter((contract) => !contract.deleted);
+            setContracts(nextContracts);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              contracts: nextContracts,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              contracts: true,
+            }));
           },
-          handleSnapError("Error fetching contratos snap"),
+          handleSnapError("Error fetching contratos snap", "contracts"),
         );
 
       // For jobs, query by companyId and driverId directly in Firestore to avoid overfetching
@@ -2269,13 +2551,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           jobQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setJobs(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as Job,
-              ),
+            const nextJobs = snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as Job,
             );
+            // Prioritize the single contract required by the driver's current
+            // operation instead of waiting for the full company contract
+            // collection before the screen can render.
+            hydratePriorityDriverContract(nextJobs);
+            setJobs(nextJobs);
+            mergeOperationalScopeSnapshot(operationalScopeKey, { jobs: nextJobs });
+            setOperationalReadiness((current) => ({
+              ...current,
+              jobs: true,
+            }));
           },
-          handleSnapError("Error fetching trabalhos snap")
+          handleSnapError("Error fetching trabalhos snap", "jobs")
         );
       }
 
@@ -2285,22 +2575,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             ? query(
                 collection(db, "jobDemands"),
                 where("companyId", "==", targetCompanyId),
+                where("status", "==", "pending"),
+                limit(MAX_PENDING_REQUESTS),
               )
             : null
-          : query(collection(db, "jobDemands"), where("driverId", "==", uid));
+          : query(
+              collection(db, "jobDemands"),
+              where("driverId", "==", uid),
+              where("status", "==", "pending"),
+              limit(20),
+            );
 
       if (demandsQuery)
         unsubDemands = onSnapshot(
           demandsQuery,
           (snap) => {
             if (!canPublishPrivateSnapshot()) return;
-            setJobDemands(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as JobDemand,
-              ),
+            const nextJobDemands = snap.docs.map(
+              (doc) => ({ ...doc.data(), id: doc.id }) as JobDemand,
             );
+            setJobDemands(nextJobDemands);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              jobDemands: nextJobDemands,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              demands: true,
+            }));
           },
-          handleSnapError("Error fetching jobDemands"),
+          handleSnapError("Error fetching jobDemands", "demands"),
         );
 
       const usersQuery = targetCompanyId
@@ -2328,250 +2631,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             });
 
             setUsers(mappedUsers);
+            mergeOperationalScopeSnapshot(operationalScopeKey, {
+              users: mappedUsers,
+            });
+            setOperationalReadiness((current) => ({
+              ...current,
+              users: true,
+            }));
           },
-          handleSnapError("Error fetching users snap")
+          handleSnapError("Error fetching users snap", "users")
         );
       }
-
-      // NOVO: Fetch todos os membros da empresa ativa
-      if (targetCompanyId) {
-        const q = query(
-          collection(db, "companyMembers"),
-          where("companyId", "==", targetCompanyId),
-        );
-        unsubAllCompanyMembers = onSnapshot(
-          q,
-          (snap) => {
-            if (!canPublishPrivateSnapshot()) return;
-            setAllCompanyMembers(
-              snap.docs.map((membershipDocument) =>
-                normalizeCompanyMember(
-                  membershipDocument.data() as Record<string, unknown>,
-                  membershipDocument.id,
-                ),
-              ),
-            );
-          },
-          handleSnapError("Error fetching all company members")
-        );
-      }
-    }
-
-    // Helper pra unsub
-    let unsubDriverRequests: () => void = () => {};
-    let unsubNotifications: () => void = () => {};
-    let unsubRecruitmentApps: () => void = () => {};
-    const normalizedCurrentEmail = currentUser?.email?.trim().toLowerCase();
-    const userRecruitmentApplicationsQuery = normalizedCurrentEmail
-      ? query(
-          collection(db, "recruitment_applications"),
-          or(
-            where("userId", "==", uid),
-            where("email", "==", normalizedCurrentEmail),
-          ),
-        )
-      : query(
-          collection(db, "recruitment_applications"),
-          where("userId", "==", uid),
-        );
-
-    if (isActive) {
-      setNotifications([]);
-      setNotificationsHydrated(false);
-      // A UI interna usa o AppContext como fonte canônica. As duas coleções
-      // são lidas apenas para compatibilidade com registros antigos.
-      const notificationSources: Array<{
-        collectionName: "notifications" | "notificacoes";
-        notificationQuery: ReturnType<typeof query>;
-      }> = [
-        {
-          collectionName: "notifications",
-          notificationQuery: query(
-            collection(db, "notifications"),
-            where("userId", "==", uid),
-          ),
-        },
-        {
-          collectionName: "notificacoes",
-          notificationQuery: query(
-            collection(db, "notificacoes"),
-            where("userId", "==", uid),
-          ),
-        },
-      ];
-
-      const sourceSnapshots = new Map<
-        "notifications" | "notificacoes",
-        AppNotification[]
-      >();
-      const initializedSources = new Set<"notifications" | "notificacoes">();
-
-      const isVisible = (notification: AppNotification) =>
-        isNotificationVisibleForContext(notification, {
-          userId: uid,
-          activeRole,
-          activeCompanyId: targetCompanyId,
-        });
-
-      const publishNotifications = () => {
-        const byLogicalIdentity = new Map<string, AppNotification>();
-        // Prefere a coleção moderna quando o mesmo evento existir nas duas,
-        // mesmo que algum produtor legado tenha usado outro ID de documento.
-        for (const source of ["notificacoes", "notifications"] as const) {
-          for (const notification of sourceSnapshots.get(source) ?? []) {
-            byLogicalIdentity.set(
-              notificationIdentity(notification, notification.id),
-              notification,
-            );
-          }
-        }
-
-        const merged = Array.from(byLogicalIdentity.values())
-          .filter(isVisible)
-          .sort(
-            (a, b) =>
-              notificationTimestampMs(b) - notificationTimestampMs(a),
-          );
-        setNotifications(merged);
-      };
-
-      const notificationUnsubs = notificationSources.map(
-        ({ collectionName, notificationQuery }) =>
-          onSnapshot(
-            notificationQuery,
-            (snap) => {
-              if (!canPublishPrivateSnapshot()) return;
-              const incoming = snap.docs.map((notificationDocument) => {
-                const normalized = normalizeNotificationForUi(
-                  notificationDocument.id,
-                  notificationDocument.data(),
-                );
-                return {
-                  ...normalized,
-                  sourceCollection: collectionName,
-                } as AppNotification;
-              });
-
-              sourceSnapshots.set(collectionName, incoming);
-              publishNotifications();
-
-              // Só depois do primeiro snapshot das duas coleções o histórico
-              // está completamente hidratado. O listener usa esse sinal para
-              // não transformar documentos antigos em popups novos.
-              initializedSources.add(collectionName);
-              if (initializedSources.size === notificationSources.length) {
-                setNotificationsHydrated(true);
-              }
-            },
-            (error) => {
-              if (
-                canPublishPrivateSnapshot() &&
-                !isLoggingOutRef.current &&
-                !isAuthTeardownActive() &&
-                auth.currentUser
-              ) {
-                console.error(
-                  `[NVU Notifications] Falha ao ler ${collectionName}:`,
-                  error,
-                );
-              }
-              if (!canPublishPrivateSnapshot()) return;
-              initializedSources.add(collectionName);
-              if (initializedSources.size === notificationSources.length) {
-                setNotificationsHydrated(true);
-              }
-            },
-          ),
-      );
-
-      unsubNotifications = () => {
-        notificationUnsubs.forEach((unsubscribe) => unsubscribe());
-      };
-
-      if (activeRole === "admin") {
-        if (targetCompanyId) {
-          unsubDriverRequests = onSnapshot(
-            query(
-              collection(db, "solicitacoes_motoristas"),
-              where("empresaId", "==", targetCompanyId),
-            ),
-            (snap) => {
-              if (!canPublishPrivateSnapshot()) return;
-              setDriverRequests(
-                snap.docs.map(
-                  (doc) => ({ ...doc.data(), id: doc.id }) as DriverRequest,
-                ),
-              );
-            },
-            handleSnapError("Error fetching driver requests admin"),
-          );
-
-          unsubRecruitmentApps = onSnapshot(
-            query(
-              collection(db, "recruitment_applications"),
-              where("companyId", "==", targetCompanyId),
-            ),
-            (snap) => {
-              if (!canPublishPrivateSnapshot()) return;
-              setRecruitmentApplications(
-                snap.docs.map(
-                  (doc) =>
-                    ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
-                ),
-              );
-            },
-            handleSnapError("Error fetching recruitment apps"),
-          );
-        }
-      } else {
-        unsubDriverRequests = onSnapshot(
-          query(
-            collection(db, "solicitacoes_motoristas"),
-            where("motoristaId", "==", uid),
-          ),
-          (snap) => {
-            if (!canPublishPrivateSnapshot()) return;
-            setDriverRequests(
-              snap.docs.map(
-                (doc) => ({ ...doc.data(), id: doc.id }) as DriverRequest,
-              ),
-            );
-          },
-          handleSnapError("Error fetching driver requests motorista"),
-        );
-
-        unsubRecruitmentApps = onSnapshot(
-            userRecruitmentApplicationsQuery,
-          (snap) => {
-            if (!canPublishPrivateSnapshot()) return;
-            setRecruitmentApplications(
-              snap.docs.map(
-                (doc) =>
-                  ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
-              ),
-            );
-          },
-          handleSnapError("Error fetching recruitment apps motorista"),
-        );
-      }
-    } else {
-      setNotifications([]);
-      setNotificationsHydrated(true);
-      // If not active, only try to fetch recruitment apps just in case it works so they can see data,
-      // but gracefully ignore permission errors.
-      unsubRecruitmentApps = onSnapshot(
-        userRecruitmentApplicationsQuery,
-        (snap) => {
-          if (!canPublishPrivateSnapshot()) return;
-          setRecruitmentApplications(
-            snap.docs.map(
-              (doc) =>
-                ({ ...doc.data(), id: doc.id }) as RecruitmentApplication,
-            ),
-          );
-        },
-        handleSnapError("Error fetching recruitment apps motorista"),
-      );
     }
 
     let privateSubscriptionsStopped = false;
@@ -2585,11 +2655,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       unsubSequences();
       unsubJobs();
       unsubUsers();
-      unsubAllCompanyMembers();
-      unsubDriverRequests();
-      unsubNotifications();
       unsubDemands();
-      unsubRecruitmentApps();
     };
 
     privateSubscriptionsUnsubscribeRef.current = stopPrivateSubscriptions;
@@ -2609,7 +2675,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [
     currentUserId,
-    currentUser?.email,
     targetCompanyId,
     activeCompanyId,
     activeRole,
@@ -2700,6 +2765,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       getCurrentUserId();
       await updateDoc(doc(db, "frotas", companyId), {
         recruitmentSettings: settings,
+      });
+      setCompanies((current) => {
+        const target = current.find((company) => company.id === companyId);
+        if (!target) return current;
+        const next = mergeCompanyProfile(current, {
+          ...target,
+          recruitmentSettings: settings,
+        });
+        companiesRef.current = next;
+        if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
+        return next;
       });
     } catch (e) {
       handleFirebaseError(e);
@@ -2899,12 +2975,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const stateApplication = recruitmentApplications.find(
         (application) => application.id === applicationId,
       );
-      if (!stateApplication) return;
 
-      // The list listener can be one snapshot behind when two administrators
-      // work at once. Re-read the selected document so approval always uses
-      // the exact name/e-mail/photo that was submitted, never a stale row from
-      // another section or account.
+      // O listener administrativo mantém apenas pendências em tempo real.
+      // Registros históricos são paginados pela tela, então a ação sempre
+      // relê o documento exato e usa o estado apenas como fallback.
       const applicationSnapshot = await getDoc(
         doc(db, "recruitment_applications", applicationId),
       );
@@ -2914,6 +2988,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             ...applicationSnapshot.data(),
           } as RecruitmentApplication)
         : stateApplication;
+      if (!app) return;
       // Allow approving applications that are pending or rejected, but not already approved
       if (app.status === "approved") return;
 
@@ -3095,7 +3170,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const rejectRecruitmentApplication = async (applicationId: string) => {
     try {
       getCurrentUserId();
-      const app = recruitmentApplications.find((a) => a.id === applicationId);
+      const stateApplication = recruitmentApplications.find(
+        (application) => application.id === applicationId,
+      );
+      const applicationSnapshot = await getDoc(
+        doc(db, "recruitment_applications", applicationId),
+      );
+      const app = applicationSnapshot.exists()
+        ? ({
+            id: applicationSnapshot.id,
+            ...applicationSnapshot.data(),
+          } as RecruitmentApplication)
+        : stateApplication;
+      if (!app) return;
+
       await updateDoc(doc(db, "recruitment_applications", applicationId), {
         status: "rejected",
       });
@@ -3170,6 +3258,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         createdAt: new Date().toISOString(),
       };
       const newDoc = await addDoc(collection(db, "frotas"), payload);
+      setCompanies((current) => {
+        const next = mergeCompanyProfile(
+          current,
+          normalizeCompanyProfile(newDoc.id, payload),
+        );
+        companiesRef.current = next;
+        if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
+        return next;
+      });
 
       // Update user document to be an admin/driver in this company
       await updateDoc(doc(db, "users", uid), {
@@ -3204,6 +3301,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       getCurrentUserId(); // valida se tá autenticado
       await updateDoc(doc(db, "frotas", id), updates);
+      setCompanies((current) => {
+        const target = current.find((company) => company.id === id);
+        if (!target) return current;
+        const next = mergeCompanyProfile(current, {
+          ...target,
+          ...updates,
+          id,
+        } as CompanyProfile);
+        companiesRef.current = next;
+        if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
+        return next;
+      });
     } catch (e) {
       handleFirebaseError(e);
       throw e;
@@ -3262,6 +3371,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       batch.delete(doc(db, "frotas", id));
 
       await batch.commit();
+      setCompanies((current) => {
+        const next = current.filter((company) => company.id !== id);
+        companiesRef.current = next;
+        if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
+        return next;
+      });
 
       if (activeCompanyId === id) setActiveCompanyId(null);
     } catch (e) {
@@ -3917,61 +4032,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const markNotificationAsRead = async (notificationId: string) => {
-    const notification = notifications.find((item) => item.id === notificationId);
-    if (!notification) return;
-
-    setNotifications((current) =>
-      current.map((item) =>
-        item.id === notificationId
-          ? { ...item, read: true, lida: true }
-          : item,
-      ),
-    );
-
-    try {
-      getCurrentUserId();
-      const sourceCollection = notification.sourceCollection ?? "notifications";
-      await updateDoc(doc(db, sourceCollection, notificationId), {
-        read: true,
-        lida: true,
-      });
-    } catch (e) {
-      console.warn("[NVU Notifications] Falha ao marcar como lida:", e);
-    }
-  };
-
-  const markNotificationPopupShown = async (notificationId: string) => {
-    const notification = notifications.find((item) => item.id === notificationId);
-    if (!notification || notification.popupShownAt || notification.popupShownAtIso) {
-      return;
-    }
-
-    const popupShownAtIso = new Date().toISOString();
-    setNotifications((current) =>
-      current.map((item) =>
-        item.id === notificationId
-          ? { ...item, popupShownAtIso }
-          : item,
-      ),
-    );
-
-    try {
-      getCurrentUserId();
-      const sourceCollection = notification.sourceCollection ?? "notifications";
-      await updateDoc(doc(db, sourceCollection, notificationId), {
-        popupShownAt: serverTimestamp(),
-        popupShownAtIso,
-      });
-    } catch (error) {
-      // O Set local do listener já bloqueia repetição na sessão. Não exibimos
-      // toast de erro para uma atualização silenciosa de controle de popup.
-      console.warn(
-        "[NVU Notifications] Falha ao persistir popup exibido:",
-        error,
-      );
-    }
-  };
 
   const switchRole = async (role: Role, newCompanyId?: string) => {
     if (!currentUser) return;
@@ -4592,8 +4652,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     setJobs([]);
     setJobDemands([]);
     setDriverRequests([]);
-    setNotifications([]);
-    setNotificationsHydrated(false);
     setRecruitmentApplications([]);
     try {
       clearPushRegistrationContext();
@@ -4871,9 +4929,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const stableApproveRecruitmentApplication = useStableEvent(approveRecruitmentApplication);
   const stableRejectRecruitmentApplication = useStableEvent(rejectRecruitmentApplication);
   const stableDeleteRecruitmentApplication = useStableEvent(deleteRecruitmentApplication);
-  const stableMarkNotificationAsRead = useStableEvent(markNotificationAsRead);
-  const stableMarkNotificationPopupShown = useStableEvent(markNotificationPopupShown);
   const stableRefreshSession = useStableEvent(refreshSession);
+  const stableLoadCompanyCatalog = useStableEvent(loadCompanyCatalog);
   const sessionReady =
     authInitialized &&
     (!firebaseSessionUid || Boolean(currentUser && membershipsLoaded));
@@ -4893,9 +4950,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       refreshSession: stableRefreshSession,
       activeRole,
       memberships,
-      companies: visibleCompanies,
-      companiesLoading,
-      allCompanies: companies,
       activeCompanyId,
       setActiveCompanyId,
       switchRole: stableSwitchRole,
@@ -4905,8 +4959,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       activeCompanyId,
       activeRole,
       authInitialized,
-      companies,
-      companiesLoading,
       currentUser,
       isSeniorAuthenticated,
       memberships,
@@ -4917,35 +4969,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       stableRefreshSession,
       stableLogOutApp,
       stableSwitchRole,
-      visibleCompanies,
     ],
   );
 
-  const notificationValue = useMemo<NotificationStoreType>(
-    () => ({
-      notifications,
-      notificationsHydrated,
-      markNotificationAsRead: stableMarkNotificationAsRead,
-      markNotificationPopupShown: stableMarkNotificationPopupShown,
-    }),
-    [
-      notifications,
-      notificationsHydrated,
-      stableMarkNotificationAsRead,
-      stableMarkNotificationPopupShown,
-    ],
-  );
 
   const activityValue = useMemo<ActivityStoreType>(
+    () => ({ jobDemands: scopedJobDemands }),
+    [scopedJobDemands],
+  );
+
+  // Dedicated company/recruitment slice. Its controllers own the company,
+  // member and recruitment reads; AppProvider only exposes the compatibility
+  // actions and session bridge, so no duplicate Firestore subscriptions exist.
+  const companyValue = useMemo<CompanyStoreType>(
     () => ({
-      jobDemands: scopedJobDemands,
-      driverRequests: scopedDriverRequests,
+      companies: visibleCompanies,
+      companiesLoading,
+      allCompanies: companies,
+      companyCatalogLoaded,
+      companyCatalogAttempted,
+      loadCompanyCatalog: stableLoadCompanyCatalog,
+      activeCompanyId,
+      setActiveCompanyId,
+      memberships,
+      allCompanyMembers,
       recruitmentApplications: scopedRecruitmentApplications,
+      driverRequests: scopedDriverRequests,
+      updateRecruitmentSettings: stableUpdateRecruitmentSettings,
+      submitRecruitmentApplication: stableSubmitRecruitmentApplication,
+      approveRecruitmentApplication: stableApproveRecruitmentApplication,
+      rejectRecruitmentApplication: stableRejectRecruitmentApplication,
+      deleteRecruitmentApplication: stableDeleteRecruitmentApplication,
+      createCompany: stableCreateCompany,
+      updateCompany: stableUpdateCompany,
+      deleteCompany: stableDeleteCompany,
+      requestJoinCompany: stableRequestJoinCompany,
+      cancelRequestJoinCompany: stableCancelRequestJoinCompany,
+      approveDriver: stableApproveDriver,
+      rejectDriver: stableRejectDriver,
+      promoteDriverToAdmin: stablePromoteDriverToAdmin,
+      demoteAdminToDriver: stableDemoteAdminToDriver,
+      removeDriverFromFleet: stableRemoveDriverFromFleet,
     }),
     [
+      activeCompanyId,
+      allCompanyMembers,
+      companies,
+      companyCatalogAttempted,
+      companyCatalogLoaded,
+      companiesLoading,
+      memberships,
       scopedDriverRequests,
-      scopedJobDemands,
       scopedRecruitmentApplications,
+      visibleCompanies,
     ],
   );
 
@@ -4961,10 +5037,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     [globalEndDateStr, globalPeriodPreset, globalStartDateStr],
   );
 
+  const operationalDataReady = Boolean(
+    activeCompanyId &&
+      operationalReadiness.jobs &&
+      operationalReadiness.contracts &&
+      operationalReadiness.vehicles &&
+      operationalReadiness.trailers &&
+      operationalReadiness.users
+  );
+  const operationalDataRefreshing = Boolean(
+    !operationalDataReady &&
+      (jobs.length > 0 ||
+        contracts.length > 0 ||
+        vehicles.length > 0 ||
+        trailers.length > 0 ||
+        users.length > 0),
+  );
+
   const operationalValue = useMemo<OperationalStoreType>(
     () => ({
       users: combinedUsers,
-      allCompanyMembers,
       vehicles,
       trailers,
       contracts,
@@ -4973,14 +5065,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       simulators,
       simulatorsLoading,
       simulatorsError,
-      updateRecruitmentSettings: stableUpdateRecruitmentSettings,
-      submitRecruitmentApplication: stableSubmitRecruitmentApplication,
-      approveRecruitmentApplication: stableApproveRecruitmentApplication,
-      rejectRecruitmentApplication: stableRejectRecruitmentApplication,
-      deleteRecruitmentApplication: stableDeleteRecruitmentApplication,
-      createCompany: stableCreateCompany,
-      updateCompany: stableUpdateCompany,
-      deleteCompany: stableDeleteCompany,
+      operationalDataReady,
+      operationalDataRefreshing,
+      jobsReady: operationalReadiness.jobs,
+      contractsReady: operationalReadiness.contracts,
+      usersReady: operationalReadiness.users,
       createContract: stableCreateContract,
       updateContract: stableUpdateContract,
       deleteContract: stableDeleteContract,
@@ -4995,13 +5084,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       requestNewJobDemand: stableRequestNewJobDemand,
       cancelJobDemand: stableCancelJobDemand,
       rejectJobDemand: stableRejectJobDemand,
-      requestJoinCompany: stableRequestJoinCompany,
-      cancelRequestJoinCompany: stableCancelRequestJoinCompany,
-      approveDriver: stableApproveDriver,
-      rejectDriver: stableRejectDriver,
-      promoteDriverToAdmin: stablePromoteDriverToAdmin,
-      demoteAdminToDriver: stableDemoteAdminToDriver,
-      removeDriverFromFleet: stableRemoveDriverFromFleet,
       updateUserOnlineStatus: stableUpdateUserOnlineStatus,
       createManualDriver: stableCreateManualDriver,
       registerUser: stableRegisterUser,
@@ -5014,7 +5096,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       deleteTrailer: stableDeleteTrailer,
     }),
     [
-      allCompanyMembers,
       combinedUsers,
       contracts,
       jobs,
@@ -5022,152 +5103,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       simulators,
       simulatorsError,
       simulatorsLoading,
+      operationalDataReady,
+      operationalDataRefreshing,
+      operationalReadiness,
       trailers,
       vehicles,
-    ],
-  );
-
-  const value = useMemo<AppContextType>(
-    () => ({
-      isSeniorAuthenticated,
-      setIsSeniorAuthenticated,
-      seniorCompanyId,
-      setSeniorCompanyId,
-      currentUser,
-      setCurrentUser,
-      authInitialized,
-      membershipsLoaded,
-      sessionReady,
-      sessionRecovering,
-      refreshSession: stableRefreshSession,
-      users: combinedUsers,
-      allCompanyMembers,
-      activeRole,
-      memberships,
-      vehicles,
-      trailers,
-      contracts,
-      sequences,
-      createSequence: stableCreateSequence,
-      updateSequence: stableUpdateSequence,
-      deleteSequence: stableDeleteSequence,
-      jobs,
-      jobDemands: scopedJobDemands,
-      companies: visibleCompanies,
-      companiesLoading,
-      simulators,
-      simulatorsLoading,
-      simulatorsError,
-      allCompanies: companies,
-      activeCompanyId,
-      setActiveCompanyId,
-      driverRequests: scopedDriverRequests,
-      notifications,
-      notificationsHydrated,
-      markNotificationAsRead: stableMarkNotificationAsRead,
-      markNotificationPopupShown: stableMarkNotificationPopupShown,
-      recruitmentApplications: scopedRecruitmentApplications,
-      createCompany: stableCreateCompany,
-      updateCompany: stableUpdateCompany,
-      deleteCompany: stableDeleteCompany,
-      createContract: stableCreateContract,
-      updateContract: stableUpdateContract,
-      deleteContract: stableDeleteContract,
-      assignJob: stableAssignJob,
-      startJob: stableStartJob,
-      finishJob: stableFinishJob,
-      cancelJob: stableCancelJob,
-      deleteJob: stableDeleteJob,
-      requestJoinCompany: stableRequestJoinCompany,
-      cancelRequestJoinCompany: stableCancelRequestJoinCompany,
-      approveDriver: stableApproveDriver,
-      rejectDriver: stableRejectDriver,
-      createManualDriver: stableCreateManualDriver,
-      registerUser: stableRegisterUser,
-      requestNewJobDemand: stableRequestNewJobDemand,
-      cancelJobDemand: stableCancelJobDemand,
-      rejectJobDemand: stableRejectJobDemand,
-      syncCompanyData: stableSyncCompanyData,
-      addVehicle: stableAddVehicle,
-      updateVehicle: stableUpdateVehicle,
-      deleteVehicle: stableDeleteVehicle,
-      addTrailer: stableAddTrailer,
-      updateTrailer: stableUpdateTrailer,
-      deleteTrailer: stableDeleteTrailer,
-      logOutApp: stableLogOutApp,
-      switchRole: stableSwitchRole,
-      promoteDriverToAdmin: stablePromoteDriverToAdmin,
-      demoteAdminToDriver: stableDemoteAdminToDriver,
-      removeDriverFromFleet: stableRemoveDriverFromFleet,
-      updateUserOnlineStatus: stableUpdateUserOnlineStatus,
-      updateRecruitmentSettings: stableUpdateRecruitmentSettings,
-      submitRecruitmentApplication: stableSubmitRecruitmentApplication,
-      approveRecruitmentApplication: stableApproveRecruitmentApplication,
-      rejectRecruitmentApplication: stableRejectRecruitmentApplication,
-      deleteRecruitmentApplication: stableDeleteRecruitmentApplication,
-      globalPeriodPreset,
-      setGlobalPeriodPreset,
-      globalStartDateStr,
-      setGlobalStartDateStr,
-      globalEndDateStr,
-      setGlobalEndDateStr,
-    }),
-    [
-      activeCompanyId,
-      activeRole,
-      allCompanyMembers,
-      authInitialized,
-      combinedUsers,
-      companies,
-      companiesLoading,
-      contracts,
-      currentUser,
-      globalEndDateStr,
-      globalPeriodPreset,
-      globalStartDateStr,
-      isSeniorAuthenticated,
-      jobs,
-      memberships,
-      membershipsLoaded,
-      sessionReady,
-      sessionRecovering,
-      stableRefreshSession,
-      notifications,
-      notificationsHydrated,
-      scopedDriverRequests,
-      scopedJobDemands,
-      scopedRecruitmentApplications,
-      seniorCompanyId,
-      sequences,
-      simulators,
-      simulatorsError,
-      simulatorsLoading,
-      trailers,
-      vehicles,
-      visibleCompanies,
     ],
   );
 
   return (
     <SessionContext.Provider value={sessionValue}>
-      <NotificationStoreContext.Provider value={notificationValue}>
-        <ActivityContext.Provider value={activityValue}>
-          <RankingFilterContext.Provider value={rankingFilterValue}>
-            <OperationalContext.Provider value={operationalValue}>
-              <AppContext.Provider value={value}>{children}</AppContext.Provider>
-            </OperationalContext.Provider>
-          </RankingFilterContext.Provider>
-        </ActivityContext.Provider>
-      </NotificationStoreContext.Provider>
+      <CompanyProvider value={companyValue}>
+        <NotificationsProvider
+          userId={currentUserId}
+          activeRole={activeRole}
+          activeCompanyId={targetCompanyId}
+          enabled={isActiveUser && Boolean(activeRole)}
+        >
+          <ActivityContext.Provider value={activityValue}>
+            <RankingFilterContext.Provider value={rankingFilterValue}>
+              <OperationalContext.Provider value={operationalValue}>
+                {children}
+              </OperationalContext.Provider>
+            </RankingFilterContext.Provider>
+          </ActivityContext.Provider>
+        </NotificationsProvider>
+      </CompanyProvider>
     </SessionContext.Provider>
   );
 };
 
-export const useAppStore = () => {
-  const context = useContext(AppContext);
-  if (!context) throw new Error("useAppStore must be used within AppProvider");
-  return context;
-};
 
 export const useSessionStore = () => {
   const context = useContext(SessionContext);
@@ -5175,11 +5140,6 @@ export const useSessionStore = () => {
   return context;
 };
 
-export const useNotificationStore = () => {
-  const context = useContext(NotificationStoreContext);
-  if (!context) throw new Error("useNotificationStore must be used within AppProvider");
-  return context;
-};
 
 export const useActivityStore = () => {
   const context = useContext(ActivityContext);

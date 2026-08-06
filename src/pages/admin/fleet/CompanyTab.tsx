@@ -2,6 +2,7 @@ import React, { useEffect, useState, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTripHistory } from "../../../hooks/useTripHistory";
 import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
+import { useCompanyStore } from "../../../context/CompanyContext";
 import { Button } from "../../../components/ui/Button";
 import { SafeSelect } from "../../../components/ui/SafeSelect";
 import {
@@ -27,6 +28,10 @@ import {
 } from "date-fns";
 import { convertFileToBase64, compressImage } from "../../../lib/utils";
 import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../../../lib/fileAccess";
+import {
   buildSimulatorSelectorOptions,
   findSimulatorOption,
   resolveCompanySimulatorFilterValue,
@@ -45,22 +50,21 @@ function CompanyTab({
   isViewingProp?: boolean;
   setIsViewingProp?: (val: boolean) => void;
 } = {}) {
+  const { currentUser } = useSessionStore();
   const {
     companies,
     allCompanies,
     companiesLoading,
-    currentUser,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
     activeCompanyId,
     memberships,
-  } = useSessionStore();
-  const {
     updateCompany,
     createCompany,
     deleteCompany,
-    jobs,
-    contracts,
-    simulators,
-  } = useOperationalStore();
+  } = useCompanyStore();
+  const { jobs, contracts, simulators } = useOperationalStore();
   const [performanceReady, setPerformanceReady] = useState(false);
   const activeCompany =
     companies.find((company) => company.id === activeCompanyId) ||
@@ -82,7 +86,10 @@ function CompanyTab({
     );
   }, [activeCompany]);
   const companyInfoEmail = companyDirectEmail || resolvedCompanyEmail || "-";
-  const { historicoTrips = [] } = useTripHistory(activeCompanyId, {
+  const {
+    historicoTrips = [],
+    loading: companyTripsLoading,
+  } = useTripHistory(activeCompanyId, {
     enabled: performanceReady,
   });
   const [internalIsEditing, setInternalIsEditing] = useState(false);
@@ -95,6 +102,38 @@ function CompanyTab({
     const frame = window.requestAnimationFrame(() => setPerformanceReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, [activeCompanyId]);
+
+  useEffect(() => {
+    if (!performanceReady || companyCatalogLoaded || companyCatalogAttempted) return;
+
+    // The full company catalog is useful for global position, but it must not
+    // compete with the identity and company-trip reads required for the first
+    // visible frame. Schedule it as background work.
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) void loadCompanyCatalog();
+    };
+    const requestIdle = (window as any).requestIdleCallback as
+      | ((callback: () => void, options?: { timeout: number }) => number)
+      | undefined;
+    const cancelIdle = (window as any).cancelIdleCallback as
+      | ((id: number) => void)
+      | undefined;
+
+    if (requestIdle) {
+      const idleId = requestIdle(run, { timeout: 1_200 });
+      return () => {
+        cancelled = true;
+        cancelIdle?.(idleId);
+      };
+    }
+
+    const timer = window.setTimeout(run, 450);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog, performanceReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -334,38 +373,52 @@ function CompanyTab({
   };
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
+    const input = e.currentTarget;
+    const selectedFile = input.files?.[0];
+    input.value = "";
+
+    if (selectedFile) {
+      if (selectedFile.size > 10 * 1024 * 1024) {
         const message = "A imagem é muito grande. Tamanho máximo: 10 MB.";
         setSaveError(message);
         toast.error(message);
-        e.target.value = "";
         return;
       }
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      const declaredType = String(selectedFile.type || "").toLowerCase();
+      if (
+        declaredType &&
+        !["image/jpeg", "image/png", "image/webp"].includes(declaredType)
+      ) {
         const message = "Formato inválido. Use uma imagem JPG, PNG ou WEBP.";
         setSaveError(message);
         toast.error(message);
-        e.target.value = "";
         return;
       }
 
       setIsProcessingLogo(true);
       setSaveError(null);
       try {
+        // Keep a browser-owned copy. The original picker File can lose its
+        // Android content-provider permission before the user presses Save.
+        const { file } = await snapshotSelectedFile(selectedFile, {
+          maxBytes: 10 * 1024 * 1024,
+          fallbackName: `logo-${Date.now()}.jpg`,
+        });
+        if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+          throw new Error("Formato inválido. Use uma imagem JPG, PNG ou WEBP.");
+        }
         const base64 = await convertFileToBase64(file);
         const compressed = await compressImage(base64, 400, 400, 0.8);
         setLogoPreviewUrl(compressed);
         setPendingLogoFile(file);
-      } catch (err) {
-        console.error("Erro ao processar logo:", err);
-        const message = "Não foi possível processar a imagem selecionada.";
+      } catch (error) {
+        const normalizedError = normalizeFileAccessError(error);
+        console.error("Erro ao processar logo:", normalizedError);
+        const message = normalizedError.message;
         setSaveError(message);
         toast.error(message);
       } finally {
         setIsProcessingLogo(false);
-        e.target.value = "";
       }
     }
   };
@@ -747,7 +800,8 @@ function CompanyTab({
           historicoTrips={historicoTrips}
           companyId={activeCompanyId!}
           allCompanies={allCompanies}
-          companiesLoading={companiesLoading}
+          companiesLoading={!companyCatalogLoaded || companiesLoading}
+          companyTripsLoading={companyTripsLoading}
           simulatorId={resolveCompanySimulatorFilterValue(
             activeCompany,
             simulators as Record<string, unknown>[],

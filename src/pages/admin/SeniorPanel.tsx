@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Card, CardContent } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import {
@@ -27,9 +29,11 @@ import {
   Filter,
   Search,
   ChevronDown,
+  X,
 } from "lucide-react";
 import { useTripsRealtime } from "../../hooks/useTripsRealtime";
-import { db, auth } from "../../lib/firebase";
+import { db, auth, functions } from "../../lib/firebase";
+import { httpsCallable } from "firebase/functions";
 import {
   collection,
   query,
@@ -45,11 +49,16 @@ import {
   serverTimestamp,
   deleteField,
   onSnapshot,
+  orderBy,
+  limit,
+  startAfter,
+  documentId,
+  getCountFromServer,
 } from "firebase/firestore";
 import { toast } from "sonner";
 import { syncSingleSimulatorMember, removeSimulatorMember } from "../../lib/syncSimulatorMembers";
 import { cn } from "../../lib/utils";
-import SimulatorManager from "../../components/admin/SimulatorManager";
+import { SimulatorManagerModal } from "../../components/admin/SimulatorManagerModal";
 import { CreateNewsModal } from "../../components/admin/CreateNewsModal";
 import {
   isCompanyRegistration,
@@ -74,6 +83,23 @@ type SeniorNavigation = {
 const LEGACY_SENIOR_PASSWORD = "9173";
 const SENIOR_PASSWORD_SESSION_KEY = "seniorPanelPasswordUnlocked";
 const SENIOR_PASSWORD_UID_KEY = "seniorPanelPasswordUid";
+const SENIOR_COMPANY_PAGE_SIZE = 20;
+const FIRESTORE_IN_QUERY_CHUNK = 10;
+
+const mergeRecordsById = (current: any[], incoming: any[]) => {
+  const records = new Map<string, any>();
+  current.forEach((record) => records.set(String(record.id), record));
+  incoming.forEach((record) => records.set(String(record.id), record));
+  return Array.from(records.values());
+};
+
+const splitIntoChunks = <T,>(items: T[], chunkSize: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+};
 
 const getSeniorNavigation = (state: unknown): SeniorNavigation => {
   const routeState =
@@ -102,13 +128,16 @@ export default function SeniorPanel() {
   const {
     currentUser,
     setIsSeniorAuthenticated,
-    setActiveCompanyId,
     switchRole,
     setSeniorCompanyId,
   } = useSessionStore();
-  const { simulators, removeDriverFromFleet } = useOperationalStore();
+  const { setActiveCompanyId, removeDriverFromFleet } = useCompanyStore();
+  const { simulators } = useOperationalStore();
   const [loadingAction, setLoadingAction] = useState(false);
   const [isCreateNewsModalOpen, setIsCreateNewsModalOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSimulatorManagerOpen, setIsSimulatorManagerOpen] = useState(false);
+
   const [password, setPassword] = useState("");
   const hasSeniorRole = Boolean(
     (currentUser as any)?.role === "senior" ||
@@ -147,6 +176,13 @@ export default function SeniorPanel() {
   const [allTrailers, setAllTrailers] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [systemSettings, setSystemSettings] = useState<any>({});
+  const [companiesCursor, setCompaniesCursor] = useState<any>(null);
+  const [hasMoreCompanies, setHasMoreCompanies] = useState(true);
+  const [loadingCompanies, setLoadingCompanies] = useState(false);
+  const [companiesTotalCount, setCompaniesTotalCount] = useState<number | null>(null);
+  const [companyCatalogError, setCompanyCatalogError] = useState("");
+  const companyPageRequestRef = useRef(false);
+  const companyCatalogVersionRef = useRef(0);
 
   // UI States
   const [activeTab, setActiveTab] = useState<SeniorTab>(() =>
@@ -167,6 +203,121 @@ export default function SeniorPanel() {
   const [companySearch, setCompanySearch] = useState("");
   const [selectedSimulator, setSelectedSimulator] = useState("all");
   const [simulatorMenuOpen, setSimulatorMenuOpen] = useState(false);
+
+  const hydrateCompanyRelations = useCallback(async (companies: any[]) => {
+    const companyIds = Array.from(
+      new Set(
+        companies
+          .map((company) => String(company?.id || "").trim())
+          .filter(Boolean),
+      ),
+    );
+    if (companyIds.length === 0) return;
+
+    const memberSnapshots = await Promise.all(
+      splitIntoChunks(companyIds, FIRESTORE_IN_QUERY_CHUNK).map((ids) =>
+        getDocs(
+          query(
+            collection(db, "companyMembers"),
+            where("companyId", "in", ids),
+          ),
+        ),
+      ),
+    );
+    const members = memberSnapshots.flatMap((snapshot) =>
+      snapshot.docs.map((memberDocument) => ({
+        id: memberDocument.id,
+        ...memberDocument.data(),
+      })),
+    );
+
+    const userIds = Array.from(
+      new Set(
+        [
+          ...companies.map((company: any) => company?.ownerId || company?.userId),
+          ...members.map((member: any) => member?.userId),
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    );
+    const userSnapshots = await Promise.all(
+      splitIntoChunks(userIds, FIRESTORE_IN_QUERY_CHUNK).map((ids) =>
+        getDocs(
+          query(collection(db, "users"), where(documentId(), "in", ids)),
+        ),
+      ),
+    );
+    const users = userSnapshots.flatMap((snapshot) =>
+      snapshot.docs.map((userDocument) => ({
+        id: userDocument.id,
+        ...userDocument.data(),
+      })),
+    );
+
+    setAllMembers((current) => mergeRecordsById(current, members));
+    setAllUsers((current) => mergeRecordsById(current, users));
+  }, []);
+
+  const loadCompanyPage = useCallback(
+    async (cursor: any = null, replace = false) => {
+      if (companyPageRequestRef.current) return;
+      companyPageRequestRef.current = true;
+      setLoadingCompanies(true);
+      setCompanyCatalogError("");
+      const requestVersion = companyCatalogVersionRef.current;
+
+      try {
+        const pageQuery = cursor
+          ? query(
+              collection(db, "frotas"),
+              orderBy(documentId()),
+              startAfter(cursor),
+              limit(SENIOR_COMPANY_PAGE_SIZE),
+            )
+          : query(
+              collection(db, "frotas"),
+              orderBy(documentId()),
+              limit(SENIOR_COMPANY_PAGE_SIZE),
+            );
+        const snapshot = await getDocs(pageQuery);
+        if (
+          requestVersion !== companyCatalogVersionRef.current ||
+          isAuthTeardownActive()
+        ) {
+          return;
+        }
+
+        const companies = snapshot.docs.map((companyDocument) => ({
+          id: companyDocument.id,
+          ...companyDocument.data(),
+        }));
+        setAllCompanies((current) =>
+          replace ? companies : mergeRecordsById(current, companies),
+        );
+        setCompaniesCursor(snapshot.docs.at(-1) || null);
+        setHasMoreCompanies(snapshot.docs.length === SENIOR_COMPANY_PAGE_SIZE);
+
+        await hydrateCompanyRelations(companies);
+      } catch (error) {
+        if (
+          requestVersion === companyCatalogVersionRef.current &&
+          !isAuthTeardownActive()
+        ) {
+          console.warn("[NVU Senior] Falha ao carregar empresas:", error);
+          setCompanyCatalogError(
+            "Não foi possível carregar a lista de empresas. Tente novamente.",
+          );
+        }
+      } finally {
+        if (requestVersion === companyCatalogVersionRef.current) {
+          companyPageRequestRef.current = false;
+          setLoadingCompanies(false);
+        }
+      }
+    },
+    [hydrateCompanyRelations],
+  );
 
   // The senior panel contains multiple views inside one route. Mirror the
   // selected view into React Router so browser/WebView Back can restore the
@@ -199,46 +350,81 @@ export default function SeniorPanel() {
   };
 
   useEffect(() => {
-    if (unlocked) {
-      const unsubs: any[] = [];
-      let stopped = false;
-      let registrationHydrationVersion = 0;
-      const stop = () => {
-        if (stopped) return;
-        stopped = true;
-        unsubs.splice(0).forEach((unsubscribe) => {
-          try {
-            unsubscribe();
-          } catch {
-            // Listener cleanup is best-effort during logout.
-          }
-        });
-      };
-      const removeTeardownListener = onAuthTeardown(stop);
-      const snapshotError = (label: string) => (error: unknown) => {
-        if (!stopped && !isAuthTeardownActive()) {
-          console.warn(`[NVU Senior] ${label}:`, error);
-        }
-      };
+    if (!unlocked) return;
 
-      // Do not rely only on the current `type` field: older submissions can
-      // lack it while still carrying the company identity and legacy logo.
-      const qRegs = query(collection(db, "recruitment_applications"));
-      unsubs.push(
-        onSnapshot(
-          qRegs,
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            const version = ++registrationHydrationVersion;
-            const normalized = snap.docs
-              .map((d) => normalizeRegistrationImages({ id: d.id, ...d.data() }))
-              .filter((registration) => isCompanyRegistration(registration));
-            setRegistrations(normalized);
-            void Promise.all(
-              normalized.map((registration) =>
-                hydrateRegistrationImages(registration),
-              ),
-            ).then((hydrated) => {
+    companyCatalogVersionRef.current += 1;
+    companyPageRequestRef.current = false;
+    setAllCompanies([]);
+    setAllMembers([]);
+    setAllUsers([]);
+    setCompaniesCursor(null);
+    setHasMoreCompanies(true);
+    setCompaniesTotalCount(null);
+    setCompanyCatalogError("");
+
+    const unsubs: Array<() => void> = [];
+    let stopped = false;
+    let registrationHydrationVersion = 0;
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      unsubs.splice(0).forEach((unsubscribe) => {
+        try {
+          unsubscribe();
+        } catch {
+          // Listener cleanup is best-effort during logout.
+        }
+      });
+    };
+    const removeTeardownListener = onAuthTeardown(stop);
+    const snapshotError = (label: string) => (error: unknown) => {
+      if (!stopped && !isAuthTeardownActive()) {
+        console.warn(`[NVU Senior] ${label}:`, error);
+      }
+    };
+
+    // Load only the first page of companies and hydrate relations belonging
+    // to those companies. Additional pages are fetched explicitly by the
+    // administrator, avoiding full reads of frotas/companyMembers/users.
+    void loadCompanyPage(null, true);
+    void getCountFromServer(collection(db, "frotas"))
+      .then((aggregate) => {
+        if (!stopped && !isAuthTeardownActive()) {
+          setCompaniesTotalCount(aggregate.data().count);
+        }
+      })
+      .catch(snapshotError("Falha ao contar empresas"));
+
+    // New company requests remain realtime because this is a small,
+    // operational queue that administrators need to see while the panel is
+    // open. Other large collections are no longer subscribed globally.
+    const registrationsQuery = query(
+      collection(db, "recruitment_applications"),
+      where("status", "in", ["pending", "rejected"]),
+      limit(100),
+    );
+    unsubs.push(
+      onSnapshot(
+        registrationsQuery,
+        (snapshot) => {
+          if (stopped || isAuthTeardownActive()) return;
+          const version = ++registrationHydrationVersion;
+          const normalized = snapshot.docs
+            .map((document) =>
+              normalizeRegistrationImages({
+                id: document.id,
+                ...document.data(),
+              }),
+            )
+            .filter((registration) => isCompanyRegistration(registration));
+          setRegistrations(normalized);
+          void Promise.all(
+            normalized.map((registration) =>
+              hydrateRegistrationImages(registration),
+            ),
+          )
+            .then((hydrated) => {
               if (
                 !stopped &&
                 !isAuthTeardownActive() &&
@@ -246,103 +432,148 @@ export default function SeniorPanel() {
               ) {
                 setRegistrations(hydrated);
               }
-            }).catch((error) => {
+            })
+            .catch((error) => {
               if (!stopped && !isAuthTeardownActive()) {
-                console.warn("[NVU Senior] Falha ao resolver imagem legada:", error);
+                console.warn(
+                  "[NVU Senior] Falha ao resolver imagem legada:",
+                  error,
+                );
               }
             });
-          },
-          snapshotError("Falha ao ler inscrições"),
-        ),
-      );
+        },
+        snapshotError("Falha ao ler inscrições"),
+      ),
+    );
 
-      unsubs.push(
-        onSnapshot(
-          collection(db, "frotas"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllCompanies(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler empresas"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "companyMembers"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllMembers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler membros"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "contratos"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllContracts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler contratos"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "trabalhos"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllJobs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler trabalhos"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "veiculos"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllVehicles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler veículos"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "reboques"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllTrailers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler reboques"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, "users"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            setAllUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          },
-          snapshotError("Falha ao ler usuários"),
-        ),
-      );
-      unsubs.push(
-        onSnapshot(
-          doc(db, "settings", "system"),
-          (snap) => {
-            if (stopped || isAuthTeardownActive()) return;
-            if (snap.exists()) setSystemSettings(snap.data());
-          },
-          snapshotError("Falha ao ler configurações"),
-        ),
-      );
+    unsubs.push(
+      onSnapshot(
+        doc(db, "settings", "system"),
+        (snapshot) => {
+          if (stopped || isAuthTeardownActive()) return;
+          if (snapshot.exists()) setSystemSettings(snapshot.data());
+        },
+        snapshotError("Falha ao ler configurações"),
+      ),
+    );
 
-      return () => {
-        removeTeardownListener();
-        stop();
-      };
+    return () => {
+      companyCatalogVersionRef.current += 1;
+      companyPageRequestRef.current = false;
+      removeTeardownListener();
+      stop();
+    };
+  }, [loadCompanyPage, unlocked]);
+
+  // A profile can be opened from router state even when its company is not in
+  // the currently loaded page. Resolve only that company and its relations.
+  useEffect(() => {
+    if (!unlocked || activeTab !== "profile" || !selectedCompanyId) return;
+
+    let cancelled = false;
+    void getDoc(doc(db, "frotas", selectedCompanyId))
+      .then(async (companySnapshot) => {
+        if (
+          cancelled ||
+          isAuthTeardownActive() ||
+          !companySnapshot.exists()
+        ) {
+          return;
+        }
+        const company = {
+          id: companySnapshot.id,
+          ...companySnapshot.data(),
+        };
+        setAllCompanies((current) => mergeRecordsById(current, [company]));
+        await hydrateCompanyRelations([company]);
+      })
+      .catch((error) => {
+        if (!cancelled && !isAuthTeardownActive()) {
+          console.warn(
+            "[NVU Senior] Falha ao carregar empresa selecionada:",
+            error,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, hydrateCompanyRelations, selectedCompanyId, unlocked]);
+
+  // Heavy operational collections are loaded only for the company profile
+  // currently being inspected. This avoids downloading every contract, job,
+  // vehicle and trailer merely by opening the senior dashboard.
+  useEffect(() => {
+    if (!unlocked || activeTab !== "profile" || !selectedCompanyId) {
+      setAllContracts([]);
+      setAllJobs([]);
+      setAllVehicles([]);
+      setAllTrailers([]);
+      return;
     }
-  }, [unlocked]);
+
+    let cancelled = false;
+    const companyId = selectedCompanyId;
+    const scopedQuery = (collectionName: string) =>
+      query(
+        collection(db, collectionName),
+        where("companyId", "==", companyId),
+      );
+
+    void Promise.all([
+      getDocs(scopedQuery("contratos")),
+      getDocs(scopedQuery("trabalhos")),
+      getDocs(scopedQuery("veiculos")),
+      getDocs(scopedQuery("reboques")),
+    ])
+      .then(
+        ([
+          contractsSnapshot,
+          jobsSnapshot,
+          vehiclesSnapshot,
+          trailersSnapshot,
+        ]) => {
+          if (cancelled || isAuthTeardownActive()) return;
+          setAllContracts(
+            contractsSnapshot.docs.map((document) => ({
+              id: document.id,
+              ...document.data(),
+            })),
+          );
+          setAllJobs(
+            jobsSnapshot.docs.map((document) => ({
+              id: document.id,
+              ...document.data(),
+            })),
+          );
+          setAllVehicles(
+            vehiclesSnapshot.docs.map((document) => ({
+              id: document.id,
+              ...document.data(),
+            })),
+          );
+          setAllTrailers(
+            trailersSnapshot.docs.map((document) => ({
+              id: document.id,
+              ...document.data(),
+            })),
+          );
+        },
+      )
+      .catch((error) => {
+        if (!cancelled && !isAuthTeardownActive()) {
+          console.warn(
+            "[NVU Senior] Falha ao carregar dados da empresa selecionada:",
+            error,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, selectedCompanyId, unlocked]);
 
   const toDate = (value: any): Date | null => {
     if (!value) return null;
@@ -357,7 +588,7 @@ export default function SeniorPanel() {
   const { trips: currentMonthTrips } = useTripsRealtime({
     startDate: monthlyRange.start,
     endDate: monthlyRange.end,
-    enabled: unlocked
+    enabled: unlocked && (activeTab === "approved" || activeTab === "profile"),
   });
 
   const companyStats = useMemo(() => {
@@ -513,6 +744,7 @@ export default function SeniorPanel() {
         ownerPhotoUrl: approvedOwnerPhoto || "",
         status: "active",
         sourceRegistrationId: reg.id,
+        approvedAt: companyCreatedAt,
         createdAt: companyCreatedAt,
       };
 
@@ -690,6 +922,88 @@ export default function SeniorPanel() {
       await batch.commit();
       batchCommitted = true;
 
+      // Confirma a publicação imediatamente. Os gatilhos de Firestore usam o
+      // mesmo ID determinístico, então esta chamada é idempotente e também
+      // funciona como recuperação caso um gatilho tenha sofrido atraso.
+      try {
+        const syncApprovalNews = httpsCallable<
+          { registrationId: string; companyId: string },
+          { success: boolean; created: number; updated: number; ignored: number }
+        >(functions, "syncCompanyApprovalNews");
+        await syncApprovalNews({
+          registrationId: reg.id,
+          companyId: newCompanyRef.id,
+        });
+      } catch (newsSyncError) {
+        // A empresa já está aprovada. A reconciliação automática ao abrir a
+        // NVU News tentará novamente sem desfazer o fluxo administrativo.
+        console.warn(
+          "[SeniorPanel] Empresa aprovada; o post da NVU News será reconciliado em seguida:",
+          newsSyncError,
+        );
+      }
+
+      // The large administrative collections are no longer watched globally.
+      // Reconcile the successful approval locally and hydrate only the new
+      // owner/member records instead of reloading the entire catalog.
+      setAllCompanies((current) => [
+        ...current.filter((company) => company.id !== newCompanyRef.id),
+        { id: newCompanyRef.id, ...finalCompanyPayload },
+      ]);
+      setCompaniesTotalCount((current) =>
+        typeof current === "number" ? current + 1 : current,
+      );
+      setRegistrations((current) =>
+        current.map((registration) =>
+          registration.id === reg.id
+            ? {
+                ...registration,
+                status: "approved",
+                approvedCompanyId: newCompanyRef.id,
+                approvedUserId: finalUserId,
+              }
+            : registration,
+        ),
+      );
+
+      try {
+        const [approvedUserSnapshot, approvedMembersSnapshot] =
+          await Promise.all([
+            getDoc(doc(db, "users", finalUserId)),
+            getDocs(
+              query(
+                collection(db, "companyMembers"),
+                where("companyId", "==", newCompanyRef.id),
+              ),
+            ),
+          ]);
+
+        if (approvedUserSnapshot.exists()) {
+          setAllUsers((current) => [
+            ...current.filter((user) => user.id !== approvedUserSnapshot.id),
+            { id: approvedUserSnapshot.id, ...approvedUserSnapshot.data() },
+          ]);
+        }
+
+        const approvedMembers = approvedMembersSnapshot.docs.map(
+          (memberDocument) => ({
+            id: memberDocument.id,
+            ...memberDocument.data(),
+          }),
+        );
+        setAllMembers((current) => [
+          ...current.filter(
+            (member) => member.companyId !== newCompanyRef.id,
+          ),
+          ...approvedMembers,
+        ]);
+      } catch (catalogRefreshError) {
+        console.warn(
+          "[SeniorPanel] Aprovação concluída; falha apenas ao atualizar o catálogo local:",
+          catalogRefreshError,
+        );
+      }
+
       if (finalUserId) {
         try {
           await createNotification({
@@ -754,6 +1068,13 @@ export default function SeniorPanel() {
       const reg = registrations.find((registration) => registration.id === id);
 
       await batch.commit();
+      setRegistrations((current) =>
+        current.map((registration) =>
+          registration.id === id
+            ? { ...registration, status: "rejected", rejectionReason }
+            : registration,
+        ),
+      );
 
       if (reg?.userId) {
         try {
@@ -789,19 +1110,39 @@ export default function SeniorPanel() {
     try {
       setLoadingAction(true);
 
+      // Resolve the affected records directly. The Senior catalog is paginated
+      // now, so deletion must not depend on records that happen to be loaded.
+      const [membersSnapshot, usersSnapshot] = await Promise.all([
+        getDocs(
+          query(
+            collection(db, "companyMembers"),
+            where("companyId", "==", id),
+          ),
+        ),
+        getDocs(
+          query(collection(db, "users"), where("companyId", "==", id)),
+        ),
+      ]);
+      const membersToUpdate = membersSnapshot.docs.map((memberDocument) => ({
+        id: memberDocument.id,
+        ...memberDocument.data(),
+      })) as any[];
+      const usersToUpdate = usersSnapshot.docs.map((userDocument) => ({
+        id: userDocument.id,
+        ...userDocument.data(),
+      })) as any[];
+
       const batch = writeBatch(db);
 
       // Delete the company document
       batch.delete(doc(db, "frotas", id));
 
       // Remove roles and companyId from users that are associated
-      const membersToUpdate = allMembers.filter((m) => m.companyId === id);
       membersToUpdate.forEach((m) => {
         batch.delete(doc(db, "companyMembers", m.id));
         removeSimulatorMember(m.userId, id);
       });
 
-      const usersToUpdate = allUsers.filter((u) => u.companyId === id);
       usersToUpdate.forEach((u) => {
         batch.update(doc(db, "users", u.id), {
           companyId: null,
@@ -811,6 +1152,35 @@ export default function SeniorPanel() {
       });
 
       await batch.commit();
+
+      setAllCompanies((current) =>
+        current.filter((company) => company.id !== id),
+      );
+      setCompaniesTotalCount((current) =>
+        typeof current === "number" ? Math.max(0, current - 1) : current,
+      );
+      setAllMembers((current) =>
+        current.filter((member) => member.companyId !== id),
+      );
+      setAllUsers((current) =>
+        current.map((user) =>
+          user.companyId === id
+            ? { ...user, companyId: null, role: null, roles: [] }
+            : user,
+        ),
+      );
+      setAllContracts((current) =>
+        current.filter((contract) => contract.companyId !== id),
+      );
+      setAllJobs((current) =>
+        current.filter((job) => job.companyId !== id),
+      );
+      setAllVehicles((current) =>
+        current.filter((vehicle) => vehicle.companyId !== id),
+      );
+      setAllTrailers((current) =>
+        current.filter((trailer) => trailer.companyId !== id),
+      );
 
       toast.success("Empresa removida com sucesso do sistema.");
       if (selectedCompanyId === id) {
@@ -828,6 +1198,9 @@ export default function SeniorPanel() {
     try {
       setLoadingAction(true);
       await deleteDoc(doc(db, "recruitment_applications", id));
+      setRegistrations((current) =>
+        current.filter((registration) => registration.id !== id),
+      );
       toast.success("Solicitação removida com sucesso.");
       setConfirmDeleteRegId(null);
       if (selectedRegistrationId === id) {
@@ -893,14 +1266,27 @@ export default function SeniorPanel() {
   const pendingRequests = registrations.filter((r) => r.status === "pending");
   const rejectedRequests = registrations.filter((r) => r.status === "rejected");
   const activeCompanies = companyStats.filter((company) => {
-    const status = String(company.status || "active").toLowerCase();
-    return status === "active" || status === "approved";
+    const status = String(company.status || company.situacao || company.state || "active").trim().toLowerCase();
+    const isDeleted = 
+      company.deleted === true || 
+      company.softDeleted === true || 
+      company.excluida === true || 
+      company.excluido === true ||
+      ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
+    
+    return (status === "active" || status === "approved" || status === "ativo") && !isDeleted;
   });
-  const activeCompaniesCount = activeCompanies.length;
+  const activeCompaniesCount = companiesTotalCount ?? activeCompanies.length;
 
   const activeSimulatorOptions: Array<{ id: string; name: string }> = Array.from(
-    new Map<string, { id: string; name: string }>(
-      activeCompanies.map((company) => {
+    new Map<string, { id: string; name: string }>([
+      // First, add all simulators from the catalog
+      ...(Array.isArray(simulators) ? simulators : []).map((s: any) => [
+        String(s.id).trim(),
+        { id: String(s.id).trim(), name: String(s.name).trim() },
+      ] as const),
+      // Then, add legacy simulators from active companies
+      ...activeCompanies.map((company) => {
         const id = String(company.simulatorId || company.simulatorName || "").trim();
         const catalogEntry = (Array.isArray(simulators) ? simulators : []).find(
           (simulator: any) =>
@@ -911,9 +1297,9 @@ export default function SeniorPanel() {
         const name = String(
           catalogEntry?.name || company.simulatorName || company.simulatorId || "Não informado",
         );
-        return [id || name, { id: id || name, name }];
+        return [id || name, { id: id || name, name }] as const;
       }),
-    ).values(),
+    ]).values(),
   ).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 
   const selectedSimulatorLabel =
@@ -950,34 +1336,33 @@ export default function SeniorPanel() {
       <div className="relative overflow-hidden bg-white/70 dark:bg-[#121213]/70 backdrop-blur-xl border border-slate-200/60 dark:border-slate-800/60 rounded-[18px] sm:rounded-[22px] px-5 sm:px-8 py-5 sm:py-6 shadow-[0_4px_24px_-12px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_24px_-12px_rgba(0,0,0,0.5)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="absolute inset-0 bg-gradient-to-br from-slate-50/50 to-slate-100/30 dark:from-white/[0.02] dark:to-transparent pointer-events-none" />
         
-        <div className="relative z-10 flex-1 min-w-0">
+        <div className="absolute top-4 right-4 sm:top-5 sm:right-5 z-20">
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="p-2 sm:p-2.5 rounded-full bg-white/80 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm"
+            aria-label="Configurações"
+          >
+            <Settings size={18} />
+          </button>
+        </div>
+        
+        <div className="relative z-10 flex-1 min-w-0 pr-12">
           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100/80 dark:bg-slate-800/80 backdrop-blur-md border border-slate-200/80 dark:border-slate-700/80 rounded-md mb-2.5 shadow-sm">
             <ShieldCheck size={12} className="text-slate-600 dark:text-slate-300" />
             <span className="text-[9px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-widest">ADMINISTRAÇÃO</span>
-    </div>
+          </div>
           <h1 className="text-[20px] sm:text-[24px] font-semibold text-slate-900 dark:text-white leading-tight tracking-tight mb-0.5">
             Painel Sênior NVU
           </h1>
           <p className="text-[13px] text-slate-500 dark:text-slate-400 font-medium truncate">
             Gestão suprema de empresas parceiras
           </p>
-    </div>
-        
-        <div className="relative z-10 flex items-center shrink-0">
-          <Button 
-            onClick={() => setIsCreateNewsModalOpen(true)}
-            variant="outline"
-            className="h-9 px-4 text-[13px] font-semibold flex items-center gap-2 bg-white/80 dark:bg-slate-800/80"
-          >
-            <Megaphone size={16} />
-            Gerenciar comunicados
-          </Button>
-    </div>
+        </div>
 
         <div className="absolute right-0 top-0 bottom-0 w-1/2 sm:w-1/3 opacity-[0.03] dark:opacity-[0.07] pointer-events-none flex items-center justify-end pr-4 sm:pr-8">
           <ShieldCheck size={120} className="text-slate-900 dark:text-white translate-x-1/4 sm:translate-x-0" strokeWidth={1} />
-    </div>
-    </div>
+        </div>
+      </div>
 
       {/* Resumo real da plataforma */}
       <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
@@ -1072,7 +1457,6 @@ export default function SeniorPanel() {
           <Card className="rounded-[24px] overflow-hidden border border-gray-100 dark:border-[#2A2F3A] bg-white dark:bg-[#1A1F26] shadow-sm dark:shadow-none">
             <CardContent className="p-8 space-y-6">
               <div>
-                <SimulatorManager />
               <h2 className="text-xl font-bold text-gray-900 dark:text-[#fafafa] flex items-center gap-2 mb-2">
                   Integrações de Sistema
                 </h2>
@@ -1394,7 +1778,12 @@ export default function SeniorPanel() {
 
       {activeTab === "approved" && (
         <div className="space-y-3 animate-in fade-in duration-300">
-          {filteredCompanies.length === 0 ? (
+          {loadingCompanies && allCompanies.length === 0 ? (
+            <div className="bg-white dark:bg-[#1A1F26] border border-slate-100 dark:border-[#2A2F3A] rounded-[24px] p-10 text-center shadow-sm">
+              <Building2 size={44} className="mx-auto text-slate-300 dark:text-slate-700 mb-3 animate-pulse" />
+              <p className="text-slate-500 font-medium">Carregando empresas...</p>
+            </div>
+          ) : filteredCompanies.length === 0 ? (
             <div className="bg-white dark:bg-[#1A1F26] border border-slate-100 dark:border-[#2A2F3A] rounded-[24px] p-10 text-center shadow-sm">
               <Building2 size={44} className="mx-auto text-slate-300 dark:text-slate-700 mb-3" />
               <p className="text-slate-500 font-medium">Nenhuma empresa encontrada para este filtro.</p>
@@ -1459,6 +1848,38 @@ export default function SeniorPanel() {
     </div>
               </article>
             ))
+          )}
+
+          {companyCatalogError && (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300">
+              <p>{companyCatalogError}</p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-3 h-9 rounded-xl"
+                onClick={() => loadCompanyPage(companiesCursor, allCompanies.length === 0)}
+                disabled={loadingCompanies}
+              >
+                Tentar novamente
+              </Button>
+            </div>
+          )}
+
+          {hasMoreCompanies && !companyCatalogError && (
+            <div className="flex flex-col items-center gap-1.5 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl px-5 bg-white dark:bg-[#1A1F26]"
+                onClick={() => loadCompanyPage(companiesCursor, false)}
+                disabled={loadingCompanies || !companiesCursor}
+              >
+                {loadingCompanies ? "Carregando..." : "Carregar mais empresas"}
+              </Button>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                {activeCompanies.length} empresas carregadas
+              </p>
+            </div>
           )}
     </div>
       )}
@@ -1843,6 +2264,53 @@ export default function SeniorPanel() {
         isOpen={isCreateNewsModalOpen}
         onClose={() => setIsCreateNewsModalOpen(false)}
       />
+      <SimulatorManagerModal
+        isOpen={isSimulatorManagerOpen}
+        onClose={() => setIsSimulatorManagerOpen(false)}
+      />
+
+      {isSettingsOpen && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-[#121213] border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-4 border-b border-slate-100 dark:border-slate-800/60 bg-slate-50/50 dark:bg-[#18181b]/50">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Opções</h2>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="p-2 -mr-2 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-full transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex flex-col p-2">
+              <button
+                onClick={() => {
+                  setIsSettingsOpen(false);
+                  setIsCreateNewsModalOpen(true);
+                }}
+                className="flex items-center gap-3 p-3 text-[14px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#18181b] rounded-xl transition-colors"
+              >
+                <div className="w-10 h-10 rounded-full bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center shrink-0">
+                  <Megaphone size={18} className="text-blue-600 dark:text-blue-400" />
+                </div>
+                Gerenciar comunicados
+              </button>
+              <button
+                onClick={() => {
+                  setIsSettingsOpen(false);
+                  setIsSimulatorManagerOpen(true);
+                }}
+                className="flex items-center gap-3 p-3 text-[14px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-[#18181b] rounded-xl transition-colors"
+              >
+                <div className="w-10 h-10 rounded-full bg-purple-50 dark:bg-purple-500/10 flex items-center justify-center shrink-0">
+                  <Gamepad2 size={18} className="text-purple-600 dark:text-purple-400" />
+                </div>
+                Gerenciar simuladores
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

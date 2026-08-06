@@ -9,6 +9,7 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import { legacyNotificationCompatibility } from "../config/legacyNotifications";
 import { auth, db } from "../lib/firebase";
 import type { NotificationTargetProfile } from "../lib/notificationScope";
 
@@ -87,6 +88,7 @@ export function shouldFallbackToLegacyNotification(error: unknown) {
 export async function persistNotificationWithFallback<T>(params: {
   writeModern: () => Promise<T>;
   writeLegacy: () => Promise<T>;
+  legacyFallbackEnabled?: boolean;
   onModernError?: (error: unknown) => void;
 }) {
   try {
@@ -96,7 +98,12 @@ export async function persistNotificationWithFallback<T>(params: {
     // confirmou a escrita no servidor. Gravar também no legado nesse cenário
     // criaria dois documentos e dois gatilhos para o mesmo evento. O fallback
     // só é seguro quando a coleção moderna foi explicitamente bloqueada.
-    if (!shouldFallbackToLegacyNotification(error)) throw error;
+    if (
+      !shouldFallbackToLegacyNotification(error) ||
+      params.legacyFallbackEnabled === false
+    ) {
+      throw error;
+    }
     params.onModernError?.(error);
     return params.writeLegacy();
   }
@@ -113,6 +120,7 @@ export async function createNotification(notification: AppNotification) {
 
   const legacyRef = doc(db, "notificacoes", notificationId);
   return persistNotificationWithFallback({
+    legacyFallbackEnabled: legacyNotificationCompatibility.writeFallback,
     writeModern: async () => {
       await setDoc(modernRef, payload, { merge: true });
       return modernRef;
@@ -198,7 +206,9 @@ export async function resolveNotifications(params: {
   type: NotificationType;
   metadata?: Record<string, unknown>;
 }) {
-  const collections = ["notifications", "notificacoes"] as const;
+  const collections = legacyNotificationCompatibility.resolveLegacy
+    ? (["notifications", "notificacoes"] as const)
+    : (["notifications"] as const);
   const resolvedAtIso = new Date().toISOString();
 
   await Promise.all(

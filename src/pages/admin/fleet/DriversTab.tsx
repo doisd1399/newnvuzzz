@@ -1,7 +1,8 @@
 import { resolveDriverPhoto } from '../../../lib/resolveDriverPhoto';
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useActivityStore, useOperationalStore, useSessionStore } from "../../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../../context/AppContext";
+import { useCompanyStore } from "../../../context/CompanyContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
 import {
@@ -27,20 +28,18 @@ import { useTripHistory } from "../../../hooks/useTripHistory";
 
 function DriversTab() {
   const navigate = useNavigate();
-  const { activeCompanyId, currentUser, isSeniorAuthenticated } = useSessionStore();
+  const { currentUser, isSeniorAuthenticated } = useSessionStore();
   const {
-    users,
-    jobs,
-    contracts,
+    activeCompanyId,
     approveDriver,
     rejectDriver,
     promoteDriverToAdmin,
     demoteAdminToDriver,
     removeDriverFromFleet,
-    createManualDriver,
     allCompanyMembers,
-  } = useOperationalStore();
-  const { driverRequests } = useActivityStore();
+    driverRequests,
+  } = useCompanyStore();
+  const { users, jobs, contracts, createManualDriver } = useOperationalStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const hasSeniorRole = Boolean((currentUser as any)?.role === "senior" || (Array.isArray((currentUser as any)?.roles) && (currentUser as any).roles.includes("senior"))) || isSeniorAuthenticated;
   const [driverToRemove, setDriverToRemove] = useState<string | null>(null);

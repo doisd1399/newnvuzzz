@@ -4,6 +4,10 @@ import { useOperationalStore } from "../../context/AppContext";
 import { Button } from "../../components/ui/Button";
 import { X, CheckCircle, Image as ImageIcon } from "lucide-react";
 import { convertFileToBase64, compressImage } from "../../lib/utils";
+import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../../lib/fileAccess";
 
 export default function AddDriver() {
   const navigate = useNavigate();
@@ -50,19 +54,28 @@ export default function AddDriver() {
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) {
+    const input = e.currentTarget;
+    const selectedFile = input.files?.[0];
+    input.value = "";
+
+    if (selectedFile) {
+      if (selectedFile.size > 2 * 1024 * 1024) {
         setAddDriverError("A imagem deve ser menor que 2MB");
         return;
       }
       try {
+        const { file } = await snapshotSelectedFile(selectedFile, {
+          maxBytes: 2 * 1024 * 1024,
+          fallbackName: `motorista-${Date.now()}.jpg`,
+        });
         const base64 = await convertFileToBase64(file);
         const compressed = await compressImage(base64, 200, 200, 0.8);
         setNewDriverPhoto(compressed);
         setAddDriverError("");
-      } catch (err) {
-        setAddDriverError("Erro ao processar imagem");
+      } catch (error) {
+        const normalizedError = normalizeFileAccessError(error);
+        console.error("Erro ao processar imagem do motorista:", normalizedError);
+        setAddDriverError(normalizedError.message);
       }
     }
   };

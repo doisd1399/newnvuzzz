@@ -1,0 +1,11 @@
+Etapa 26 — auditoria do envio de imagens
+
+- Causa raiz confirmada: múltiplas leituras de referência temporária do seletor Android.
+- Snapshot imediato em memória: aplicado aos fluxos relacionados.
+- Mensagem técnica nativa em inglês: normalizada.
+- Falhas silenciosas do FileReader/canvas: corrigidas.
+- TypeScript/TSX: 124 arquivos transpilados sintaticamente sem erro.
+- Testes isolados do novo snapshot e da normalização de NotReadableError: aprovados.
+- Auditoria Firebase: 0 críticos e 0 avisos.
+- Auditoria de notificações legadas: aprovada.
+- Build completo não executado porque zwitch@2.0.4 não está disponível no registro deste ambiente.

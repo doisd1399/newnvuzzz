@@ -8,6 +8,7 @@ import React, {
 import { ChevronLeft, Trophy, ChevronDown, List as ListIcon, Building2, Users, Globe2, ChevronRight, Crown, Calendar, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useOperationalStore, useRankingFilterStore, useSessionStore } from "../context/AppContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import { useTripsRealtime } from "../hooks/useTripsRealtime";
 import { groupMetricsByCompany, getStartOfDay, getEndOfDay, getWeeklyRange, getMonthlyRange, getCustomRange, filterTripsBySimulator } from "../lib/metricsEngine";
 import { preloadImages } from "../lib/imageCache";
@@ -15,7 +16,9 @@ import { StableImage } from "../components/common/StableImage";
 import { cn } from "../lib/utils";
 import { buildDriverRankingPageData } from "../lib/rankingPageEngine";
 import { useRankingUsersRealtime } from "../hooks/useRankingUsersRealtime";
+import { useRankingCompaniesByIds } from "../hooks/useRankingCompaniesByIds";
 import { useLiveCalendarReference } from "../hooks/useLiveCalendarReference";
+import { useRankingAggregate } from "../hooks/useRankingAggregate";
 import {
   warmRankingPhotosForIds,
   warmRankingUserProfiles,
@@ -26,6 +29,13 @@ import {
   findSimulatorOption,
   resolveCompanySimulatorFilterValue,
 } from "../lib/simulatorOptions";
+import {
+  buildCompanyRankingFromAggregate,
+  buildDriverRankingFromAggregate,
+  buildRankingAggregatePeriodKey,
+  type RankingAggregatePeriodType,
+} from "../lib/rankingAggregates";
+import { getRuntimePerformanceProfile } from "../lib/runtimePerformance";
 
 const freezeRankingSnapshot = (items: any[]) =>
   items.map((item) => ({ ...item }));
@@ -42,6 +52,31 @@ const ALL_SIMULATORS_LABEL = "Todos os simuladores";
 // lower rows are warmed opportunistically after the atomic paint.
 const RANKING_CRITICAL_IMAGE_LIMIT = 60;
 const RANKING_IMAGE_CONCURRENCY = 8;
+
+const getRankingImagePreloadConfig = () => {
+  const runtime = getRuntimePerformanceProfile();
+  return {
+    criticalLimit: runtime.constrained
+      ? 6
+      : runtime.mobileViewport
+        ? 18
+        : RANKING_CRITICAL_IMAGE_LIMIT,
+    concurrency: runtime.constrained
+      ? 2
+      : runtime.mobileViewport
+        ? 3
+        : RANKING_IMAGE_CONCURRENCY,
+    deferredLimit: runtime.constrained
+      ? 0
+      : runtime.mobileViewport
+        ? 48
+        : 180,
+    allowBroadWarmup: !runtime.constrained,
+    mobileViewport: runtime.mobileViewport,
+    gateInitialPublishOnImages:
+      !runtime.mobileViewport && !runtime.constrained,
+  };
+};
 
 type RankingSnapshotCacheEntry = {
   cachedAt: number;
@@ -98,14 +133,23 @@ const writeRankingSnapshot = (key: string, items: any[]) => {
   }
 };
 
-const rankingImageUrls = (items: any[], limit = RANKING_CRITICAL_IMAGE_LIMIT) =>
+const rankingImageUrls = (
+  items: any[],
+  limit = getRankingImagePreloadConfig().criticalLimit,
+) =>
   items
     .slice(0, limit)
     .map((item) => item?.logo)
     .filter((url): url is string => typeof url === "string" && Boolean(url.trim()));
 
-const preloadRankingSnapshotImages = (items: any[]) =>
-  preloadImages(rankingImageUrls(items), RANKING_IMAGE_CONCURRENCY);
+const preloadRankingSnapshotImages = (items: any[]) => {
+  const config = getRankingImagePreloadConfig();
+  return preloadImages(
+    rankingImageUrls(items, config.criticalLimit),
+    config.concurrency,
+    "auto",
+  );
+};
 
 export function preloadLastRankingSnapshotImages(): Promise<void> {
   return preloadRankingSnapshotImages(readLastRankingSnapshot());
@@ -113,12 +157,17 @@ export function preloadLastRankingSnapshotImages(): Promise<void> {
 
 export default function RankingGlobal() {
   const navigate = useNavigate();
+  const rankingImageConfig = useMemo(getRankingImagePreloadConfig, []);
+  const { currentUser } = useSessionStore();
   const {
     activeCompanyId,
     allCompanies,
+    companies: profileCompanies,
     companiesLoading,
-    currentUser,
-  } = useSessionStore();
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
+  } = useCompanyStore();
   const {
     simulators,
     simulatorsLoading,
@@ -133,13 +182,98 @@ export default function RankingGlobal() {
     setGlobalEndDateStr: setEndDateStr,
   } = useRankingFilterStore();
 
-  const [simulator, setSimulator] = useState(ALL_SIMULATORS_VALUE);
+  const catalogCompanies = (allCompanies || []) as any[];
+  const profileCompanyPool = useMemo(() => {
+    const map = new Map<string, any>();
+    [
+      ...catalogCompanies,
+      ...((profileCompanies || []) as any[]),
+    ].forEach((company) => {
+      if (company?.id) map.set(String(company.id), company);
+    });
+    return Array.from(map.values());
+  }, [catalogCompanies, profileCompanies]);
+
+  const simulatorOptions = useMemo(
+    () =>
+      buildSimulatorSelectorOptions(
+        simulators as Record<string, unknown>[],
+        profileCompanyPool,
+      ),
+    [profileCompanyPool, simulators],
+  );
+
+  const activeCompany = useMemo(
+    () =>
+      profileCompanyPool.find((company) => company.id === activeCompanyId) ||
+      profileCompanyPool.find(
+        (company) => company.id === (currentUser as any)?.companyId,
+      ),
+    [activeCompanyId, currentUser, profileCompanyPool],
+  );
+
+  const profileSimulatorCandidates = useMemo(() => {
+    const user = currentUser as any;
+    const companySimulator = resolveCompanySimulatorFilterValue(
+      activeCompany,
+      simulators as Record<string, unknown>[],
+      profileCompanyPool,
+    );
+
+    return Array.from(
+      new Set(
+        [
+          companySimulator,
+          activeCompany?.simulatorId,
+          activeCompany?.simuladorId,
+          activeCompany?.simulatorName,
+          activeCompany?.simuladorNome,
+          activeCompany?.simulator,
+          user?.currentRecruitmentSimulatorId,
+          user?.simulatorId,
+          user?.simuladorId,
+          user?.simulatorName,
+          user?.simuladorNome,
+          user?.simulator,
+        ]
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    );
+  }, [activeCompany, currentUser, profileCompanyPool, simulators]);
+
+  const preferredProfileSimulator = useMemo(() => {
+    for (const candidate of profileSimulatorCandidates) {
+      const option = findSimulatorOption(candidate, simulatorOptions);
+      if (option) return option;
+    }
+    return undefined;
+  }, [profileSimulatorCandidates, simulatorOptions]);
+
+  const preferredProfileSimulatorValue =
+    preferredProfileSimulator?.value || "";
+  const profileSimulatorSourceKey = [
+    currentUser?.id || "anonymous",
+    activeCompany?.id || activeCompanyId || (currentUser as any)?.companyId || "",
+    preferredProfileSimulatorValue || profileSimulatorCandidates.join("~"),
+  ].join("|");
+
+  // Start with the active profile's simulator whenever the session cache is
+  // already hydrated. When it is not, keep the selector pending until the
+  // profile/company catalogs finish loading instead of briefly showing an
+  // incorrect cross-simulator ranking.
+  const [simulator, setSimulator] = useState<string>(
+    () => preferredProfileSimulatorValue,
+  );
+  const simulatorSelectionModeRef = useRef<"pending" | "auto" | "user">(
+    preferredProfileSimulatorValue ? "auto" : "pending",
+  );
+  const autoSimulatorSourceRef = useRef("");
   const [rankingType, setRankingType] = useState<"entre" | "interno" | "global">("entre");
   const [viewType, setViewType] = useState<"podio" | "lista">("podio");
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
 
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const companies = (allCompanies || []) as any[];
   const referenceDate = useLiveCalendarReference();
 
   const rankingRange = useMemo(() => {
@@ -163,6 +297,107 @@ export default function RankingGlobal() {
 
     return getMonthlyRange(referenceDate);
   }, [endDateStr, periodPreset, referenceDate, startDateStr]);
+
+  const aggregatePeriodType = useMemo<RankingAggregatePeriodType | undefined>(
+    () =>
+      periodPreset === "semana" || periodPreset === "mes"
+        ? periodPreset
+        : undefined,
+    [periodPreset],
+  );
+  const aggregatePeriodKey = useMemo(
+    () =>
+      aggregatePeriodType
+        ? buildRankingAggregatePeriodKey(aggregatePeriodType, referenceDate)
+        : "",
+    [aggregatePeriodType, referenceDate],
+  );
+  const aggregateEligible = Boolean(
+    aggregatePeriodType &&
+      aggregatePeriodKey &&
+      simulator &&
+      simulator !== ALL_SIMULATORS_VALUE &&
+      rankingType !== "interno",
+  );
+  const rankingAggregateState = useRankingAggregate({
+    simulatorId: simulator,
+    periodType: aggregatePeriodType,
+    periodKey: aggregatePeriodKey,
+    enabled: aggregateEligible,
+  });
+  const consolidatedAggregate =
+    rankingAggregateState.status === "ready"
+      ? rankingAggregateState.aggregate
+      : null;
+  const standardCollectiveRanking = Boolean(
+    aggregatePeriodType && rankingType !== "interno",
+  );
+  const useTripFallback =
+    !standardCollectiveRanking ||
+    simulator === ALL_SIMULATORS_VALUE ||
+    rankingAggregateState.status === "unavailable";
+
+  // Standard weekly/monthly rankings read only the companies referenced by
+  // the selected aggregate. The complete `frotas` catalog remains a guarded
+  // fallback for custom periods, "Todos os simuladores" and deployments where
+  // the aggregate Function is not available yet.
+  const aggregateCompanyIds = useMemo(() => {
+    if (!consolidatedAggregate) return [] as string[];
+    const ids = new Set<string>(Object.keys(consolidatedAggregate.companies));
+    Object.values(consolidatedAggregate.drivers).forEach((driver: { companyId?: string }) => {
+      const companyId = String(driver.companyId || "").trim();
+      if (companyId) ids.add(companyId);
+    });
+    return Array.from(ids).sort();
+  }, [consolidatedAggregate]);
+
+  const {
+    companies: aggregateCompanies,
+    loading: aggregateCompaniesLoading,
+    refreshing: aggregateCompaniesRefreshing,
+    error: aggregateCompaniesError,
+  } = useRankingCompaniesByIds(
+    aggregateCompanyIds,
+    Boolean(consolidatedAggregate),
+  );
+
+  const aggregateCompanyLookupFailed = Boolean(
+    consolidatedAggregate &&
+      aggregateCompanyIds.length > 0 &&
+      aggregateCompaniesError,
+  );
+  const effectiveTripFallback =
+    useTripFallback || aggregateCompanyLookupFailed;
+  const aggregateForRanking = aggregateCompanyLookupFailed
+    ? null
+    : consolidatedAggregate;
+
+  const companies = useMemo(() => {
+    const byId = new Map<string, any>();
+    [
+      ...catalogCompanies,
+      ...((profileCompanies || []) as any[]),
+      ...aggregateCompanies,
+    ].forEach((company) => {
+      const id = String(company?.id || "").trim();
+      if (id) byId.set(id, company);
+    });
+    return Array.from(byId.values());
+  }, [aggregateCompanies, catalogCompanies, profileCompanies]);
+
+  useEffect(() => {
+    if (
+      !effectiveTripFallback ||
+      companyCatalogLoaded ||
+      companyCatalogAttempted
+    ) return;
+    void loadCompanyCatalog();
+  }, [
+    companyCatalogAttempted,
+    companyCatalogLoaded,
+    effectiveTripFallback,
+    loadCompanyCatalog,
+  ]);
 
   const rankingCacheKey = useMemo(
     () =>
@@ -189,14 +424,21 @@ export default function RankingGlobal() {
     signature: string;
     items: any[];
   }>(() => {
+    const exact = readRankingSnapshot(rankingCacheKey);
+    const immediateItems = rankingImageConfig.gateInitialPublishOnImages
+      ? []
+      : freezeRankingSnapshot(exact);
     return {
       key: rankingCacheKey,
-      signature: "",
-      // Do not paint a cached ranking before its avatar URLs have been
-      // decoded. The previous implementation mounted this snapshot
-      // immediately, which is exactly the initials -> photo flash reported
-      // when switching between ranking modes.
-      items: [],
+      signature: immediateItems
+        .map((item) =>
+          [item.id, item.name, item.logo || "", item.val, item.trips].join("~"),
+        )
+        .join("|"),
+      // Mobile favors immediate information. StableImage reserves the final
+      // dimensions and hides its fallback while decoding, so rows can paint
+      // now without producing an initials -> photo or layout-shift flash.
+      items: immediateItems,
     };
   });
   const visibleRankingKeyRef = useRef(rankingCacheKey);
@@ -234,10 +476,7 @@ export default function RankingGlobal() {
       )
       .join("|");
 
-    // Cached rows are subject to the same gate as live rows. This is
-    // important after a route/filter switch: a memory snapshot can exist even
-    // though its decoded bitmap was evicted by another page.
-    void preloadRankingSnapshotImages(snapshot).then(() => {
+    const publish = () => {
       if (
         cancelled ||
         visibleRankingKeyRef.current !== rankingCacheKey ||
@@ -255,12 +494,19 @@ export default function RankingGlobal() {
         signature,
         items: snapshot,
       });
-    });
+    };
+
+    if (rankingImageConfig.gateInitialPublishOnImages) {
+      void preloadRankingSnapshotImages(snapshot).then(publish);
+    } else {
+      publish();
+      void preloadRankingSnapshotImages(snapshot);
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [rankingCacheKey]);
+  }, [rankingCacheKey, rankingImageConfig.gateInitialPublishOnImages]);
 
   const {
     trips,
@@ -269,6 +515,7 @@ export default function RankingGlobal() {
   } = useTripsRealtime({
     startDate: rankingRange.start,
     endDate: rankingRange.end,
+    enabled: effectiveTripFallback,
     keepPreviousData: true,
   });
 
@@ -282,6 +529,7 @@ export default function RankingGlobal() {
       endDate: rankingRange.end,
       companies,
       simulators: simulators as Record<string, unknown>[],
+      consolidatedAggregate: aggregateForRanking,
     }),
     [
       companies,
@@ -292,6 +540,7 @@ export default function RankingGlobal() {
       simulator,
       simulators,
       trips,
+      aggregateForRanking,
     ],
   );
   // The cached/empty frame can commit immediately after the route click. Large
@@ -305,6 +554,7 @@ export default function RankingGlobal() {
   const rankingComputationReady =
     deferredRankingInput === rankingComputationInput;
   const preparedRankingTrips = useMemo(() => {
+    if (deferredRankingInput?.consolidatedAggregate) return [];
     if (!deferredRankingInput?.simulator) return [];
     return filterTripsBySimulator(
       deferredRankingInput.trips,
@@ -315,11 +565,16 @@ export default function RankingGlobal() {
   }, [deferredRankingInput]);
 
   const rankingParticipantIds = useMemo(() => {
+    if (!deferredRankingInput?.simulator) return [] as string[];
+    if (deferredRankingInput.rankingType === "entre") return [] as string[];
+
     if (
-      !deferredRankingInput?.simulator ||
-      deferredRankingInput.rankingType === "entre"
+      deferredRankingInput.rankingType === "global" &&
+      deferredRankingInput.consolidatedAggregate
     ) {
-      return [] as string[];
+      return Object.keys(
+        deferredRankingInput.consolidatedAggregate.drivers,
+      ).sort();
     }
 
     const ids = new Set<string>();
@@ -355,12 +610,19 @@ export default function RankingGlobal() {
   // those URLs immediately (rather than waiting for an idle callback), while
   // the scoped ranking hook handles participants outside that company.
   useEffect(() => {
-    void warmRankingUserProfiles(knownUsers as any[], 8);
-  }, [knownUsers]);
+    if (!rankingImageConfig.allowBroadWarmup) return;
+    void warmRankingUserProfiles(
+      (knownUsers as any[]).slice(0, rankingImageConfig.criticalLimit),
+      rankingImageConfig.concurrency,
+    );
+  }, [knownUsers, rankingImageConfig]);
 
   useEffect(() => {
-    void warmRankingPhotosForIds(rankingParticipantIds, 8);
-  }, [rankingParticipantIds]);
+    void warmRankingPhotosForIds(
+      rankingParticipantIds.slice(0, rankingImageConfig.criticalLimit),
+      rankingImageConfig.concurrency,
+    );
+  }, [rankingImageConfig, rankingParticipantIds]);
 
   // Initialize with current month for fallback
   useEffect(() => {
@@ -401,22 +663,49 @@ export default function RankingGlobal() {
     }
   }, [rankingType, activeCompanyId, selectedCompanyId]);
 
-  const simulatorOptions = useMemo(
-    () => buildSimulatorSelectorOptions(simulators as Record<string, unknown>[], companies),
-    [companies, simulators],
-  );
-
-  const activeCompany = useMemo(
-    () => companies.find((company) => company.id === activeCompanyId),
-    [activeCompanyId, companies],
-  );
-
-  // The dedicated Ranking Global page supports a cross-simulator view.
-  // Company profiles remain independently restricted to their own simulator.
-  // For a specific selection, reconcile legacy ID/name aliases without ever
-  // exposing Firestore document IDs as labels.
+  // Every time the logged profile/company changes, initialize the ranking with
+  // that profile's simulator. A manual selection remains untouched while the
+  // same profile is active, including an intentional "Todos os simuladores".
   useEffect(() => {
-    if (simulator === ALL_SIMULATORS_VALUE) return;
+    const sourceChanged =
+      autoSimulatorSourceRef.current !== profileSimulatorSourceKey;
+
+    if (sourceChanged) {
+      autoSimulatorSourceRef.current = profileSimulatorSourceKey;
+      simulatorSelectionModeRef.current = "pending";
+    }
+
+    if (!sourceChanged && simulatorSelectionModeRef.current === "user") return;
+
+    if (preferredProfileSimulatorValue) {
+      simulatorSelectionModeRef.current = "auto";
+      setSimulator((current) =>
+        current === preferredProfileSimulatorValue
+          ? current
+          : preferredProfileSimulatorValue,
+      );
+      return;
+    }
+
+    if (companiesLoading || simulatorsLoading) {
+      if (sourceChanged) setSimulator("");
+      return;
+    }
+
+    simulatorSelectionModeRef.current = "auto";
+    setSimulator(ALL_SIMULATORS_VALUE);
+  }, [
+    companiesLoading,
+    preferredProfileSimulatorValue,
+    profileSimulatorSourceKey,
+    simulatorsLoading,
+  ]);
+
+  // Reconcile legacy aliases after the catalog is loaded. This keeps a
+  // selected simulator stable even when old profiles store a name while the
+  // selector uses the canonical Firestore simulator ID.
+  useEffect(() => {
+    if (!simulator || simulator === ALL_SIMULATORS_VALUE) return;
 
     const resolvedOption = findSimulatorOption(simulator, simulatorOptions);
     if (resolvedOption) {
@@ -426,25 +715,16 @@ export default function RankingGlobal() {
 
     if (companiesLoading || simulatorsLoading) return;
 
-    const preferredFilter = resolveCompanySimulatorFilterValue(
-      activeCompany,
-      simulators as Record<string, unknown>[],
-      companies,
-    );
-    const preferredOption = findSimulatorOption(
-      preferredFilter,
-      simulatorOptions,
-    );
     setSimulator(
-      preferredOption?.value || simulatorOptions[0]?.value || ALL_SIMULATORS_VALUE,
+      preferredProfileSimulatorValue ||
+        simulatorOptions[0]?.value ||
+        ALL_SIMULATORS_VALUE,
     );
   }, [
-    activeCompany,
-    companies,
     companiesLoading,
+    preferredProfileSimulatorValue,
     simulator,
     simulatorOptions,
-    simulators,
     simulatorsLoading,
   ]);
 
@@ -467,6 +747,23 @@ export default function RankingGlobal() {
 
   const calculatedRankingData = useMemo(() => {
     if (!deferredRankingInput?.simulator) return [];
+
+    if (deferredRankingInput.consolidatedAggregate) {
+      if (deferredRankingInput.rankingType === "entre") {
+        return buildCompanyRankingFromAggregate(
+          deferredRankingInput.consolidatedAggregate,
+          deferredRankingInput.companies,
+        );
+      }
+      if (deferredRankingInput.rankingType === "global") {
+        return buildDriverRankingFromAggregate(
+          deferredRankingInput.consolidatedAggregate,
+          users,
+          deferredRankingInput.companies,
+        );
+      }
+    }
+
     if (deferredRankingInput.rankingType === "entre") {
       return groupMetricsByCompany(
         deferredRankingInput.trips,
@@ -515,13 +812,22 @@ export default function RankingGlobal() {
     );
   const simulatorSelectionReady =
     Boolean(simulator) ||
-    (!companiesLoading && !simulatorsLoading && simulatorOptions.length === 0);
+    (!simulatorsLoading && simulatorOptions.length === 0);
+  const aggregateSourceReady = Boolean(aggregateForRanking);
+  const aggregateCompaniesReady =
+    !aggregateSourceReady ||
+    (!aggregateCompaniesLoading && !aggregateCompaniesRefreshing);
+  const fallbackCompaniesReady =
+    !effectiveTripFallback || (companyCatalogLoaded && !companiesLoading);
+  const tripSourceReady =
+    effectiveTripFallback &&
+    fallbackCompaniesReady &&
+    !tripsLoading &&
+    !tripsRefreshing;
   const rankingSourcesReady =
     rankingComputationReady &&
     simulatorSelectionReady &&
-    !companiesLoading &&
-    !tripsLoading &&
-    !tripsRefreshing &&
+    ((aggregateSourceReady && aggregateCompaniesReady) || tripSourceReady) &&
     internalSelectionReady &&
     participantProfilesReady;
   const preparedLiveRanking = rankingSourcesReady;
@@ -542,10 +848,10 @@ export default function RankingGlobal() {
     visibleRankingSnapshot.key === rankingCacheKey
       ? visibleRankingSnapshot.items
       : [];
-  // Render the stable ranking structure immediately. On a first-ever visit it
-  // starts empty rather than showing a loading page; cached/live data replaces
-  // it in one atomic update.
-  const rankingReady = true;
+  // Never present an empty podium as a real result before the active
+  // simulator/period sources have settled. A cached snapshot remains visible
+  // immediately; a first visit gets a stable neutral structure instead.
+  const rankingReady = rankingData.length > 0 || preparedLiveRanking;
 
   useEffect(() => {
     if (!preparedLiveRanking) return;
@@ -558,11 +864,7 @@ export default function RankingGlobal() {
 
     let cancelled = false;
     const snapshot = freezeRankingSnapshot(liveRankingData);
-    // Publish the list once, after the profiles and visible bitmaps are ready.
-    // This avoids names/photos filling by chunks and podium cards changing
-    // after the user is already looking at the ranking. Cached snapshots use
-    // the same gate above, so every entry path has identical behavior.
-    void preloadRankingSnapshotImages(snapshot).finally(() => {
+    const publish = () => {
       if (cancelled) return;
       if (visibleRankingKeyRef.current !== rankingCacheKey) return;
       publishedRankingRef.current = {
@@ -576,7 +878,14 @@ export default function RankingGlobal() {
         items: snapshot,
       });
       writeRankingSnapshot(rankingCacheKey, snapshot);
-    });
+    };
+
+    if (rankingImageConfig.gateInitialPublishOnImages) {
+      void preloadRankingSnapshotImages(snapshot).finally(publish);
+    } else {
+      publish();
+      void preloadRankingSnapshotImages(snapshot);
+    }
 
     return () => {
       cancelled = true;
@@ -585,13 +894,17 @@ export default function RankingGlobal() {
     liveRankingData,
     liveRankingSignature,
     preparedLiveRanking,
+    rankingImageConfig.gateInitialPublishOnImages,
     rankingCacheKey,
   ]);
 
   useEffect(() => {
-    if (!rankingReady) return;
+    if (!rankingReady || rankingImageConfig.deferredLimit <= 0) return;
     const deferredLogos = rankingData
-      .slice(RANKING_CRITICAL_IMAGE_LIMIT, 180)
+      .slice(
+        rankingImageConfig.criticalLimit,
+        rankingImageConfig.deferredLimit,
+      )
       .map((item) => item.logo)
       .filter(Boolean) as string[];
     if (deferredLogos.length === 0) return;
@@ -603,19 +916,28 @@ export default function RankingGlobal() {
       ) => number;
       cancelIdleCallback?: (id: number) => void;
     };
-    if (idleApi.requestIdleCallback) {
-      const idleId = idleApi.requestIdleCallback(
-        () => void preloadImages(deferredLogos, 3),
-        { timeout: 1400 },
-      );
-      return () => idleApi.cancelIdleCallback?.(idleId);
-    }
-    const timer = window.setTimeout(
-      () => void preloadImages(deferredLogos, 3),
-      450,
-    );
-    return () => window.clearTimeout(timer);
-  }, [rankingData, rankingReady]);
+    let idleId: number | null = null;
+    const timer = window.setTimeout(() => {
+      const warm = () =>
+        void preloadImages(
+          deferredLogos,
+          rankingImageConfig.mobileViewport ? 2 : 3,
+          "low",
+        );
+      if (idleApi.requestIdleCallback) {
+        idleId = idleApi.requestIdleCallback(warm, {
+          timeout: rankingImageConfig.mobileViewport ? 4200 : 1600,
+        });
+      } else {
+        warm();
+      }
+    }, rankingImageConfig.mobileViewport ? 2600 : 450);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
+    };
+  }, [rankingData, rankingImageConfig, rankingReady]);
 
   const formatCurrency = (val: number) => BRL_FORMATTER.format(val);
 
@@ -692,10 +1014,16 @@ export default function RankingGlobal() {
                 value={simulator}
                 onChange={(e) => {
                   const nextSimulator = e.target.value;
+                  simulatorSelectionModeRef.current = "user";
                   setSimulator(nextSimulator);
                 }}
                 className="w-full h-10 bg-white dark:bg-[#1A1D24] border border-gray-200 dark:border-[#2A2F3A] text-gray-800 dark:text-slate-200 text-sm rounded-xl focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 block pl-9 pr-9 py-1 transition-colors outline-none appearance-none font-medium shadow-sm"
               >
+                {!simulator && (
+                  <option value="" disabled>
+                    Identificando simulador do perfil...
+                  </option>
+                )}
                 <option value={ALL_SIMULATORS_VALUE}>
                   {ALL_SIMULATORS_LABEL}
                 </option>
@@ -949,7 +1277,7 @@ export default function RankingGlobal() {
                     {renderLogo(
                       item,
                       "sm",
-                      actualRank <= RANKING_CRITICAL_IMAGE_LIMIT,
+                      actualRank <= rankingImageConfig.criticalLimit,
                     )}
                     <div className="flex flex-col min-w-0 pr-1">
                       <p className="text-sm sm:text-base font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight">{item.name}</p>
@@ -974,7 +1302,31 @@ export default function RankingGlobal() {
             )}
           </div>
             </>
-          ) : null}
+          ) : (
+            <div className="relative pt-6 pb-8" aria-live="polite">
+              <div className="flex items-end justify-center gap-1.5 sm:gap-3 mx-auto w-full px-1">
+                {["h-[140px] sm:h-[160px]", "h-[160px] sm:h-[190px]", "h-[110px] sm:h-[140px]"].map(
+                  (heightClass, index) => (
+                    <div
+                      key={index}
+                      className={cn(
+                        "flex-1 max-w-[140px] rounded-xl sm:rounded-2xl bg-white dark:bg-[#1C2028] border border-gray-200 dark:border-[#2A2F3A] p-3 shadow-sm",
+                        heightClass,
+                      )}
+                    >
+                      <div className="mx-auto h-5 w-9 rounded-full bg-slate-100 dark:bg-white/5 animate-pulse" />
+                      <div className="mx-auto mt-3 h-12 w-12 rounded-full bg-slate-100 dark:bg-white/5 animate-pulse" />
+                      <div className="mx-auto mt-3 h-3 w-16 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+                      <div className="mx-auto mt-2 h-3 w-20 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+                    </div>
+                  ),
+                )}
+              </div>
+              <p className="mt-5 text-center text-[12px] font-medium text-slate-500 dark:text-slate-400">
+                Sincronizando classificação
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

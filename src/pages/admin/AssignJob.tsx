@@ -1,6 +1,7 @@
 import { resolveDriverPhoto } from '../../lib/resolveDriverPhoto';
 import React, { useState, useEffect } from "react";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { StableImage } from "../../components/common/StableImage";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -29,15 +30,9 @@ export default function AssignJob() {
     preselectedContractId,
   } = state;
 
-  const { activeCompanyId, currentUser } = useSessionStore();
-  const {
-    contracts,
-    users,
-    vehicles,
-    trailers,
-    assignJob,
-    allCompanyMembers,
-  } = useOperationalStore();
+  const { currentUser } = useSessionStore();
+  const { activeCompanyId, allCompanyMembers } = useCompanyStore();
+  const { contracts, users, vehicles, trailers, assignJob } = useOperationalStore();
 
   const [selectedContract, setSelectedContract] = useState(preselectedContractId || "");
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>(

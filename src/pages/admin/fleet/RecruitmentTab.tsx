@@ -1,13 +1,26 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  startAfter,
+  where,
+  type DocumentData,
+  type QueryConstraint,
+  type QueryDocumentSnapshot,
+  type QuerySnapshot,
+} from "firebase/firestore";
 import { getDownloadURL, ref as storageRef } from "firebase/storage";
 import {
-  useActivityStore,
   useOperationalStore,
-  useSessionStore,
   RecruitmentApplication,
 } from "../../../context/AppContext";
+import { useCompanyStore } from "../../../context/CompanyContext";
 import {
   Copy,
   Target,
@@ -27,6 +40,7 @@ import {
   Car,
   Clock,
   Trash2,
+  Loader2,
 } from "lucide-react";
 import { Button } from "../../../components/ui/Button";
 import { Card, CardContent } from "../../../components/ui/Card";
@@ -42,6 +56,8 @@ import { isCompanyRegistration } from "../../../lib/registrationImages";
 import { resolveNotifications } from "../../../services/notificationService";
 
 type CandidateProfile = object | null;
+
+const RECRUITMENT_HISTORY_PAGE_SIZE = 20;
 
 function CandidateAvatar({
   name,
@@ -95,20 +111,31 @@ function CandidateAvatar({
 
 function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => void }) {
   const navigate = useNavigate();
-  const { activeCompanyId, companies } = useSessionStore();
-  const { recruitmentApplications } = useActivityStore();
   const {
+    activeCompanyId,
+    companies,
+    recruitmentApplications,
     updateRecruitmentSettings,
     approveRecruitmentApplication,
     rejectRecruitmentApplication,
     deleteRecruitmentApplication,
-    users,
-  } = useOperationalStore();
+  } = useCompanyStore();
+  const { users } = useOperationalStore();
 
   const [activeTab, setActiveTab] = useState<"candidates" | "page">(
     "candidates",
   );
   const [search, setSearch] = useState("");
+  const [historyApplications, setHistoryApplications] = useState<
+    RecruitmentApplication[]
+  >([]);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyCursorRef = React.useRef<
+    QueryDocumentSnapshot<DocumentData> | null
+  >(null);
+  const historyLoadingRef = React.useRef(false);
+  const historyRequestRef = React.useRef(0);
 
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -206,17 +233,193 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
     }
   };
 
-  const applications = recruitmentApplications.filter((a) => {
-    if (activeCompanyId && a.companyId !== activeCompanyId) return false;
-    if (isCompanyRegistration(a)) return false;
-    if (search) {
-      return (
-        a.fullName.toLowerCase().includes(search.toLowerCase()) ||
-        a.email.toLowerCase().includes(search.toLowerCase())
+  const loadRecruitmentHistory = React.useCallback(
+    async (reset = false) => {
+      if (!activeCompanyId || historyLoadingRef.current) return;
+
+      historyLoadingRef.current = true;
+      setHistoryLoading(true);
+      const requestId = ++historyRequestRef.current;
+
+      try {
+        const constraints: QueryConstraint[] = [
+          where("companyId", "==", activeCompanyId),
+          orderBy("createdAt", "desc"),
+          limit(RECRUITMENT_HISTORY_PAGE_SIZE),
+        ];
+        const cursor = reset ? null : historyCursorRef.current;
+        if (cursor) constraints.splice(2, 0, startAfter(cursor));
+
+        let snapshot: QuerySnapshot<DocumentData>;
+        try {
+          snapshot = await getDocs(
+            query(collection(db, "recruitment_applications"), ...constraints),
+          );
+        } catch (optimizedError) {
+          if (!reset) throw optimizedError;
+          // Enquanto o índice composto ainda não foi publicado, preserve a
+          // tela com uma consulta limitada e ordenação local. O deploy final
+          // ativará a paginação por cursor sem tornar a interface dependente.
+          console.warn(
+            "[Recruitment] Paginação otimizada indisponível; usando fallback limitado.",
+            optimizedError,
+          );
+          snapshot = await getDocs(
+            query(
+              collection(db, "recruitment_applications"),
+              where("companyId", "==", activeCompanyId),
+              limit(100),
+            ),
+          );
+        }
+
+        if (requestId !== historyRequestRef.current) return;
+
+        const rows = snapshot.docs
+          .map(
+            (applicationDocument) =>
+              ({
+                ...applicationDocument.data(),
+                id: applicationDocument.id,
+              }) as RecruitmentApplication,
+          )
+          .filter(
+            (application) =>
+              !isCompanyRegistration(application) &&
+              (application.status !== "pending" ||
+                application.isCurrent === false),
+          )
+          .sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() -
+              new Date(a.createdAt).getTime(),
+          );
+
+        setHistoryApplications((current) => {
+          const merged = new Map<string, RecruitmentApplication>();
+          (reset ? [] : current).forEach((application) =>
+            merged.set(application.id, application),
+          );
+          rows.forEach((application) =>
+            merged.set(application.id, application),
+          );
+          return Array.from(merged.values()).sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() -
+              new Date(a.createdAt).getTime(),
+          );
+        });
+
+        historyCursorRef.current =
+          snapshot.docs[snapshot.docs.length - 1] ?? null;
+        setHistoryHasMore(
+          snapshot.docs.length === RECRUITMENT_HISTORY_PAGE_SIZE,
+        );
+      } catch (error) {
+        console.warn(
+          "[Recruitment] Não foi possível carregar o histórico paginado:",
+          error,
+        );
+        if (reset && requestId === historyRequestRef.current) {
+          setHistoryApplications([]);
+          setHistoryHasMore(false);
+          historyCursorRef.current = null;
+        }
+      } finally {
+        if (requestId === historyRequestRef.current) {
+          historyLoadingRef.current = false;
+          setHistoryLoading(false);
+        }
+      }
+    },
+    [activeCompanyId],
+  );
+
+  useEffect(() => {
+    historyRequestRef.current += 1;
+    historyCursorRef.current = null;
+    historyLoadingRef.current = false;
+    setHistoryApplications([]);
+    setHistoryHasMore(false);
+    setHistoryLoading(false);
+    if (activeCompanyId) void loadRecruitmentHistory(true);
+  }, [activeCompanyId, loadRecruitmentHistory]);
+
+  const applications = React.useMemo(() => {
+    const merged = new Map<string, RecruitmentApplication>();
+    historyApplications.forEach((application) =>
+      merged.set(application.id, application),
+    );
+    recruitmentApplications.forEach((application) =>
+      merged.set(application.id, application),
+    );
+
+    return Array.from(merged.values()).filter((application) => {
+      if (activeCompanyId && application.companyId !== activeCompanyId)
+        return false;
+      if (isCompanyRegistration(application)) return false;
+      return true;
+    });
+  }, [activeCompanyId, historyApplications, recruitmentApplications]);
+
+  const updateHistoryApplicationStatus = React.useCallback(
+    (applicationId: string, status: "approved" | "rejected") => {
+      const source = applications.find(
+        (application) => application.id === applicationId,
       );
-    }
-    return true;
-  });
+      if (!source) return;
+      const updated = { ...source, status };
+      setHistoryApplications((current) => [
+        updated,
+        ...current.filter((application) => application.id !== applicationId),
+      ]);
+      setSelectedHistoryApp((current) =>
+        current?.id === applicationId ? updated : current,
+      );
+    },
+    [applications],
+  );
+
+  const handleApproveApplication = React.useCallback(
+    async (applicationId: string, closeAfter = false) => {
+      try {
+        await approveRecruitmentApplication(applicationId);
+        updateHistoryApplicationStatus(applicationId, "approved");
+        if (closeAfter) handleSetSelectedHistoryApp(null);
+      } catch {
+        // A ação do contexto já apresenta a mensagem adequada ao usuário.
+      }
+    },
+    [approveRecruitmentApplication, updateHistoryApplicationStatus],
+  );
+
+  const handleRejectApplication = React.useCallback(
+    async (applicationId: string, closeAfter = false) => {
+      try {
+        await rejectRecruitmentApplication(applicationId);
+        updateHistoryApplicationStatus(applicationId, "rejected");
+        if (closeAfter) handleSetSelectedHistoryApp(null);
+      } catch {
+        // A ação do contexto já apresenta a mensagem adequada ao usuário.
+      }
+    },
+    [rejectRecruitmentApplication, updateHistoryApplicationStatus],
+  );
+
+  const handleDeleteApplication = React.useCallback(
+    async (applicationId: string) => {
+      try {
+        await deleteRecruitmentApplication(applicationId);
+        setHistoryApplications((current) =>
+          current.filter((application) => application.id !== applicationId),
+        );
+        setAppToDelete(null);
+      } catch {
+        // Mantém a confirmação aberta para permitir nova tentativa.
+      }
+    },
+    [deleteRecruitmentApplication],
+  );
 
   const getCandidateProfile = (app: RecruitmentApplication): CandidateProfile =>
     candidateProfiles[app.id] ??
@@ -520,7 +723,12 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
             <h3 className="font-semibold text-gray-900 dark:text-[#fafafa] border-b border-gray-100 dark:border-[#2A2F3A] pb-2 text-sm">
               Histórico Recente
             </h3>
-            {historyApps.length === 0 ? (
+            {historyLoading && historyApps.length === 0 ? (
+              <div className="bg-gray-50 dark:bg-[#1A1F26] rounded-xl p-6 text-center text-gray-500 dark:text-[#a1a1aa] border border-gray-100 dark:border-[#2A2F3A] text-sm">
+                <Loader2 size={18} className="mx-auto mb-2 animate-spin" />
+                Carregando histórico...
+              </div>
+            ) : historyApps.length === 0 ? (
               <div className="bg-gray-50 dark:bg-[#1A1F26] rounded-xl p-6 text-center text-gray-500 dark:text-[#a1a1aa] border border-gray-100 dark:border-[#2A2F3A] text-sm">
                 Nenhum histórico disponível.
               </div>
@@ -578,6 +786,23 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                   );
                 })}
               </div>
+            )}
+            {historyHasMore && (
+              <Button
+                type="button"
+                onClick={() => void loadRecruitmentHistory(false)}
+                disabled={historyLoading}
+                className="mt-1 w-full bg-white dark:bg-[#1A1F26] border border-gray-200 dark:border-[#2A2F3A] text-gray-700 dark:text-[#d4d4d8] hover:bg-gray-50 dark:hover:bg-[#27272a] shadow-none"
+              >
+                {historyLoading ? (
+                  <>
+                    <Loader2 size={15} className="mr-2 animate-spin" />
+                    Carregando...
+                  </>
+                ) : (
+                  "Carregar mais histórico"
+                )}
+              </Button>
             )}
           </div>
         </div>
@@ -883,8 +1108,10 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                 <>
                   <Button
                     onClick={() => {
-                      rejectRecruitmentApplication(selectedHistoryApp.id);
-                      handleSetSelectedHistoryApp(null);
+                      void handleRejectApplication(
+                        selectedHistoryApp.id,
+                        true,
+                      );
                     }}
                     className="w-full sm:w-1/2 bg-white dark:bg-[#1A1F26] border border-gray-200 dark:border-[#2A2F3A] text-gray-700 dark:text-[#fafafa] hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 py-2 h-auto text-sm shadow-sm dark:shadow-none"
                   >
@@ -892,8 +1119,10 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                   </Button>
                   <Button
                     onClick={() => {
-                      approveRecruitmentApplication(selectedHistoryApp.id);
-                      handleSetSelectedHistoryApp(null);
+                      void handleApproveApplication(
+                        selectedHistoryApp.id,
+                        true,
+                      );
                     }}
                     className="w-full sm:w-1/2 bg-emerald-600 hover:bg-emerald-700 text-white py-2 h-auto text-sm shadow-sm dark:shadow-none"
                   >
@@ -914,13 +1143,9 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                       <div className="flex-1">
                         <Button
                           onClick={() => {
-                            approveRecruitmentApplication(
+                            void handleApproveApplication(
                               selectedHistoryApp.id,
                             );
-                            handleSetSelectedHistoryApp({
-                              ...selectedHistoryApp,
-                              status: "approved",
-                            });
                           }}
                           className="w-full bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 py-2 h-auto border-none text-sm"
                         >
@@ -947,11 +1172,9 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
                       <div className="flex-1">
                         <Button
                           onClick={() => {
-                            rejectRecruitmentApplication(selectedHistoryApp.id);
-                            handleSetSelectedHistoryApp({
-                              ...selectedHistoryApp,
-                              status: "rejected",
-                            });
+                            void handleRejectApplication(
+                              selectedHistoryApp.id,
+                            );
                           }}
                           className="w-full bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-500/20 py-2 h-auto border-none text-sm"
                         >
@@ -1005,8 +1228,7 @@ function AdminRecruitment({ onFormOpen }: { onFormOpen?: (isOpen: boolean) => vo
               <Button
                 onClick={() => {
                   if (appToDelete) {
-                    deleteRecruitmentApplication(appToDelete);
-                    setAppToDelete(null);
+                    void handleDeleteApplication(appToDelete);
                   }
                 }}
                 className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-semibold"

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useOperationalStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import {
   X,
@@ -29,7 +30,7 @@ import { useNavigate, useParams, useLocation } from "react-router-dom";
 
 export default function ContractDetailsPage() {
   const { id: contractId } = useParams<{ id: string }>();
-  const { companies } = useSessionStore();
+  const { companies } = useCompanyStore();
   const {
     contracts,
     trailers,

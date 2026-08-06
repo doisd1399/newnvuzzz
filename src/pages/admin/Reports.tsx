@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { normalizeTrip, getFilteredTrips } from "../../lib/metricsEngine";
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -29,7 +30,8 @@ export default function Reports({
   isInsideAdminTab?: boolean;
 } = {}) {
   const navigate = useNavigate();
-  const { activeCompanyId, activeRole, currentUser } = useSessionStore();
+  const { activeRole, currentUser } = useSessionStore();
+  const { activeCompanyId } = useCompanyStore();
   const { users = [] } = useOperationalStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [period, setPeriod] = useState<"semanal" | "mensal">("semanal");

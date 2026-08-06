@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { useSessionStore } from "../context/AppContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import { getFilteredTrips } from "../lib/metricsEngine";
 import { normalizeTrip } from "../lib/tripNormalizer";
 import { useTripHistory } from "../hooks/useTripHistory";
 
 export default function AuditPage() {
-  const { companies, activeCompanyId } = useSessionStore();
+  const { companies, activeCompanyId } = useCompanyStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
   const [report, setReport] = useState<string>("Calculando...");
 

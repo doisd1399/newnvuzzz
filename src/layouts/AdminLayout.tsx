@@ -2,10 +2,11 @@ import React, { useState } from "react";
 import { Outlet, NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   useActivityStore,
-  useNotificationStore,
   useOperationalStore,
   useSessionStore,
 } from "../context/AppContext";
+import { useNotificationStore } from "../context/NotificationsContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
 import {
   Package,
@@ -31,6 +32,7 @@ import {
   Check,
   Trophy,
   Newspaper,
+  BookOpen,
 } from "lucide-react";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -55,24 +57,22 @@ import {
 } from "../lib/rankingPhotoWarmup";
 
 export default function AdminLayout() {
+  const { currentUser, switchRole, activeRole, logOutApp } = useSessionStore();
   const {
-    currentUser,
     companies,
     activeCompanyId,
     setActiveCompanyId,
-    switchRole,
-    activeRole,
     memberships,
-    logOutApp,
-  } = useSessionStore();
+  } = useCompanyStore();
   const { notifications, markNotificationAsRead } = useNotificationStore();
   const { simulators } = useOperationalStore();
-  const { jobDemands, recruitmentApplications } = useActivityStore();
+  const { jobDemands } = useActivityStore();
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const isSeniorPanelRoute = location.pathname.startsWith("/admin/senior");
   const isNewsRoute = location.pathname.includes("/admin/news");
+  const isManualRoute = location.pathname.includes("/admin/manual");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = React.useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = React.useState(false);
@@ -181,12 +181,6 @@ export default function AdminLayout() {
       ).length || 0
     );
   }, [jobDemands, activeCompanyId]);
-
-  const pendingHrCount = React.useMemo(() => {
-    return (
-      recruitmentApplications?.filter((a) => a.status === "pending" && a.isCurrent !== false).length || 0
-    );
-  }, [recruitmentApplications]);
 
   const availableCompanies = React.useMemo(() => {
     const list: { companyId: string; companyName: string; roles: string[] }[] =
@@ -321,7 +315,6 @@ export default function AdminLayout() {
           label: "Estrutura da Frota",
           icon: Truck,
           path: "/admin/fleet",
-          badge: pendingHrCount,
         },
         {
           label: "Ranking",
@@ -337,6 +330,11 @@ export default function AdminLayout() {
           label: "Relatórios",
           icon: Activity,
           path: "/admin/reports",
+        },
+        {
+          label: "Manual",
+          icon: BookOpen,
+          path: "/admin/manual",
         },
       ],
     },
@@ -360,7 +358,7 @@ export default function AdminLayout() {
           <div
             data-nvu-background-brand
             data-nvu-layout-brand
-            className="hidden lg:flex items-center gap-2"
+            className="hidden lg:flex items-center"
           >
             <h1 className="font-bold text-lg text-gray-900 dark:text-[#fafafa] tracking-tight">
               NVU
@@ -369,9 +367,9 @@ export default function AdminLayout() {
           <div
             data-nvu-background-brand
             data-nvu-layout-brand
-            className="lg:hidden font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none"
+            className="lg:hidden flex items-center font-bold text-lg text-gray-900 dark:text-[#fafafa] leading-none"
           >
-            NVU
+            <span>NVU</span>
           </div>
         </div>
 
@@ -651,11 +649,6 @@ export default function AdminLayout() {
                         <item.icon size={18} strokeWidth={2} />
                         {item.label}
                       </div>
-                      {item.badge ? (
-                        <span className="bg-yellow-100 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                          {item.badge}
-                        </span>
-                      ) : null}
                     </NavLink>
                   ))}
                 </div>
@@ -722,6 +715,7 @@ export default function AdminLayout() {
           >
             <div className="max-w-6xl mx-auto">
               {!isSeniorPanelRoute &&
+              !isManualRoute &&
               !activeCompanyId &&
               companies.length > 0 &&
               !location.pathname.includes("/admin/fleet") ? (
@@ -745,6 +739,7 @@ export default function AdminLayout() {
                   </button>
                 </div>
               ) : !isSeniorPanelRoute &&
+                !isManualRoute &&
                 !activeCompanyId &&
                 companies.length === 0 &&
                 !location.pathname.includes("/admin/fleet") ? (

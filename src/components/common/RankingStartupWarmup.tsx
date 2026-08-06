@@ -4,6 +4,7 @@ import {
   useRankingFilterStore,
   useSessionStore,
 } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { auth } from "../../lib/firebase";
 import { getCustomRange, getEndOfDay, getMonthlyRange, getStartOfDay, getWeeklyRange } from "../../lib/metricsEngine";
 import { preloadRoute } from "../../lib/routePreload";
@@ -17,6 +18,11 @@ import {
   resolveRankingUserPhoto,
   warmRankingUserProfiles,
 } from "../../lib/rankingPhotoWarmup";
+import { getRuntimePerformanceProfile } from "../../lib/runtimePerformance";
+import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
+import { buildRankingAggregatePeriodKey } from "../../lib/rankingAggregates";
+import { warmRankingAggregate } from "../../repositories/RankingAggregateRepository";
+import { warmRankingCompaniesByIds } from "../../hooks/useRankingCompaniesByIds";
 
 /**
  * Keeps the Ranking's data and avatars warm while the user is still on the
@@ -24,14 +30,15 @@ import {
  * Ranking click does not start Firestore/image work from inside the route.
  */
 export default function RankingStartupWarmup() {
+  const runtime = useMemo(getRuntimePerformanceProfile, []);
+  const { authInitialized, sessionReady, currentUser } = useSessionStore();
   const {
-    authInitialized,
-    sessionReady,
-    currentUser,
     allCompanies,
+    companies: profileCompanies,
+    activeCompanyId,
     companiesLoading,
-  } = useSessionStore();
-  const { users: knownUsers } = useOperationalStore();
+  } = useCompanyStore();
+  const { users: knownUsers, simulators } = useOperationalStore();
   const {
     globalPeriodPreset: periodPreset,
     globalStartDateStr: startDateStr,
@@ -45,6 +52,65 @@ export default function RankingStartupWarmup() {
     authInitialized &&
     sessionReady &&
     authenticatedForUid;
+
+  const activeCompany = useMemo(() => {
+    const companyPool = [...allCompanies, ...profileCompanies];
+    return companyPool.find(
+      (company: any) => String(company?.id || "") === activeCompanyId,
+    );
+  }, [activeCompanyId, allCompanies, profileCompanies]);
+  const activeSimulatorId = useMemo(
+    () =>
+      resolveCompanySimulatorFilterValue(
+        activeCompany as Record<string, unknown> | undefined,
+        simulators as Record<string, unknown>[],
+        [...allCompanies, ...profileCompanies] as Record<string, unknown>[],
+      ),
+    [activeCompany, allCompanies, profileCompanies, simulators],
+  );
+  const aggregatePeriodType =
+    periodPreset === "semana" || periodPreset === "mes"
+      ? periodPreset
+      : null;
+  const aggregatePeriodKey = useMemo(
+    () =>
+      aggregatePeriodType
+        ? buildRankingAggregatePeriodKey(aggregatePeriodType, referenceDate)
+        : "",
+    [aggregatePeriodType, referenceDate],
+  );
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !activeSimulatorId ||
+      !aggregatePeriodType ||
+      !aggregatePeriodKey
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    void warmRankingAggregate(
+      activeSimulatorId,
+      aggregatePeriodType,
+      aggregatePeriodKey,
+    )
+      .then((aggregate) => {
+        if (cancelled || !aggregate) return;
+        return warmRankingCompaniesByIds(Object.keys(aggregate.companies));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeSimulatorId,
+    aggregatePeriodKey,
+    aggregatePeriodType,
+    enabled,
+  ]);
 
   const rankingRange = useMemo(() => {
     if (periodPreset === "semana") return getWeeklyRange(referenceDate);
@@ -64,11 +130,16 @@ export default function RankingStartupWarmup() {
     return getMonthlyRange(referenceDate);
   }, [endDateStr, periodPreset, referenceDate, startDateStr]);
 
+  // Weekly and monthly rankings now read one consolidated document on the
+  // ranking route. Keep the heavier trip warm-up only for custom periods,
+  // which intentionally retain the legacy client-side calculation fallback.
+  const shouldWarmTrips =
+    enabled && periodPreset !== "semana" && periodPreset !== "mes";
   const { trips, loading: tripsLoading, refreshing: tripsRefreshing } =
     useTripsRealtime({
       startDate: rankingRange.start,
       endDate: rankingRange.end,
-      enabled,
+      enabled: shouldWarmTrips,
       keepPreviousData: true,
     });
 
@@ -91,7 +162,7 @@ export default function RankingStartupWarmup() {
     users: rankingUsers,
     loading: rankingUsersLoading,
     refreshing: rankingUsersRefreshing,
-  } = useRankingUsersRealtime(participantIds, enabled);
+  } = useRankingUsersRealtime(participantIds, shouldWarmTrips);
 
   // Start the route chunk and the account-scoped readiness barrier as soon as
   // authentication is confirmed. This is intentionally not idle-scheduled.
@@ -118,8 +189,17 @@ export default function RankingStartupWarmup() {
     [...knownUsers, ...rankingUsers].forEach((user: any) =>
       add(resolveRankingUserPhoto(user)),
     );
-    return Array.from(urls);
-  }, [allCompanies, knownUsers, rankingUsers]);
+    return Array.from(urls).slice(
+      0,
+      runtime.constrained ? 8 : runtime.mobileViewport ? 48 : 512,
+    );
+  }, [
+    allCompanies,
+    knownUsers,
+    rankingUsers,
+    runtime.constrained,
+    runtime.mobileViewport,
+  ]);
 
   const photoSignature = photoUrls.join("|");
   const registeredPhotoSignatureRef = useRef("");
@@ -130,24 +210,38 @@ export default function RankingStartupWarmup() {
 
     // Register the mapping before the request starts so the route itself can
     // reuse it if the user taps while the final batch is still settling.
-    void warmRankingUserProfiles([...knownUsers, ...rankingUsers], 12);
-    void registerRankingPhotoUrls(uid, photoUrls, 12);
+    const concurrency = runtime.constrained
+      ? 1
+      : runtime.mobileViewport
+        ? 3
+        : 8;
+    void warmRankingUserProfiles(
+      [...knownUsers, ...rankingUsers].slice(
+        0,
+        runtime.constrained ? 8 : runtime.mobileViewport ? 48 : 512,
+      ),
+      concurrency,
+    );
+    void registerRankingPhotoUrls(uid, photoUrls, concurrency);
   }, [
     enabled,
     knownUsers,
     photoSignature,
     photoUrls,
     rankingUsers,
+    runtime.constrained,
+    runtime.mobileViewport,
     uid,
   ]);
 
   const sourceReady =
     enabled &&
     !companiesLoading &&
-    !tripsLoading &&
-    !tripsRefreshing &&
-    (!participantIds.length ||
-      (!rankingUsersLoading && !rankingUsersRefreshing));
+    (!shouldWarmTrips ||
+      (!tripsLoading &&
+        !tripsRefreshing &&
+        (!participantIds.length ||
+          (!rankingUsersLoading && !rankingUsersRefreshing))));
 
   useEffect(() => {
     if (!sourceReady || !uid) return;

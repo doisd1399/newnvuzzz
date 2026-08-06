@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { PhotoProvider, PhotoView } from 'react-photo-view';
 import 'react-photo-view/dist/react-photo-view.css';
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import {
   ArrowLeft,
   MapPin,
@@ -27,7 +28,7 @@ import {
   onSnapshot
 } from "firebase/firestore";
 import { toast } from "sonner";
-import { uploadService } from "../../services/uploadService";
+import { uploadService, UploadError } from "../../services/uploadService";
 import { TripsRepository } from "../../repositories/TripsRepository";
 import { OperationalSuspensionNotice } from "../../components/OperationalSuspensionNotice";
 import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
@@ -35,24 +36,53 @@ import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { parseTripValue } from "../../lib/tripNormalizer";
 import { extractGtoTripValue } from "../../services/gtoOcrService";
 import {
+  isFileAccessError,
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../../lib/fileAccess";
+import {
   parseTripDistance,
   requiresTripDistance,
   resolveTripSimulatorCode,
 } from "../../lib/tripDistance";
 
-const generateImageHash = async (file: File): Promise<string> => {
+const generateImageHash = async (
+  arrayBuffer: ArrayBuffer,
+  file: File,
+): Promise<string> => {
   if (!window.crypto || !window.crypto.subtle) {
     return file.name + file.size + file.lastModified;
   }
-  const arrayBuffer = await file.arrayBuffer();
   const hashBuffer = await window.crypto.subtle.digest("SHA-256", arrayBuffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
+const resolveImageUploadErrorMessage = (
+  error: unknown,
+  phase: string,
+): string => {
+  if (isFileAccessError(error)) {
+    return normalizeFileAccessError(error).message;
+  }
+
+  if (error instanceof UploadError) return error.message;
+
+  if (phase === "hashing") {
+    return "Não foi possível validar a imagem selecionada. Selecione-a novamente.";
+  }
+
+  if (phase === "duplicate-check") {
+    return "Não foi possível verificar o comprovante no servidor. Confira a conexão e tente novamente.";
+  }
+
+  return "Não foi possível concluir o envio. Confira a conexão e tente novamente.";
+};
+
 export default function RecordTrip() {
   const navigate = useNavigate();
-  const { currentUser, companies, activeCompanyId, memberships } = useSessionStore();
+  const { currentUser } = useSessionStore();
+  const { companies, activeCompanyId, memberships } = useCompanyStore();
   const { suspension: operationalSuspension } = useOperationalSuspension(
     currentUser as any,
   );
@@ -294,8 +324,13 @@ export default function RecordTrip() {
     : null;
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const input = e.currentTarget;
+    const selectedFile = input.files?.[0];
+    // Release the native picker reference immediately. Android document
+    // providers can invalidate it after the change event finishes.
+    input.value = "";
+
+    if (selectedFile) {
       const now = Date.now();
       const recentUploads = uploadCountMinute.filter(time => now - time < 60000);
       
@@ -308,71 +343,83 @@ export default function RecordTrip() {
         return;
       }
 
-      const requestId = ++ocrRequestIdRef.current;
-      const localPreviewUrl = URL.createObjectURL(file);
-      receiptOriginalNameRef.current = file.name.trim();
-      setImagePreview(localPreviewUrl);
-
-      const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
-      const simulatorName =
-        currentCompany.simulatorName ||
-        simulators.find((simulator) => simulator.id === simulatorId)?.name ||
-        resolvedSimulatorCode;
-      const isGto = resolvedSimulatorCode === "GTO";
-      console.log("[NVU GTO OCR] context", {
-        simulatorId,
-        simulatorName,
-        resolvedSimulatorCode,
-        isGto,
-      });
-
-      // OCR and upload run at the same time. The screenshot no longer waits for
-      // recognition before it starts uploading, keeping the page responsive.
-      if (isGto) {
-        setIsReadingValue(true);
-        void extractGtoTripValue(file)
-          .then((detected) => {
-            if (ocrRequestIdRef.current !== requestId) return;
-
-            if (detected) {
-              setValor(detected);
-              toast.success(`Valor identificado: R$ ${detected}`);
-              return;
-            }
-
-            toast.warning(
-              "Não foi possível confirmar o valor automaticamente. Confira e preencha manualmente.",
-            );
-          })
-          .finally(() => {
-            if (ocrRequestIdRef.current === requestId) {
-              setIsReadingValue(false);
-            }
-          });
-      } else {
-        setIsReadingValue(false);
-      }
-
       setIsUploading(true);
       setUploadProgress(0);
+      setImageHash(null);
+      let localPreviewUrl: string | null = null;
+      let phase = "capturing-file";
 
       try {
-        const hash = await generateImageHash(file);
+        // Make one immediate browser-owned snapshot before OCR, hashing and
+        // compression start. This prevents concurrent reads of a temporary
+        // Android content URI, which caused NotReadableError in the field.
+        const { file, bytes } = await snapshotSelectedFile(selectedFile, {
+          maxBytes: 10 * 1024 * 1024,
+          fallbackName: `comprovante-${now}.jpg`,
+        });
+
+        const requestId = ++ocrRequestIdRef.current;
+        localPreviewUrl = URL.createObjectURL(file);
+        receiptOriginalNameRef.current = file.name.trim();
+        setImagePreview(localPreviewUrl);
+
+        const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
+        const simulatorName =
+          currentCompany.simulatorName ||
+          simulators.find((simulator) => simulator.id === simulatorId)?.name ||
+          resolvedSimulatorCode;
+        const isGto = resolvedSimulatorCode === "GTO";
+        console.log("[NVU GTO OCR] context", {
+          simulatorId,
+          simulatorName,
+          resolvedSimulatorCode,
+          isGto,
+        });
+
+        // OCR is non-blocking, but it now reads the stable in-memory copy.
+        if (isGto) {
+          setIsReadingValue(true);
+          void extractGtoTripValue(file)
+            .then((detected) => {
+              if (ocrRequestIdRef.current !== requestId) return;
+
+              if (detected) {
+                setValor(detected);
+                toast.success(`Valor identificado: R$ ${detected}`);
+                return;
+              }
+
+              toast.warning(
+                "Não foi possível confirmar o valor automaticamente. Confira e preencha manualmente.",
+              );
+            })
+            .finally(() => {
+              if (ocrRequestIdRef.current === requestId) {
+                setIsReadingValue(false);
+              }
+            });
+        } else {
+          setIsReadingValue(false);
+        }
+
+        phase = "hashing";
+        const hash = await generateImageHash(bytes, file);
         
+        phase = "duplicate-check";
         const isDuplicate = await TripsRepository.checkImageHash(hash);
         
         if (isDuplicate) {
           toast.error("Esta imagem já foi utilizada em um lançamento anterior.");
           ocrRequestIdRef.current += 1;
           setIsReadingValue(false);
-          setIsUploading(false);
           setImagePreview(null);
+          setImageHash(null);
           receiptOriginalNameRef.current = "";
-          URL.revokeObjectURL(localPreviewUrl);
-          if (fileInputRef.current) fileInputRef.current.value = "";
+          if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
           return;
         }
 
+        phase = "firebase-upload";
         const url = await uploadService.uploadImage({
           file,
           companyId: currentCompany?.id || "Geral",
@@ -390,18 +437,22 @@ export default function RecordTrip() {
         setUploadCountMinute([...recentUploads, now]);
         setImageHash(hash);
         setImagePreview(url);
-        URL.revokeObjectURL(localPreviewUrl);
+        if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
         toast.success("Comprovante pronto para envio!", { position: "top-center" });
-      } catch (err: any) {
-        console.error("Upload error:", err);
+      } catch (error: unknown) {
+        const normalizedError = normalizeFileAccessError(error);
+        const userMessage = resolveImageUploadErrorMessage(error, phase);
+        console.error("Upload error:", {
+          phase,
+          error: normalizedError,
+        });
         ocrRequestIdRef.current += 1;
         setIsReadingValue(false);
         setImagePreview(null);
+        setImageHash(null);
         receiptOriginalNameRef.current = "";
-        URL.revokeObjectURL(localPreviewUrl);
-        toast.error(
-          `Falha no envio da imagem. Tente novamente. ${err.message}`,
-        );
+        if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
+        toast.error(`Falha no envio da imagem. ${userMessage}`);
       } finally {
         setIsUploading(false);
         setUploadProgress(0);

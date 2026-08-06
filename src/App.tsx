@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import { Toaster } from "sonner";
@@ -7,7 +7,8 @@ import InitialBootOverlay from "./components/common/InitialBootOverlay";
 import RoleTransitionOverlay from "./components/common/RoleTransitionOverlay";
 import Login from "./pages/Login";
 import SelectProfile from "./pages/SelectProfile";
-import { AppProvider, useAppStore, useSessionStore } from "./context/AppContext";
+import { AppProvider, useOperationalStore, useSessionStore } from "./context/AppContext";
+import { useCompanyStore } from "./context/CompanyContext";
 import { isAuthTeardownActive, onAuthTeardown } from "./lib/authLifecycle";
 import { preloadImages } from "./lib/imageCache";
 import { resolveProfilePhoto } from "./lib/resolveProfilePhoto";
@@ -15,6 +16,7 @@ import { preloadRoleRoutes, preloadRoute } from "./lib/routePreload";
 import { membershipHasRole } from "./lib/membershipRoles";
 import { writeBatch, doc } from "firebase/firestore";
 import { db } from "./lib/firebase";
+import { getRuntimePerformanceProfile } from "./lib/runtimePerformance";
 
 // Placeholders for Pages
 const Portal = lazy(() => import("./pages/Portal"));
@@ -38,6 +40,7 @@ const RecordTrip = lazy(() => import("./pages/driver/RecordTrip"));
 const RecruitmentApply = lazy(() => import("./pages/RecruitmentApply"));
 const AuditPage = lazy(() => import("./pages/AuditPage"));
 const ApplicationStatus = lazy(() => import("./pages/ApplicationStatus"));
+const Manual = lazy(() => import("./pages/Manual"));
 
 const TripHistory = lazy(() => import("./pages/driver/TripHistory"));
 const JoinCompany = lazy(() => import("./pages/driver/JoinCompany"));
@@ -158,17 +161,43 @@ const RouteWarmup = () => {
     sessionReady,
     currentUser,
     activeRole,
-    activeCompanyId,
-    allCompanies,
-    companiesLoading,
   } = useSessionStore();
+  const { activeCompanyId, allCompanies, companiesLoading } = useCompanyStore();
+  const backgroundLogoSignatureRef = useRef("");
+
+  const activeCompany = useMemo(
+    () => allCompanies.find((company) => company.id === activeCompanyId),
+    [activeCompanyId, allCompanies],
+  );
+  const currentUserPhoto = resolveProfilePhoto(currentUser);
+  const identityImages = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            currentUserPhoto,
+            activeCompany?.logoUrl,
+            activeCompany?.logoURL,
+            (activeCompany as any)?.logo,
+          ]
+            .map((value) => String(value || "").trim())
+            .filter(Boolean),
+        ),
+      ),
+    [
+      activeCompany?.logoURL,
+      activeCompany?.logoUrl,
+      (activeCompany as any)?.logo,
+      currentUserPhoto,
+    ],
+  );
+  const identityImageSignature = identityImages.join("|");
 
   useEffect(() => {
     if (!authInitialized || !currentUser) return;
 
-    // The profile selector is part of the critical authenticated path. Warm it
-    // immediately, together with every home screen the current memberships can
-    // open, so profile changes do not fall through to a route placeholder.
+    // Critical destinations remain warmed immediately. This is a small module
+    // preload and does not start background Firestore/image work.
     void preloadRoute("/select-profile");
     if (activeRole) {
       void preloadRoute(
@@ -180,43 +209,43 @@ const RouteWarmup = () => {
   useEffect(() => {
     if (!authInitialized || !activeRole || companiesLoading) return;
 
-    // The initial screen only needs the active company's identity. Loading
-    // every company logo at boot consumed bandwidth and decoding time before
-    // the user even opened the ranking.
-    const activeCompany = allCompanies.find(
-      (company) => company.id === activeCompanyId,
-    );
-
-    void preloadImages(
-      [
-        resolveProfilePhoto(currentUser),
-        activeCompany?.logoUrl,
-        activeCompany?.logoURL,
-        (activeCompany as any)?.logo,
-      ],
-      3,
-    );
-
-    const connection = (navigator as Navigator & {
-      connection?: { saveData?: boolean; effectiveType?: string };
-    }).connection;
-    if (
-      connection?.saveData ||
-      connection?.effectiveType === "slow-2g" ||
-      connection?.effectiveType === "2g"
-    ) {
-      return;
+    const runtime = getRuntimePerformanceProfile();
+    if (identityImages.length > 0) {
+      void preloadImages(
+        identityImages,
+        runtime.mobileViewport ? 1 : 2,
+        "high",
+      );
     }
 
-    const additionalLogos = allCompanies
-      .flatMap((company: any) => [
-        company.logoUrl,
-        company.logoURL,
-        company.logo,
-      ])
-      .filter(Boolean)
-      .slice(0, 72);
-    const warmLogos = () => void preloadImages(additionalLogos, 3);
+    // Speculative logo decoding is useful on desktop, but it competes with the
+    // active page in mobile WebViews and especially inside AI Studio's iframe.
+    if (runtime.backgroundImageLimit <= 0) return;
+
+    const additionalLogos = Array.from(
+      new Set(
+        allCompanies
+          .flatMap((company: any) => [
+            company.logoUrl,
+            company.logoURL,
+            company.logo,
+          ])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean),
+      ),
+    )
+      .filter((url) => !identityImages.includes(url))
+      .slice(0, runtime.backgroundImageLimit);
+    const signature = additionalLogos.join("|");
+    if (!signature || backgroundLogoSignatureRef.current === signature) return;
+    backgroundLogoSignatureRef.current = signature;
+
+    const warmLogos = () =>
+      void preloadImages(
+        additionalLogos,
+        runtime.backgroundImageConcurrency,
+        "low",
+      );
     const idleApi = window as Window & {
       requestIdleCallback?: (
         callback: () => void,
@@ -224,65 +253,70 @@ const RouteWarmup = () => {
       ) => number;
       cancelIdleCallback?: (id: number) => void;
     };
-    if (idleApi.requestIdleCallback) {
-      const idleId = idleApi.requestIdleCallback(warmLogos, { timeout: 1200 });
-      return () => idleApi.cancelIdleCallback?.(idleId);
-    }
-    const timer = window.setTimeout(warmLogos, 900);
-    return () => window.clearTimeout(timer);
+    const timer = window.setTimeout(() => {
+      if (idleApi.requestIdleCallback) {
+        const idleId = idleApi.requestIdleCallback(warmLogos, {
+          timeout: runtime.mobileViewport ? 3200 : 1400,
+        });
+        backgroundLogoSignatureRef.current = `${signature}#idle:${idleId}`;
+        return;
+      }
+      warmLogos();
+    }, runtime.backgroundWarmupDelayMs);
+
+    return () => {
+      window.clearTimeout(timer);
+      const marker = backgroundLogoSignatureRef.current.match(/#idle:(\d+)$/);
+      if (marker) idleApi.cancelIdleCallback?.(Number(marker[1]));
+      if (backgroundLogoSignatureRef.current.startsWith(signature)) {
+        backgroundLogoSignatureRef.current = signature;
+      }
+    };
   }, [
-    activeCompanyId,
     activeRole,
     allCompanies,
     authInitialized,
     companiesLoading,
-    currentUser,
+    identityImageSignature,
+    identityImages,
   ]);
 
   useEffect(() => {
     if (!authInitialized || !sessionReady || !activeRole) return;
 
-    // The role home is the most likely next screen after session/profile
-    // hydration. Start only its chunk immediately; secondary screens remain
-    // idle so the first click has the whole main thread available.
     void preloadRoute(
       activeRole === "admin" ? "/admin/fleet" : "/driver/profile",
     );
 
-    const connection = (navigator as Navigator & {
-      connection?: { saveData?: boolean; effectiveType?: string };
-    }).connection;
-    if (
-      connection?.saveData ||
-      connection?.effectiveType === "slow-2g" ||
-      connection?.effectiveType === "2g"
-    ) {
-      return;
-    }
+    const runtime = getRuntimePerformanceProfile();
+    if (!runtime.allowSecondaryRouteWarmup) return;
 
-    // Secondary route chunks are best-effort and deliberately delayed. The
-    // previous implementation also imported the ranking engines here, which
-    // caused Firestore work and module parsing to compete with the first
-    // authenticated screen.
     const warmRoutes = () => {
       void preloadRoleRoutes(activeRole);
     };
-
-    const idleWindow = (window as Window & {
-      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    const idleApi = window as Window & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
       cancelIdleCallback?: (id: number) => void;
-    }).requestIdleCallback;
+    };
 
-    if (idleWindow) {
-      const idleId = idleWindow(warmRoutes, { timeout: 1600 });
-      return () => {
-        (window as Window & { cancelIdleCallback?: (id: number) => void })
-          .cancelIdleCallback?.(idleId);
-      };
-    }
+    let idleId: number | null = null;
+    const timer = window.setTimeout(() => {
+      if (idleApi.requestIdleCallback) {
+        idleId = idleApi.requestIdleCallback(warmRoutes, {
+          timeout: runtime.mobileViewport ? 4200 : 1800,
+        });
+        return;
+      }
+      warmRoutes();
+    }, runtime.mobileViewport ? 3200 : 1400);
 
-    const timer = window.setTimeout(warmRoutes, 1400);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
+    };
   }, [authInitialized, sessionReady, activeRole]);
 
   return null;
@@ -306,6 +340,8 @@ const DeferredRankingWarmup = () => {
       return;
     }
 
+    const runtime = getRuntimePerformanceProfile();
+
     let cancelled = false;
     const enable = () => {
       if (!cancelled) setEnabled(true);
@@ -317,19 +353,24 @@ const DeferredRankingWarmup = () => {
       ) => number;
       cancelIdleCallback?: (id: number) => void;
     };
+    let idleId: number | null = null;
+    const timer = window.setTimeout(() => {
+      // Constrained runtimes still warm the single aggregate document and its
+      // referenced companies. Avoid waiting for a long idle window because
+      // mobile WebViews often never grant one while animations/listeners run.
+      if (runtime.allowRankingWarmup && idleApi.requestIdleCallback) {
+        idleId = idleApi.requestIdleCallback(enable, {
+          timeout: runtime.mobileViewport ? 5200 : 2600,
+        });
+      } else {
+        enable();
+      }
+    }, runtime.allowRankingWarmup ? runtime.rankingWarmupDelayMs : 350);
 
-    if (idleApi.requestIdleCallback) {
-      const idleId = idleApi.requestIdleCallback(enable, { timeout: 2400 });
-      return () => {
-        cancelled = true;
-        idleApi.cancelIdleCallback?.(idleId);
-      };
-    }
-
-    const timer = window.setTimeout(enable, 2200);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
     };
   }, [activeRole, authInitialized, currentUser?.id, sessionReady]);
 
@@ -355,12 +396,9 @@ const ProtectedRoute = ({
     membershipsLoaded,
     sessionReady,
     activeRole,
-    activeCompanyId,
-    memberships,
-    companies,
     isSeniorAuthenticated,
-  } =
-    useSessionStore();
+  } = useSessionStore();
+  const { activeCompanyId, memberships, companies } = useCompanyStore();
 
   if (!authInitialized || !sessionReady) {
     return <RouteLoading fullPage />;
@@ -478,6 +516,7 @@ function AppRouteContent() {
           <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
           <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
           <Route path="news" element={<LazyRoute><NewsFeed /></LazyRoute>} />
+          <Route path="manual" element={<LazyRoute><Manual /></LazyRoute>} />
           <Route path="driver/:id" element={<LazyRoute><DriverProfileIsolated /></LazyRoute>} />
         </Route>
 
@@ -498,6 +537,7 @@ function AppRouteContent() {
           <Route path="history" element={<LazyRoute><TripHistory /></LazyRoute>} />
           <Route path="news" element={<LazyRoute><NewsFeed /></LazyRoute>} />
           <Route path="reports" element={<LazyRoute><Reports /></LazyRoute>} />
+          <Route path="manual" element={<LazyRoute><Manual /></LazyRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -528,7 +568,7 @@ function AppRoutes() {
 }
 
 const LegacyMigration = () => {
-  const { jobs, contracts } = useAppStore();
+  const { jobs, contracts } = useOperationalStore();
 
   useEffect(() => {
     if (jobs.length === 0 || contracts.length === 0) return;
@@ -634,7 +674,7 @@ const LegacyMigration = () => {
 };
 
 const ContractSnapshotMigration = () => {
-  const { jobs, contracts } = useAppStore();
+  const { jobs, contracts } = useOperationalStore();
 
   useEffect(() => {
     if (jobs.length === 0 || contracts.length === 0) return;

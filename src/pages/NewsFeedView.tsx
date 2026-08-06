@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Award,
+  BadgeCheck,
   Building2,
   CalendarDays,
   ChevronDown,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
   Search,
   SlidersHorizontal,
+  UserRound,
 } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { StableImage } from "../components/common/StableImage";
@@ -137,7 +139,7 @@ function SectionHeader({ title, subtitle, count }: { title: string; subtitle: st
 function FeedNotice() {
   const raw = CURRENT_MONTH_FORMATTER.format(new Date());
   const monthLabel = raw.charAt(0).toLocaleUpperCase("pt-BR") + raw.slice(1);
-  return `${monthLabel} está em andamento. O feed mostra somente períodos encerrados em uma linha do tempo estável. Cada período reúne, no máximo, um resumo de empresas e um resumo de motoristas; o dia anterior publica às 00:30, a semana completa publica na segunda-feira às 00:30 e o mês encerrado publica no primeiro dia do mês seguinte às 00:30.`;
+  return `${monthLabel} está em andamento. As classificações mostram somente períodos encerrados. Novas empresas aprovadas também entram na linha do tempo na data da aprovação. A semana completa publica na segunda-feira e o mês encerrado no primeiro dia do mês seguinte.`;
 }
 
 function monthTitleLabel(post: FeedItem): string {
@@ -183,7 +185,7 @@ function CompanyFooter({
   priority,
   compact = false,
 }: {
-  logo: unknown;
+  logo: string | undefined | null;
   name: string;
   priority: boolean;
   compact?: boolean;
@@ -194,7 +196,7 @@ function CompanyFooter({
       compact ? "min-h-7 py-1" : "min-h-8 py-1.5",
     )}>
       <StableImage
-        src={logo}
+        src={logo as string | undefined}
         alt={name}
         loading={priority ? "eager" : "lazy"}
         preload={priority}
@@ -553,9 +555,82 @@ function CommunicationCard({ post }: { post: FeedItem }) {
   );
 }
 
+function CompanyApprovalCard({ post, priority }: { post: FeedItem; priority: boolean }) {
+  const companyName = String(post?.empresaNome || post?.empresa?.nome || "Empresa NVU");
+  const companyLogo = post?.empresaLogo || post?.empresa?.logo;
+  const ownerName = String(post?.proprietarioNome || post?.proprietario?.nome || "Proprietário");
+  const ownerPhoto = post?.proprietarioFoto || post?.proprietario?.foto;
+  const publicationDate = toDate(post?.approvedAt || post?.sortAt || post?.dataReferencia || post?.createdAt);
+  const dateLabel = String(post?.dataAprovacaoLabel || (publicationDate ? FULL_DATE_FORMATTER.format(publicationDate) : "Data não informada"));
+  const simulator = String(post?.simulador || "Simulador NVU");
+  const caption = String(post?.legenda || "").trim() || `${companyName} agora faz parte do ecossistema NVU.`;
+
+  return (
+    <article className="nvu-content-auto overflow-hidden rounded-[20px] border border-emerald-200 bg-white dark:border-emerald-500/25 dark:bg-[#101014]">
+      <div className="px-4 py-4 sm:px-5 sm:py-5">
+        <div className="flex items-start justify-between gap-3">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300">
+            <BadgeCheck size={12} /> Nova empresa
+          </span>
+          <span className="text-[9px] font-bold text-slate-400">
+            {relativeTime(post?.sortAt || post?.approvedAt || post?.createdAt)}
+          </span>
+        </div>
+
+        <h3 className="mt-3 text-[18px] font-black leading-tight tracking-[-0.03em] text-slate-950 dark:text-white sm:text-[21px]">
+          {String(post?.titulo || "Nova empresa no ecossistema NVU")}
+        </h3>
+        <p className="mt-2 max-w-[62ch] text-[12px] leading-relaxed text-slate-600 dark:text-slate-300 sm:text-[13px]">
+          {caption}
+        </p>
+
+        <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-[#0d0f13]">
+            <StableImage
+              src={companyLogo}
+              alt={companyName}
+              loading={priority ? "eager" : "lazy"}
+              preload={priority}
+              wrapperClassName="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318]"
+              className="object-cover"
+              fallback={<Building2 size={20} className="text-slate-400" />}
+            />
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">Empresa</p>
+              <p className="mt-1 truncate text-[14px] font-black leading-tight text-slate-950 dark:text-white">{companyName}</p>
+            </div>
+          </div>
+
+          <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-[#0d0f13]">
+            <StableImage
+              src={ownerPhoto}
+              alt={ownerName}
+              loading={priority ? "eager" : "lazy"}
+              preload={priority}
+              wrapperClassName="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-[#111318]"
+              className="object-cover"
+              fallback={<UserRound size={20} className="text-slate-400" />}
+            />
+            <div className="min-w-0">
+              <p className="text-[9px] font-black uppercase tracking-[0.12em] text-slate-400">Proprietário</p>
+              <p className="mt-1 truncate text-[14px] font-black leading-tight text-slate-950 dark:text-white">{ownerName}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-2 gap-2 border-t border-slate-200/80 pt-3 text-[9px] font-black uppercase tracking-[0.12em] text-slate-400 dark:border-slate-800">
+          <span className="inline-flex min-w-0 items-center gap-1.5"><CalendarDays size={11} className="shrink-0" /><span className="truncate">{dateLabel}</span></span>
+          <span className="inline-flex min-w-0 items-center justify-end gap-1.5"><Gamepad2 size={11} className="shrink-0" /><span className="truncate">{simulator}</span></span>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 const MemoSpotlightCard = React.memo(SpotlightCard);
 const MemoClassificationCard = React.memo(ClassificationCard);
 const MemoCommunicationCard = React.memo(CommunicationCard);
+const MemoCompanyApprovalCard = React.memo(CompanyApprovalCard);
 
 function LoadingCardSkeleton() {
   return (
@@ -737,6 +812,16 @@ export default function NewsFeedView({
             {filteredPosts.map((post, index) => {
               if (activeSection !== "noticias") {
                 return <MemoCommunicationCard key={post.id} post={post} />;
+              }
+
+              if (post?.tipo === "empresa_aprovada") {
+                return (
+                  <MemoCompanyApprovalCard
+                    key={post.id}
+                    post={post}
+                    priority={index < 2}
+                  />
+                );
               }
 
               const entity: "empresa" | "motorista" = post?.entidade === "motorista" || (

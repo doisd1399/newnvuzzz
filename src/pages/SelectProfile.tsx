@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSessionStore } from "../context/AppContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
+import { resolveRecruitmentPhoto } from "../lib/recruitmentPhoto";
 import {
   ChevronRight,
   ShieldCheck,
@@ -16,7 +18,7 @@ import {
 import { auth } from "../lib/firebase";
 import { ProfileModal } from "../components/ProfileModal";
 import { StableImage } from "../components/common/StableImage";
-import { preloadRoute } from "../lib/routePreload";
+import { preloadFleetPanel, preloadRoute } from "../lib/routePreload";
 import { prepareAndCommitNavigation } from "../lib/navigationTransition";
 import { resolveMembershipRoles } from "../lib/membershipRoles";
 
@@ -45,20 +47,27 @@ export default function SelectProfile() {
     authInitialized,
     membershipsLoaded,
     sessionReady,
-    companies,
-    activeCompanyId,
     activeRole,
-    memberships,
     logOutApp,
     setSeniorCompanyId,
     setIsSeniorAuthenticated,
   } = useSessionStore();
+  const {
+    companies,
+    allCompanies,
+    companyCatalogLoaded,
+    loadCompanyCatalog,
+    activeCompanyId,
+    memberships,
+    recruitmentApplications,
+  } = useCompanyStore();
   const navigate = useNavigate();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
     null,
   );
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const switchingRoleRef = useRef(false);
 
   useEffect(() => {
@@ -99,13 +108,120 @@ export default function SelectProfile() {
     return list;
   }, [memberships, companies, currentUser?.id]);
 
+  const latestPendingApplication = useMemo(() => {
+    if (!currentUser?.id && !currentUser?.email) return null;
+
+    const pendingApplications = recruitmentApplications.filter((application) => {
+      if (application.status !== "pending") return false;
+      if (application.isCurrent === false) return false;
+      if (application.type === "company_registration") return false;
+
+      const matchesUserId =
+        currentUser?.id && application.userId === currentUser.id;
+      const matchesEmail =
+        currentUser?.email &&
+        application.email?.toLowerCase() === currentUser.email.toLowerCase();
+
+      return Boolean(matchesUserId || matchesEmail);
+    });
+
+    if (pendingApplications.length === 0) return null;
+
+    return [...pendingApplications].sort((a, b) => {
+      const timeA = new Date(a.createdAt || 0).getTime();
+      const timeB = new Date(b.createdAt || 0).getTime();
+      return timeB - timeA;
+    })[0];
+  }, [currentUser?.email, currentUser?.id, recruitmentApplications]);
+
+  useEffect(() => {
+    if (
+      availableCompanies.length === 0 &&
+      latestPendingApplication?.companyId &&
+      (!companyCatalogLoaded ||
+        !allCompanies.some(
+          (company) => company.id === latestPendingApplication.companyId,
+        ))
+    ) {
+      void loadCompanyCatalog();
+    }
+  }, [
+    allCompanies,
+    availableCompanies.length,
+    companyCatalogLoaded,
+    latestPendingApplication?.companyId,
+    loadCompanyCatalog,
+  ]);
+
+  const pendingApplicationCompany = useMemo(() => {
+    if (!latestPendingApplication?.companyId) return null;
+    return (
+      allCompanies.find((company) => company.id === latestPendingApplication.companyId) ||
+      companies.find((company) => company.id === latestPendingApplication.companyId) ||
+      null
+    );
+  }, [allCompanies, companies, latestPendingApplication?.companyId]);
+
+  const pendingApplicationUserName = useMemo(() => {
+    return (
+      currentUser?.name?.trim() ||
+      latestPendingApplication?.fullName?.trim() ||
+      currentUser?.email?.split("@")[0] ||
+      "Usuário"
+    );
+  }, [currentUser?.email, currentUser?.name, latestPendingApplication?.fullName]);
+
+  const pendingApplicationUserPhoto = useMemo(
+    () =>
+      resolveRecruitmentPhoto(latestPendingApplication, currentUser) ||
+      resolveProfilePhoto(currentUser) ||
+      null,
+    [currentUser, latestPendingApplication],
+  );
+
+  const pendingApplicationCompanyName = useMemo(() => {
+    return (
+      pendingApplicationCompany?.companyName?.trim() ||
+      pendingApplicationCompany?.fleetName?.trim() ||
+      "Empresa em análise"
+    );
+  }, [pendingApplicationCompany]);
+
+  const pendingApplicationCompanyLogo = useMemo(() => {
+    return (
+      pendingApplicationCompany?.logoUrl ||
+      pendingApplicationCompany?.logoURL ||
+      pendingApplicationCompany?.companyLogoURL ||
+      null
+    );
+  }, [pendingApplicationCompany]);
+
+  const pendingApplicationDateTime = useMemo(() => {
+    const rawValue = latestPendingApplication?.createdAt;
+    if (!rawValue) return "Data indisponível";
+
+    const parsedDate = new Date(rawValue);
+    if (Number.isNaN(parsedDate.getTime())) return "Data indisponível";
+
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(parsedDate);
+  }, [latestPendingApplication?.createdAt]);
+
   useEffect(() => {
     if (!membershipsLoaded || availableCompanies.length === 0) return;
 
     const availableRoles = new Set(
       availableCompanies.flatMap((company) => company.roles || []),
     );
-    if (availableRoles.has("admin")) void preloadRoute("/admin/fleet");
+    if (availableRoles.has("admin")) {
+      void preloadRoute("/admin/fleet");
+      void preloadFleetPanel("company");
+    }
     if (availableRoles.has("driver")) void preloadRoute("/driver/profile");
     void preloadRoute("/ranking");
   }, [availableCompanies, membershipsLoaded]);
@@ -169,6 +285,10 @@ export default function SelectProfile() {
     }
   };
 
+  const handleBackToStart = () => {
+    navigate("/", { replace: true });
+  };
+
   // Auto enter if exactly 1 profile available globally
   useEffect(() => {
     if (totalProfilesCount === 1 && availableCompanies.length === 1) {
@@ -201,38 +321,142 @@ export default function SelectProfile() {
   // Handle empty state (no companies/memberships)
   if (availableCompanies.length === 0) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex flex-col items-center justify-center p-6 font-sans">
-        <div className="w-full max-w-md bg-white dark:bg-[#18181b] p-8 rounded-3xl shadow-xl dark:shadow-none border border-slate-100 dark:border-[#2A2F3A] text-center">
-          <div className="w-16 h-16 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <Building2 size={32} />
+      <div className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex flex-col items-center justify-center p-4 font-sans">
+        <div className="w-full max-w-md bg-white dark:bg-[#18181b] p-6 sm:p-8 rounded-3xl shadow-xl dark:shadow-none border border-slate-100 dark:border-[#2A2F3A] text-center">
+          <div className="w-14 h-14 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <Building2 size={28} />
           </div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white mb-2">
             Sem vínculos
           </h2>
-          <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 leading-relaxed">
-            Sua conta não possui vínculos ativos com nenhuma empresa ou frota no
-            momento.
+          <p className="text-sm text-slate-500 dark:text-[#a1a1aa] mb-6 leading-relaxed px-1">
+            {latestPendingApplication
+              ? "Você ainda não possui vínculos ativos. Acompanhe sua última inscrição."
+              : "Sua conta não possui vínculos ativos com nenhuma empresa no momento."}
           </p>
-          <div className="flex flex-col gap-3">
-            <button
-              onClick={() => navigate("/apply")}
-              className="w-full py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
-            >
-              Buscar Vagas em Frotas
-            </button>
-            <button
-              onClick={() => navigate("/register-company")}
-              className="w-full py-3.5 rounded-xl bg-slate-100 dark:bg-[#27272a] hover:bg-slate-200 dark:hover:bg-[#3f3f46] text-slate-700 dark:text-white font-semibold transition-colors"
-            >
-              Registrar minha Empresa
-            </button>
+          {latestPendingApplication && (
+            <div className="mb-6 rounded-2xl border border-slate-200 dark:border-[#2A2F3A] bg-slate-50/80 dark:bg-[#111318] p-3.5 sm:p-4 text-left">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-3 mb-4">
+                <div>
+                  <p className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-[#71717a]">
+                    Última inscrição
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-[#a1a1aa] mt-0.5">
+                    {pendingApplicationDateTime}
+                  </p>
+                </div>
+                <span className="inline-flex w-fit items-center rounded-full bg-amber-50 dark:bg-amber-500/10 px-2 py-1 text-[10px] sm:text-[11px] font-semibold text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20 whitespace-nowrap">
+                  Em avaliação
+                </span>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
+                  <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
+                    {pendingApplicationUserPhoto ? (
+                      <StableImage
+                        src={pendingApplicationUserPhoto}
+                        alt={pendingApplicationUserName}
+                        wrapperClassName="w-full h-full"
+                        className="object-cover"
+                        fallback={
+                          <User
+                            size={16}
+                            className="text-slate-400 dark:text-[#a1a1aa]"
+                          />
+                        }
+                      />
+                    ) : (
+                      <User size={16} className="text-slate-400 dark:text-[#a1a1aa]" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
+                      Motorista
+                    </p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                      {pendingApplicationUserName}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
+                  <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
+                    {pendingApplicationCompanyLogo ? (
+                      <StableImage
+                        src={pendingApplicationCompanyLogo}
+                        alt={pendingApplicationCompanyName}
+                        wrapperClassName="w-full h-full"
+                        className="object-cover"
+                        fallback={
+                          <Building2
+                            size={16}
+                            className="text-slate-400 dark:text-[#a1a1aa]"
+                          />
+                        }
+                      />
+                    ) : (
+                      <Building2
+                        size={16}
+                        className="text-slate-400 dark:text-[#a1a1aa]"
+                      />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
+                      Empresa
+                    </p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                      {pendingApplicationCompanyName}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {latestPendingApplication && (
+            <p className="text-[11px] sm:text-xs text-slate-400 dark:text-[#a1a1aa] leading-relaxed mb-5 px-1">
+              Você será notificado(a) assim que houver resposta (se as notificações estiverem ativas).
+            </p>
+          )}
+          <div className="flex flex-col sm:grid sm:grid-cols-2 gap-3">
+            {showLogoutConfirm ? (
+              <div className="sm:col-span-2 flex flex-col gap-3 p-4 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20">
+                <p className="text-[12px] sm:text-[13px] font-medium text-red-800 dark:text-red-200 leading-relaxed text-center">
+                  Ao desconectar, você não receberá a notificação da resposta. Continuar?
+                </p>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <button
+                    onClick={() => setShowLogoutConfirm(false)}
+                    className="w-full py-2.5 rounded-lg bg-white dark:bg-[#18181b] border border-red-200 dark:border-red-500/30 text-slate-700 dark:text-slate-300 font-semibold text-sm transition-colors hover:bg-slate-50 dark:hover:bg-[#22252d]"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full py-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold text-sm transition-colors"
+                  >
+                    Desconectar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={() => setShowLogoutConfirm(true)}
+                  className="w-full py-3 sm:py-3.5 rounded-xl bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 border border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 font-semibold text-sm sm:text-base transition-colors"
+                >
+                  Desconectar
+                </button>
+                <button
+                  onClick={handleBackToStart}
+                  className="w-full py-3 sm:py-3.5 rounded-xl bg-slate-100 dark:bg-[#27272a] hover:bg-slate-200 dark:hover:bg-[#3f3f46] text-slate-700 dark:text-white font-semibold text-sm sm:text-base transition-colors"
+                >
+                  Ir para o início
+                </button>
+              </>
+            )}
           </div>
-          <button
-            onClick={handleLogout}
-            className="mt-6 text-sm font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-          >
-            Sair e voltar ao login
-          </button>
         </div>
       </div>
     );

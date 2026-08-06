@@ -1,0 +1,6 @@
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+Validação sintática: 119 arquivos TS/TSX analisados sem erro de parsing.
+Build completo indisponível: dependência zwitch@2.0.4 ausente no cache offline.

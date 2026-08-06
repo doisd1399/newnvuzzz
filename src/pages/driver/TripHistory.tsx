@@ -51,6 +51,7 @@ import {
   type DriverSuspensionDurationHours,
 } from "../../lib/driverSuspension";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { onAuthTeardown } from "../../lib/authLifecycle";
 import { normalizeTrip, parseTripValue } from "../../lib/tripNormalizer";
 import {
@@ -1038,13 +1039,13 @@ export default function TripHistory({
   companyId?: string;
 } = {}) {
   const navigate = useNavigate();
+  const { currentUser, activeRole } = useSessionStore();
   const {
-    currentUser,
     activeCompanyId: contextActiveCompanyId,
-    activeRole,
     companies,
-  } = useSessionStore();
-  const { contracts, jobs, users, allCompanyMembers, simulators } = useOperationalStore();
+    allCompanyMembers,
+  } = useCompanyStore();
+  const { contracts, jobs, users, simulators } = useOperationalStore();
   const activeCompanyId = companyId || contextActiveCompanyId;
   const {
     historicoTrips: companyHistoryTrips = [],

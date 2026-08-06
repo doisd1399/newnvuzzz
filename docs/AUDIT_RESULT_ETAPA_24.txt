@@ -1,0 +1,7 @@
+NVU — Etapa 24
+Auditoria de custos: APROVADA (0 críticos, 0 avisos)
+Compatibilidade de notificações legadas: APROVADA
+Transpilação sintática: APROVADA (126 arquivos TypeScript/TSX)
+Arquivos JSON: APROVADOS
+Build completo: não executado; zwitch@2.0.4 indisponível no registro do ambiente
+Deploy necessário: somente frontend

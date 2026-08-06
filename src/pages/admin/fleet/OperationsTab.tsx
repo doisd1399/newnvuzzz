@@ -2,6 +2,7 @@ import { resolveDriverPhoto } from '../../../lib/resolveDriverPhoto';
 import React, { useState, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useActivityStore, useOperationalStore, useRankingFilterStore, useSessionStore } from "../../../context/AppContext";
+import { useCompanyStore } from "../../../context/CompanyContext";
 import { StableImage } from "../../../components/common/StableImage";
 import { preloadImages } from "../../../lib/imageCache";
 
@@ -83,7 +84,8 @@ import { DesempenhoOperacionalCard } from "../../../components/DesempenhoOperaci
 import { useTripHistory } from "../../../hooks/useTripHistory";
 
 function OperationsTab() {
-  const { companies, currentUser, activeCompanyId } = useSessionStore();
+  const { currentUser } = useSessionStore();
+  const { companies, activeCompanyId, allCompanyMembers } = useCompanyStore();
   const {
     users,
     contracts,
@@ -91,8 +93,8 @@ function OperationsTab() {
     vehicles,
     trailers,
     cancelJob,
-    allCompanyMembers,
     rejectJobDemand,
+    operationalDataReady,
   } = useOperationalStore();
   const { jobDemands } = useActivityStore();
   const {
@@ -623,6 +625,40 @@ function OperationsTab() {
     }, [activeJobsList]);
 
   const totalActiveList = activeJobsList.length || 1; // avoid div by 0
+  // This dashboard contains company-wide totals. Never render a driver-only
+  // or partially hydrated scope as if it were the final company result.
+  // Exact cached company snapshots already report ready and remain instant.
+  if (!operationalDataReady) {
+    return (
+      <div className="space-y-5" aria-live="polite">
+        <div className="h-11 rounded-xl bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] shadow-sm" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={index}
+              className="h-24 rounded-2xl bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] p-4"
+            >
+              <div className="h-3 w-20 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+              <div className="mt-4 h-6 w-12 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+            </div>
+          ))}
+        </div>
+        <div className="min-h-[240px] rounded-2xl bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] p-5">
+          <div className="flex items-center justify-between mb-5">
+            <div className="h-4 w-36 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+            <div className="h-8 w-24 rounded-lg bg-slate-100 dark:bg-white/5 animate-pulse" />
+          </div>
+          <div className="space-y-3">
+            <div className="h-14 rounded-xl bg-slate-50 dark:bg-white/[0.035] animate-pulse" />
+            <div className="h-14 rounded-xl bg-slate-50 dark:bg-white/[0.035] animate-pulse" />
+          </div>
+          <p className="mt-5 text-[12px] text-slate-500 dark:text-slate-400 font-medium text-center">
+            Sincronizando dados operacionais
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

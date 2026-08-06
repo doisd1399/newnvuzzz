@@ -153,7 +153,12 @@ export function rememberImageReady(url?: string | null): void {
  * gives Android WebView a better chance of reusing the decoded bitmap during
  * route changes. The browser's own HTTP cache remains available after eviction.
  */
-export function preloadImage(url?: string | null): Promise<void> {
+export type ImagePreloadPriority = "high" | "auto" | "low";
+
+export function preloadImage(
+  url?: string | null,
+  priority: ImagePreloadPriority = "auto",
+): Promise<void> {
   const normalizedUrl = normalizeImageUrl(url);
   if (!normalizedUrl || typeof window === "undefined") {
     return Promise.resolve();
@@ -168,7 +173,7 @@ export function preloadImage(url?: string | null): Promise<void> {
   const image = new Image();
   image.loading = "eager";
   (image as HTMLImageElement & { fetchPriority?: string }).fetchPriority =
-    "high";
+    priority;
   image.decoding = "async";
 
   const entry: ImageCacheEntry = {
@@ -214,6 +219,7 @@ export function preloadImage(url?: string | null): Promise<void> {
 export function preloadImages(
   urls: Array<string | null | undefined>,
   concurrency = 4,
+  priority: ImagePreloadPriority = "auto",
 ): Promise<void> {
   const uniqueUrls = Array.from(
     new Set(urls.map(normalizeImageUrl).filter(Boolean)),
@@ -224,7 +230,7 @@ export function preloadImages(
   const worker = async () => {
     while (cursor < uniqueUrls.length) {
       const url = uniqueUrls[cursor++];
-      await preloadImage(url);
+      await preloadImage(url, priority);
     }
   };
 

@@ -1,0 +1,5 @@
+NVU — Etapa 23
+Auditoria de custos: APROVADA (0 críticos, 0 avisos)
+Compatibilidade de notificações legadas: APROVADA
+Transpilação sintática dos arquivos alterados: APROVADA
+Build completo: não executado; zwitch@2.0.4 indisponível no registro do ambiente

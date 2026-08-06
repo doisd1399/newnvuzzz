@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
-import { useNotificationStore, useSessionStore } from "../context/AppContext";
+import { useSessionStore } from "../context/AppContext";
+import { useNotificationStore } from "../context/NotificationsContext";
 import { shouldDisplayNotificationPopup } from "../lib/notificationScope";
 
 const MAX_POPUP_AGE_MS = 60_000;

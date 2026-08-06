@@ -1,11 +1,24 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateNvuNewsMonthlyScheduled = exports.generateNvuNewsScheduled = exports.generateNvuNewsBackfill = exports.repairApprovedMembership = exports.sendPushNotification = exports.registerPushDevice = exports.pushOnLegacyNotificationCreated = exports.pushOnNotificationCreated = void 0;
+exports.auditCompanyStorageImagesOnDelete = exports.auditUserStorageImagesOnDelete = exports.auditCompanyStorageImagesOnUpdate = exports.auditUserStorageImagesOnUpdate = exports.updateRankingAggregatesOnTripWrite = exports.ensureRankingAggregates = exports.syncCompanyApprovalNews = exports.publishCompanyApprovalNewsOnOwnerProfileWrite = exports.publishCompanyApprovalNewsOnCompanyCreate = exports.publishCompanyApprovalNews = exports.generateNvuNewsMonthlyScheduled = exports.generateNvuNewsScheduled = exports.generateNvuNewsBackfill = exports.repairApprovedMembership = exports.sendPushNotification = exports.registerPushDevice = exports.pushOnLegacyNotificationCreated = exports.pushOnNotificationCreated = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const node_crypto_1 = require("node:crypto");
 admin.initializeApp();
 const db = admin.firestore();
+function readEnabledFlag(value, defaultValue = true) {
+    if (typeof value !== "string" || !value.trim())
+        return defaultValue;
+    const normalized = value.trim().toLowerCase();
+    if (["false", "0", "off", "no"].includes(normalized))
+        return false;
+    if (["true", "1", "on", "yes"].includes(normalized))
+        return true;
+    return defaultValue;
+}
+// Compatibilidade ativada por padrão. A Function só deve ser removida depois
+// que nenhum cliente ou regra ainda gravar na coleção `notificacoes`.
+const LEGACY_NOTIFICATION_PUSH_ENABLED = readEnabledFlag(process.env.ENABLE_LEGACY_NOTIFICATION_PUSH);
 function asNonEmptyString(value) {
     if (typeof value !== "string")
         return null;
@@ -155,6 +168,10 @@ exports.pushOnNotificationCreated = functions.firestore
 exports.pushOnLegacyNotificationCreated = functions.firestore
     .document("notificacoes/{notificationId}")
     .onCreate(async (snapshot, context) => {
+    if (!LEGACY_NOTIFICATION_PUSH_ENABLED) {
+        console.log(`[NVU PUSH] Evento legado ${context.params.notificationId} ignorado por configuração.`);
+        return;
+    }
     await sendNotificationDocumentPush("notificacoes", context.params.notificationId, snapshot.data());
 });
 /**
@@ -324,4 +341,17 @@ var nvuNewsBackfill_1 = require("./nvuNewsBackfill");
 Object.defineProperty(exports, "generateNvuNewsBackfill", { enumerable: true, get: function () { return nvuNewsBackfill_1.generateNvuNewsBackfill; } });
 Object.defineProperty(exports, "generateNvuNewsScheduled", { enumerable: true, get: function () { return nvuNewsBackfill_1.generateNvuNewsScheduled; } });
 Object.defineProperty(exports, "generateNvuNewsMonthlyScheduled", { enumerable: true, get: function () { return nvuNewsBackfill_1.generateNvuNewsMonthlyScheduled; } });
+var companyApprovalNews_1 = require("./companyApprovalNews");
+Object.defineProperty(exports, "publishCompanyApprovalNews", { enumerable: true, get: function () { return companyApprovalNews_1.publishCompanyApprovalNews; } });
+Object.defineProperty(exports, "publishCompanyApprovalNewsOnCompanyCreate", { enumerable: true, get: function () { return companyApprovalNews_1.publishCompanyApprovalNewsOnCompanyCreate; } });
+Object.defineProperty(exports, "publishCompanyApprovalNewsOnOwnerProfileWrite", { enumerable: true, get: function () { return companyApprovalNews_1.publishCompanyApprovalNewsOnOwnerProfileWrite; } });
+Object.defineProperty(exports, "syncCompanyApprovalNews", { enumerable: true, get: function () { return companyApprovalNews_1.syncCompanyApprovalNews; } });
+var rankingAggregates_1 = require("./rankingAggregates");
+Object.defineProperty(exports, "ensureRankingAggregates", { enumerable: true, get: function () { return rankingAggregates_1.ensureRankingAggregates; } });
+Object.defineProperty(exports, "updateRankingAggregatesOnTripWrite", { enumerable: true, get: function () { return rankingAggregates_1.updateRankingAggregatesOnTripWrite; } });
+var storageCleanupAudit_1 = require("./storageCleanupAudit");
+Object.defineProperty(exports, "auditUserStorageImagesOnUpdate", { enumerable: true, get: function () { return storageCleanupAudit_1.auditUserStorageImagesOnUpdate; } });
+Object.defineProperty(exports, "auditCompanyStorageImagesOnUpdate", { enumerable: true, get: function () { return storageCleanupAudit_1.auditCompanyStorageImagesOnUpdate; } });
+Object.defineProperty(exports, "auditUserStorageImagesOnDelete", { enumerable: true, get: function () { return storageCleanupAudit_1.auditUserStorageImagesOnDelete; } });
+Object.defineProperty(exports, "auditCompanyStorageImagesOnDelete", { enumerable: true, get: function () { return storageCleanupAudit_1.auditCompanyStorageImagesOnDelete; } });
 //# sourceMappingURL=index.js.map

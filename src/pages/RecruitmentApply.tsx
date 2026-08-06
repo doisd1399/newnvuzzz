@@ -2,6 +2,7 @@ import { resolveSimulatorId } from "../lib/resolveSimulator";
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useOperationalStore, useSessionStore } from "../context/AppContext";
+import { useCompanyStore } from "../context/CompanyContext";
 import {
   CheckCircle2,
   ChevronRight,
@@ -28,6 +29,10 @@ import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import { auth, storage } from "../lib/firebase";
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
+import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../lib/fileAccess";
 
 const RECRUITMENT_PHOTO_MAX_BYTES = 280_000;
 const RECRUITMENT_PHOTO_TIMEOUT_MS = 30_000;
@@ -141,21 +146,24 @@ const PENDING_RECRUITMENT_APPLICATION_ID_KEY =
 export default function RecruitmentApply() {
   const { companyId } = useParams();
   const navigate = useNavigate();
+  const { sessionReady, currentUser } = useSessionStore();
   const {
     allCompanies,
     companiesLoading,
-    sessionReady,
-    currentUser,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
     memberships,
-  } = useSessionStore();
-  const {
-    simulators,
-    simulatorsLoading,
-    simulatorsError,
     submitRecruitmentApplication,
-  } = useOperationalStore();
+  } = useCompanyStore();
+  const { simulators, simulatorsLoading, simulatorsError } = useOperationalStore();
 
   const [selectedSimulatorId, setSelectedSimulatorId] = useState("");
+
+  useEffect(() => {
+    if (companyCatalogLoaded || companyCatalogAttempted) return;
+    void loadCompanyCatalog();
+  }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog]);
   // simulatorName is only for display; simulatorId is the canonical key.
   const [selectedCompanyId, setSelectedCompanyId] = useState("");
   const [company, setCompany] = useState<any>(null);
@@ -224,15 +232,20 @@ export default function RecruitmentApply() {
     const selectionVersion = ++imageSelectionVersion.current;
     setUploadingImage(true);
     try {
-      const dataUrl = await compressRecruitmentPhoto(file);
+      const { file: stableFile } = await snapshotSelectedFile(file, {
+        maxBytes: 10 * 1024 * 1024,
+        fallbackName: `recrutamento-${Date.now()}.jpg`,
+      });
+      const dataUrl = await compressRecruitmentPhoto(stableFile);
       if (selectionVersion !== imageSelectionVersion.current) return;
       setPhotoPreview(dataUrl);
       setFormData((previous) => ({
         ...previous,
         applicationPhotoURL: "",
       }));
-    } catch (error: any) {
-      alert(error?.message || "Não foi possível processar a imagem.");
+    } catch (error: unknown) {
+      const normalizedError = normalizeFileAccessError(error);
+      alert(normalizedError.message);
     } finally {
       if (selectionVersion === imageSelectionVersion.current) {
         setUploadingImage(false);
@@ -274,7 +287,8 @@ export default function RecruitmentApply() {
     [allCompanies, selectedSimulatorId, simulators],
   );
 
-  const formReady = !simulatorsLoading && !companiesLoading;
+  const formReady =
+    companyCatalogAttempted && !simulatorsLoading && !companiesLoading;
 
   useEffect(() => {
     if (!formReady || !companyId) return;
@@ -324,6 +338,22 @@ export default function RecruitmentApply() {
           {simulatorsError
             ? "O Firebase não permitiu carregar a lista pública de simuladores. Verifique as regras publicadas do Firestore."
             : "Não há simuladores ativos disponíveis para novas inscrições no momento."}
+        </p>
+        <Button onClick={() => navigate("/")}>Voltar ao Início</Button>
+      </div>
+    );
+  }
+
+  if (companyCatalogAttempted && !companyCatalogLoaded) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-[#18181b] px-4 text-center">
+        <Briefcase size={48} className="text-slate-300 mb-4" />
+        <h1 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-2">
+          Falha ao carregar empresas
+        </h1>
+        <p className="text-slate-500 dark:text-[#71717a] mb-6 max-w-sm">
+          Não foi possível carregar o catálogo público de empresas. Tente abrir
+          esta página novamente.
         </p>
         <Button onClick={() => navigate("/")}>Voltar ao Início</Button>
       </div>

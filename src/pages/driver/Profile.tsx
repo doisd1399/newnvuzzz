@@ -3,8 +3,10 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import Dashboard from "./Dashboard";
 import { useOperationalStore, useSessionStore, type User } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { StableImage } from "../../components/common/StableImage";
+import { OperationProgressBar } from "../../components/common/OperationProgressBar";
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips, getTodayRange, getWeeklyRange, getMonthlyRange } from "../../lib/metricsEngine";
@@ -59,10 +61,11 @@ import {
 import { createPortal } from "react-dom";
 import { ProfileModal } from "../../components/ProfileModal";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
-import { useTripHistory } from "../../hooks/useTripHistory";
+import { useDriverTrips } from "../../hooks/useDriverTrips";
 import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
 import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import { preloadRoute } from "../../lib/routePreload";
+import { getCanonicalTripCompanyId } from "../../lib/tripIdentity";
 
 type DriverProfileTab = "dashboard" | "profile" | "operations";
 
@@ -88,7 +91,12 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
     activeCompanyId,
     setActiveCompanyId,
     memberships,
-  } = useSessionStore();
+    companiesLoading,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
+    allCompanyMembers,
+  } = useCompanyStore();
   const {
     jobs,
     contracts,
@@ -97,10 +105,20 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
     users,
     updateUserOnlineStatus,
     requestNewJobDemand,
-    allCompanyMembers,
     simulators,
+    jobsReady,
+    contractsReady,
   } = useOperationalStore();
-  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
+  const driverTripState = useDriverTrips(currentUser.id);
+  const historicoTrips = useMemo(
+    () =>
+      driverTripState.trips.filter((trip) => {
+        const tripCompanyId = getCanonicalTripCompanyId(trip);
+        return !activeCompanyId || tripCompanyId === activeCompanyId;
+      }),
+    [activeCompanyId, driverTripState.trips],
+  );
+  const driverTripsLoading = driverTripState.loading;
   const [isSimulatorMenuOpen, setIsSimulatorMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
@@ -131,6 +149,37 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
   useEffect(() => {
     setVisitedTabs(prev => prev.has(activeTab) ? prev : new Set(prev).add(activeTab));
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!needsProfileMetrics || companyCatalogLoaded || companyCatalogAttempted) return;
+
+    // Driver-owned trips and identity are the critical first paint. Load the
+    // complete company catalog in idle time for global position details.
+    let cancelled = false;
+    const run = () => {
+      if (!cancelled) void loadCompanyCatalog();
+    };
+    const requestIdle = (window as any).requestIdleCallback as
+      | ((callback: () => void, options?: { timeout: number }) => number)
+      | undefined;
+    const cancelIdle = (window as any).cancelIdleCallback as
+      | ((id: number) => void)
+      | undefined;
+
+    if (requestIdle) {
+      const idleId = requestIdle(run, { timeout: 1_200 });
+      return () => {
+        cancelled = true;
+        cancelIdle?.(idleId);
+      };
+    }
+
+    const timer = window.setTimeout(run, 450);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog, needsProfileMetrics]);
 
   // Profile, dashboard and operations are views inside one route. Store the
   // selected view in React Router so browser/WebView Back restores the
@@ -209,8 +258,9 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         .filter(
           (job) =>
             job.driverId === currentUser.id &&
-            ["pending", "active", "delayed"].includes(job.status) &&
-            contractsMap.has(job.contractId),
+            ["pending", "active", "awaiting_completion", "delayed"].includes(
+              job.status,
+            ),
         )
         .sort((a, b) => {
           if (a.status === "active" && b.status !== "active") return -1;
@@ -219,7 +269,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
           const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
           return dateB - dateA;
         }),
-    [contractsMap, currentUser.id, jobs],
+    [currentUser.id, jobs],
   );
 
   const activeJob = validActiveJobs[0];
@@ -234,6 +284,11 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
   const activeTrailer = activeTrailerId
     ? trailersMap.get(activeTrailerId)
     : null;
+  // A confirmed jobs snapshot is enough to decide whether an operation
+  // exists. When one exists, its card remains in a synchronization state only
+  // until the single referenced contract is hydrated.
+  const activeOperationResolved =
+    jobsReady && (!activeJob || Boolean(activeContract) || contractsReady);
 
   // Historical jobs logic (xp calculation only looks at completed)
   const allDriverJobs = useMemo(
@@ -842,24 +897,32 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
             )}
 
             {showSecondary && (
-              <DriverPerformanceCard
-                historicoTrips={historicoTrips}
-                driverId={currentUser?.id}
-                activeCompanyId={activeCompanyId}
-                allCompanyMembers={allCompanyMembers}
-                users={users}
-                currentUser={currentUser}
-                simulatorId={resolveCompanySimulatorFilterValue(
-                  currentActiveCompany,
-                  simulators as Record<string, unknown>[],
-                  allCompanies as Record<string, unknown>[],
-                )}
-                allCompanies={allCompanies}
-                simulators={simulators as Record<string, unknown>[]}
-                displayLevel={displayLevel}
-                currentLevelXp={currentLevelXp}
-                xpProgress={xpProgress}
-              />
+              needsProfileMetrics ? (
+                <DriverPerformanceCard
+                  historicoTrips={historicoTrips}
+                  driverId={currentUser?.id}
+                  activeCompanyId={activeCompanyId}
+                  allCompanyMembers={allCompanyMembers}
+                  users={users}
+                  currentUser={currentUser}
+                  globalTripsLoading={
+                    !companyCatalogLoaded || companiesLoading ? true : undefined
+                  }
+                  driverTripsLoading={driverTripsLoading}
+                  simulatorId={resolveCompanySimulatorFilterValue(
+                    currentActiveCompany,
+                    simulators as Record<string, unknown>[],
+                    allCompanies as Record<string, unknown>[],
+                  )}
+                  allCompanies={allCompanies}
+                  simulators={simulators as Record<string, unknown>[]}
+                  displayLevel={displayLevel}
+                  currentLevelXp={currentLevelXp}
+                  xpProgress={xpProgress}
+                />
+              ) : (
+                <div className="min-h-[220px]" aria-hidden="true" />
+              )
             )}
           </div>
         )}
@@ -867,7 +930,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         {(visitedTabs.has("operations") || activeTab === "operations") && (
           <div className={cn(activeTab !== "operations" && "hidden", "space-y-6 sm:space-y-8")}>
             <div className="flex flex-col gap-3">
-              {!activeJob && currentUser.isOnline && (
+              {!activeJob && activeOperationResolved && currentUser.isOnline && (
                 <Button
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-12 font-bold text-[14px] shadow-sm tracking-tight transition-all"
                   onClick={handleRequestWork}
@@ -1056,15 +1119,18 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
 
                     {/* Compact Progress bar */}
                     <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
-                      <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
-                        <div
-                          className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
-                          style={{
-                            transform: `scaleX(${Math.min(100, Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)) / 100})`,
-                            willChange: "transform",
-                          }}
-                        ></div>
-                      </div>
+                      <OperationProgressBar
+                        percent={
+                          activeContract.totalDeliveries > 0
+                            ? Math.round(
+                                (activeJob.progress /
+                                  activeContract.totalDeliveries) *
+                                  100,
+                              )
+                            : 0
+                        }
+                        replayKey={`${location.key}:${activeTab}:${activeJob.id}`}
+                      />
                       <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
                         Progresso da operação
                       </p>
@@ -1127,6 +1193,26 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                       </div>
                     </div>
                   </div>
+                </div>
+              ) : !activeOperationResolved ? (
+                <div
+                  className="min-h-[160px] bg-white dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 rounded-[24px] p-5 shadow-sm"
+                  aria-live="polite"
+                >
+                  <div className="flex items-center gap-3 mb-5">
+                    <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-white/5 animate-pulse" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3 w-36 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+                      <div className="h-2.5 w-24 rounded bg-slate-100 dark:bg-white/5 animate-pulse" />
+                    </div>
+                  </div>
+                  <div className="space-y-2.5">
+                    <div className="h-10 rounded-xl bg-slate-50 dark:bg-white/[0.035] animate-pulse" />
+                    <div className="h-10 rounded-xl bg-slate-50 dark:bg-white/[0.035] animate-pulse" />
+                  </div>
+                  <p className="mt-4 text-[12px] text-slate-500 dark:text-slate-400 font-medium text-center">
+                    Sincronizando operação atual
+                  </p>
                 </div>
               ) : (
                 <div className="bg-white dark:bg-[#1A1F26] border border-slate-200/80 dark:border-white/5 border-dashed rounded-[24px] p-8 text-center shadow-sm">
@@ -1518,7 +1604,9 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
             {showSecondary && (
               <Dashboard
                 isIntegrated={true}
-                tripHistoryOverride={historicoTrips}
+                tripHistoryOverride={driverTripState.trips}
+                tripHistoryLoadingOverride={driverTripsLoading}
+                progressAnimationKey={`${location.key}:${activeTab}:dashboard`}
               />
             )}
           </div>

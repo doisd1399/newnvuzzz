@@ -10,6 +10,10 @@ import { ref, uploadString, getDownloadURL } from "firebase/storage";
 import { toast } from "sonner";
 import { Upload, ImageIcon, X, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { generateCnpj } from "../lib/cnpj";
+import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../lib/fileAccess";
 
 const REGISTRATION_IMAGE_MAX_BYTES = 280_000;
 const REGISTRATION_UPLOAD_TIMEOUT_MS = 25_000;
@@ -205,15 +209,20 @@ export default function RegisterCompany() {
     const selectionVersion = ++imageSelectionVersion.current;
     setUploadingImage(true);
     try {
-      const dataUrl = await compressRegistrationImage(file);
+      const { file: stableFile } = await snapshotSelectedFile(file, {
+        maxBytes: 10 * 1024 * 1024,
+        fallbackName: `cadastro-${Date.now()}.jpg`,
+      });
+      const dataUrl = await compressRegistrationImage(stableFile);
       if (selectionVersion !== imageSelectionVersion.current) return;
       if (isOwnerPhoto) {
         setOwnerPhotoPreview(dataUrl);
       } else {
         setPhotoPreview(dataUrl);
       }
-    } catch (error: any) {
-      toast.error(error?.message || "Não foi possível processar a imagem.");
+    } catch (error: unknown) {
+      const normalizedError = normalizeFileAccessError(error);
+      toast.error(normalizedError.message);
     } finally {
       if (selectionVersion === imageSelectionVersion.current) {
         setUploadingImage(false);

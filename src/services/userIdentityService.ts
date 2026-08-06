@@ -11,6 +11,7 @@ import {
   writeBatch,
   type DocumentReference,
 } from "firebase/firestore";
+import { legacyNotificationCompatibility } from "../config/legacyNotifications";
 import { db } from "../lib/firebase";
 import {
   approvedApplicationField,
@@ -34,7 +35,9 @@ const REFERENCE_MIGRATIONS: ReferenceMigrationSpec[] = [
   { collectionName: "trabalhos", fields: ["motoristaId", "driverId"] },
   { collectionName: "companyMembers", fields: ["userId"] },
   { collectionName: "notifications", fields: ["userId"] },
-  { collectionName: "notificacoes", fields: ["userId"] },
+  ...(legacyNotificationCompatibility.resolveLegacy
+    ? [{ collectionName: "notificacoes", fields: ["userId"] }]
+    : []),
   {
     collectionName: "recruitment_applications",
     fields: ["userId", "approvedUserId"],

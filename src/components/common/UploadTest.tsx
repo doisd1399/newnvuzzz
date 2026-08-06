@@ -1,6 +1,10 @@
 import React, { useState, useRef } from "react";
 import { uploadService, UploadError } from "../../services/uploadService";
 import { UploadCloud, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import {
+  normalizeFileAccessError,
+  snapshotSelectedFile,
+} from "../../lib/fileAccess";
 
 export const UploadTest: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
@@ -17,9 +21,23 @@ export const UploadTest: React.FC = () => {
     userId: "USER_456",
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
+    const selectedFile = input.files?.[0];
+    input.value = "";
+
+    if (selectedFile) {
+      try {
+        const { file: stableFile } = await snapshotSelectedFile(selectedFile, {
+          maxBytes: 10 * 1024 * 1024,
+          fallbackName: `upload-${Date.now()}.jpg`,
+        });
+        setFile(stableFile);
+      } catch (error) {
+        setFile(null);
+        setError(normalizeFileAccessError(error).message);
+        return;
+      }
       setError(null);
       setUploadedUrl(null);
       setProgress(0);

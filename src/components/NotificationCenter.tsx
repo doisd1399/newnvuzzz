@@ -8,7 +8,7 @@ import {
   UserRoundPlus,
   ShieldAlert,
 } from "lucide-react";
-import type { AppNotification } from "../context/AppContext";
+import type { AppNotification } from "../context/NotificationsContext";
 import { notificationTimestampMs } from "../lib/notificationScope";
 
 interface NotificationCenterProps {

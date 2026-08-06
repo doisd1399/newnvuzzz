@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSessionStore } from "../../context/AppContext";
 import { preloadRoute } from "../../lib/routePreload";
 import { waitForRankingWarmup } from "../../lib/rankingPhotoWarmup";
+import { getRuntimePerformanceProfile } from "../../lib/runtimePerformance";
 
 const INITIAL_BOOT_ROOT_CLASS = "nvu-initial-boot-active";
 const INITIAL_BUSY_LAYER_SELECTOR =
@@ -62,9 +63,17 @@ export default function InitialBootOverlay() {
       currentUser?.id &&
       /^\/(?:ranking)\/?$/.test(initialPathRef.current)
     ) {
-      void waitForRankingWarmup(currentUser.id).finally(() => {
+      const runtime = getRuntimePerformanceProfile();
+      if (!runtime.allowRankingWarmup) {
+        // Constrained mobile runtimes intentionally skip speculative ranking
+        // work. The route owns its normal on-demand loading and must not wait
+        // for a background barrier that was deliberately disabled.
         rankingWarmupResolvedRef.current = true;
-      });
+      } else {
+        void waitForRankingWarmup(currentUser.id).finally(() => {
+          rankingWarmupResolvedRef.current = true;
+        });
+      }
     } else if (
       !rankingWarmupResolvedRef.current &&
       /^\/(?:ranking)\/?$/.test(initialPathRef.current) &&

@@ -9,9 +9,11 @@ export function cn(...inputs: ClassValue[]) {
 export function convertFileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.readAsDataURL(file);
     reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (error) => reject(error);
+    reader.onerror = () =>
+      reject(reader.error || new Error("Não foi possível ler a imagem."));
+    reader.onabort = () => reject(new Error("A leitura da imagem foi cancelada."));
+    reader.readAsDataURL(file);
   });
 }
 
@@ -21,9 +23,8 @@ export function compressImage(
   maxHeight = 800,
   quality = 0.8,
 ): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.src = base64Str;
     img.onload = () => {
       const canvas = document.createElement("canvas");
       let width = img.width;
@@ -49,12 +50,13 @@ export function compressImage(
         ctx.drawImage(img, 0, 0, width, height);
         resolve(canvas.toDataURL("image/jpeg", quality));
       } else {
-        resolve(base64Str);
+        reject(new Error("Não foi possível preparar a imagem para compactação."));
       }
     };
     img.onerror = () => {
-      resolve(base64Str);
+      reject(new Error("Não foi possível abrir a imagem selecionada."));
     };
+    img.src = base64Str;
   });
 }
 

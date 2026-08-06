@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useOperationalStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { X, Trash2, Plus } from "lucide-react";
 
@@ -8,7 +9,7 @@ export default function ManageContract() {
   const navigate = useNavigate();
   const { id } = useParams<{ id: string }>();
   
-  const { companies, activeCompanyId } = useSessionStore();
+  const { companies, activeCompanyId } = useCompanyStore();
   const {
     contracts,
     sequences,

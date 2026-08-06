@@ -6,6 +6,20 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+function readEnabledFlag(value: unknown, defaultValue = true) {
+  if (typeof value !== "string" || !value.trim()) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["false", "0", "off", "no"].includes(normalized)) return false;
+  if (["true", "1", "on", "yes"].includes(normalized)) return true;
+  return defaultValue;
+}
+
+// Compatibilidade ativada por padrão. A Function só deve ser removida depois
+// que nenhum cliente ou regra ainda gravar na coleção `notificacoes`.
+const LEGACY_NOTIFICATION_PUSH_ENABLED = readEnabledFlag(
+  process.env.ENABLE_LEGACY_NOTIFICATION_PUSH,
+);
+
 type NotificationRecord = {
   userId?: unknown;
   title?: unknown;
@@ -203,6 +217,12 @@ export const pushOnNotificationCreated = functions.firestore
 export const pushOnLegacyNotificationCreated = functions.firestore
   .document("notificacoes/{notificationId}")
   .onCreate(async (snapshot, context) => {
+    if (!LEGACY_NOTIFICATION_PUSH_ENABLED) {
+      console.log(
+        `[NVU PUSH] Evento legado ${context.params.notificationId} ignorado por configuração.`,
+      );
+      return;
+    }
     await sendNotificationDocumentPush(
       "notificacoes",
       context.params.notificationId,
@@ -485,3 +505,16 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
 });
 
 export { generateNvuNewsBackfill, generateNvuNewsScheduled, generateNvuNewsMonthlyScheduled } from "./nvuNewsBackfill";
+export {
+  publishCompanyApprovalNews,
+  publishCompanyApprovalNewsOnCompanyCreate,
+  publishCompanyApprovalNewsOnOwnerProfileWrite,
+  syncCompanyApprovalNews,
+} from "./companyApprovalNews";
+export { ensureRankingAggregates, updateRankingAggregatesOnTripWrite } from "./rankingAggregates";
+export {
+  auditUserStorageImagesOnUpdate,
+  auditCompanyStorageImagesOnUpdate,
+  auditUserStorageImagesOnDelete,
+  auditCompanyStorageImagesOnDelete,
+} from "./storageCleanupAudit";

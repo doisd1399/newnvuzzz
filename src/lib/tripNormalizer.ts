@@ -10,6 +10,9 @@ export interface RawTrip {
   dataLancamento?: any;
   date?: any;
   valor?: string | number;
+  value?: string | number;
+  totalValue?: string | number;
+  ganho?: string | number;
   empresaId?: string;
   empresaNome?: string;
   motoristaId?: string;
@@ -118,10 +121,18 @@ export function normalizeTrip(trip: RawTrip): NormalizedTrip {
     status === "finalizada" ||
     status === "entregue";
 
+  const metricDate = getTripMetricDate(trip);
+  // Historical records created before the status field existed are completed
+  // when they have a usable metric date and are not explicitly canceled. This
+  // is the same rule used by the NVU News aggregation.
+  const isLegacyCompleted = !status && metricDate.getTime() > 0;
+
   return {
     ...trip,
-    isValid: !isCanceled && isCompletedStatus,
-    metricDate: getTripMetricDate(trip),
-    normalizedValor: parseTripValue(trip.valor),
+    isValid: !isCanceled && (isCompletedStatus || isLegacyCompleted),
+    metricDate,
+    normalizedValor: parseTripValue(
+      trip.valor ?? trip.value ?? trip.totalValue ?? trip.ganho,
+    ),
   };
 }

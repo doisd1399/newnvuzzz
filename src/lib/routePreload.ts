@@ -1,3 +1,5 @@
+import { getRuntimePerformanceProfile } from "./runtimePerformance";
+
 type Loader = () => Promise<unknown>;
 
 const routeLoaders: Record<string, Loader[]> = {
@@ -25,6 +27,7 @@ const routeLoaders: Record<string, Loader[]> = {
   ],
   "/admin/reports": [() => import("../pages/admin/Reports")],
   "/admin/news": [() => import("../pages/NewsFeed")],
+  "/admin/manual": [() => import("../pages/Manual")],
   "/admin/senior": [() => import("../pages/admin/SeniorPanel")],
   "/admin/assign": [() => import("../pages/admin/AssignJob")],
   "/admin/add-driver": [() => import("../pages/admin/AddDriver")],
@@ -43,6 +46,7 @@ const routeLoaders: Record<string, Loader[]> = {
   "/driver/history": [() => import("../pages/driver/TripHistory")],
   "/driver/reports": [() => import("../pages/admin/Reports")],
   "/driver/news": [() => import("../pages/NewsFeed")],
+  "/driver/manual": [() => import("../pages/Manual")],
   "/driver/join": [() => import("../pages/driver/JoinCompany")],
   "/ranking": [() => import("../pages/RankingGlobal")],
 };
@@ -120,35 +124,33 @@ export function preloadFleetPanel(panel: string): Promise<void> {
 }
 
 export function preloadRoleRoutes(role: "admin" | "driver"): Promise<void> {
-  const connection = (navigator as Navigator & {
-    connection?: { saveData?: boolean; effectiveType?: string };
-  }).connection;
+  const runtime = getRuntimePerformanceProfile();
+  if (!runtime.allowSecondaryRouteWarmup) return Promise.resolve();
 
-  if (
-    connection?.saveData ||
-    connection?.effectiveType === "slow-2g" ||
-    connection?.effectiveType === "2g"
-  ) {
-    return Promise.resolve();
-  }
-
-  const paths =
+  const desktopPaths =
     role === "admin"
       ? [
           "/admin/fleet",
           "/ranking",
           "/admin/news",
-          "/admin/assign"
+          "/admin/assign",
         ]
       : [
           "/driver/profile",
           "/ranking",
           "/driver/news",
-          "/driver/trip"
+          "/driver/trip",
         ];
 
-  // Two parallel lanes finish the role workspace quickly without allowing
-  // secondary chunks to monopolize the connection used by Firestore/images.
+  // On mobile, preloading every secondary workspace chunk can block the active
+  // page while Vite/React parses those modules. Keep only the most likely two
+  // destinations and use one lane; pointer/focus preloads still warm any route
+  // the user actually approaches.
+  const paths = runtime.mobileViewport
+    ? desktopPaths.filter((path) => path.includes("ranking") || path.includes("news"))
+    : desktopPaths;
+  const workerCount = runtime.mobileViewport ? 1 : 2;
+
   let cursor = 0;
   const worker = async () => {
     while (cursor < paths.length) {
@@ -161,5 +163,7 @@ export function preloadRoleRoutes(role: "admin" | "driver"): Promise<void> {
     }
   };
 
-  return Promise.all([worker(), worker()]).then(() => undefined);
+  return Promise.all(
+    Array.from({ length: workerCount }, () => worker()),
+  ).then(() => undefined);
 }

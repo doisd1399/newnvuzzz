@@ -4,18 +4,23 @@ exports.generateNvuNewsMonthlyScheduled = exports.generateNvuNewsScheduled = exp
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const node_crypto_1 = require("node:crypto");
+const companyApprovalNews_1 = require("./companyApprovalNews");
 const db = admin.firestore();
 const NEWS_TIME_ZONE = "America/Sao_Paulo";
-const AUTOMATION_VERSION = "nvu_news_individual_v3";
-const HISTORY_VERSION = "nvu_news_full_history_individual_v3";
+const AUTOMATION_VERSION = "nvu_news_individual_v4";
+const HISTORY_VERSION = "nvu_news_recent_history_individual_v7";
 const CONTROL_DOCUMENT_ID = AUTOMATION_VERSION;
 const CLASSIFICATIONS_COLLECTION = "nvu_classificacoes";
 const COMMUNICATIONS_COLLECTION = "nvu_comunicados";
 const TRIPS_COLLECTION = "historico_viagens";
 const PAGE_SIZE = 500;
+const RANGE_DATE_FIELDS = ["completedAt", "dataFechamento", "date", "dataLancamento", "createdAt"];
 const WRITE_BATCH_SIZE = 400;
 const PUBLICATION_DELAY_MINUTES = 30;
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
+const HISTORY_LOOKBACK_DAYS = 70;
+const FAILED_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const HISTORY_CHECKPOINT_VERSION = 3;
 function firstNonEmpty(...values) {
     for (const value of values) {
         if (value === null || value === undefined)
@@ -330,33 +335,20 @@ function driverNameOf(aggregate, user) {
 function driverPhotoOf(user) {
     return firstNonEmpty(user === null || user === void 0 ? void 0 : user.profilePhotoURL, user === null || user === void 0 ? void 0 : user.profilePhotoUrl, user === null || user === void 0 ? void 0 : user.photoURL, user === null || user === void 0 ? void 0 : user.photoUrl, user === null || user === void 0 ? void 0 : user.applicationPhotoURL, user === null || user === void 0 ? void 0 : user.applicationPhotoUrl, user === null || user === void 0 ? void 0 : user.authPhotoURL, user === null || user === void 0 ? void 0 : user.avatarUrl, user === null || user === void 0 ? void 0 : user.avatar, user === null || user === void 0 ? void 0 : user.profileImage, user === null || user === void 0 ? void 0 : user.imageUrl);
 }
-async function aggregateTrips(rangeStart, rangeEnd, periodTypes, fullHistory) {
+async function aggregateTrips(rangeStart, rangeEnd, periodTypes) {
     const groups = new Map();
     const companyCache = new Map();
     const now = new Date();
+    const seenTripIds = new Set();
     let sourceTrips = 0;
-    let cursor = null;
-    do {
-        let pageQuery;
-        if (fullHistory) {
-            pageQuery = db.collection(TRIPS_COLLECTION)
-                .orderBy(admin.firestore.FieldPath.documentId())
-                .limit(PAGE_SIZE);
-        }
-        else {
-            pageQuery = db.collection(TRIPS_COLLECTION)
-                .where("completedAt", ">=", admin.firestore.Timestamp.fromDate(rangeStart))
-                .where("completedAt", "<=", admin.firestore.Timestamp.fromDate(rangeEnd))
-                .orderBy("completedAt")
-                .limit(PAGE_SIZE);
-        }
-        if (cursor)
-            pageQuery = pageQuery.startAfter(cursor);
-        const snapshot = await pageQuery.get();
-        if (snapshot.empty)
-            break;
-        cursor = snapshot.docs[snapshot.docs.length - 1];
-        const trips = snapshot.docs
+    const processDocuments = async (documents) => {
+        const uniqueDocuments = documents.filter((document) => {
+            if (seenTripIds.has(document.id))
+                return false;
+            seenTripIds.add(document.id);
+            return true;
+        });
+        const trips = uniqueDocuments
             .map((document) => normalizeTrip(document, rangeStart, rangeEnd))
             .filter((trip) => Boolean(trip));
         sourceTrips += trips.length;
@@ -386,9 +378,31 @@ async function aggregateTrips(rangeStart, rangeEnd, periodTypes, fullHistory) {
                 groups.set(groupKey, group);
             });
         });
-        if (snapshot.size < PAGE_SIZE)
-            break;
-    } while (cursor);
+    };
+    const lowerBound = admin.firestore.Timestamp.fromDate(rangeStart);
+    const upperBound = admin.firestore.Timestamp.fromDate(rangeEnd);
+    // Historical and scheduled generation are always bounded by a date range.
+    // This prevents any accidental full scan of historico_viagens. Legacy date
+    // aliases remain supported and duplicate documents are removed by id.
+    for (const field of RANGE_DATE_FIELDS) {
+        let cursor = null;
+        do {
+            let pageQuery = db.collection(TRIPS_COLLECTION)
+                .where(field, ">=", lowerBound)
+                .where(field, "<=", upperBound)
+                .orderBy(field)
+                .limit(PAGE_SIZE);
+            if (cursor)
+                pageQuery = pageQuery.startAfter(cursor);
+            const snapshot = await pageQuery.get();
+            if (snapshot.empty)
+                break;
+            cursor = snapshot.docs[snapshot.docs.length - 1];
+            await processDocuments(snapshot.docs);
+            if (snapshot.size < PAGE_SIZE)
+                break;
+        } while (cursor);
+    }
     return { groups, sourceTrips, companies: companyCache };
 }
 function entityLabel(entity) {
@@ -569,6 +583,7 @@ async function deleteLegacyCombinedClassifications() {
     let cursor = null;
     do {
         let page = db.collection(CLASSIFICATIONS_COLLECTION)
+            .where("tipo", "==", "classificacao")
             .orderBy(admin.firestore.FieldPath.documentId())
             .limit(WRITE_BATCH_SIZE);
         if (cursor)
@@ -593,9 +608,16 @@ async function deleteLegacyCombinedClassifications() {
     return removed;
 }
 async function migrateLegacyCommunications() {
-    const legacySnapshot = await db.collection("noticias").get();
+    const snapshots = await Promise.all([
+        db.collection("noticias").where("tipo", "==", "manual").get(),
+        db.collection("noticias").where("origem", "==", "senior").get(),
+    ]);
+    const legacyDocuments = new Map();
+    snapshots.forEach((snapshot) => {
+        snapshot.docs.forEach((document) => legacyDocuments.set(document.id, document));
+    });
     const documents = [];
-    legacySnapshot.docs.forEach((snapshot) => {
+    legacyDocuments.forEach((snapshot) => {
         const data = snapshot.data() || {};
         const isManual = data.tipo === "manual" || data.origem === "senior";
         const status = normalizeText(data.status || "publicado");
@@ -640,6 +662,27 @@ async function migrateLegacyCommunications() {
     const result = await commitDocuments(COMMUNICATIONS_COLLECTION, documents);
     return result.created + result.updated;
 }
+const HISTORY_STAGE_ORDER = {
+    pending: 0,
+    classifications_written: 1,
+    company_approvals_written: 2,
+    legacy_classifications_removed: 3,
+    communications_migrated: 4,
+    completed: 5,
+};
+function normalizeHistoryStage(value) {
+    const normalized = firstNonEmpty(value);
+    return Object.prototype.hasOwnProperty.call(HISTORY_STAGE_ORDER, normalized)
+        ? normalized
+        : "pending";
+}
+function historyStageAtLeast(current, expected) {
+    return HISTORY_STAGE_ORDER[current] >= HISTORY_STAGE_ORDER[expected];
+}
+function storedCount(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
 async function acquireHistoryLock(runId) {
     const ref = db.collection("system_settings").doc(CONTROL_DOCUMENT_ID);
     return db.runTransaction(async (transaction) => {
@@ -653,17 +696,52 @@ async function acquireHistoryLock(runId) {
             Date.now() - lockAt.getTime() < LOCK_TIMEOUT_MS) {
             return "in_progress";
         }
-        transaction.set(ref, {
+        const failedAt = parseDate(data.historyFailedAt);
+        if (data.historyVersion === HISTORY_VERSION &&
+            data.historyStatus === "failed" &&
+            failedAt &&
+            Date.now() - failedAt.getTime() < FAILED_RETRY_COOLDOWN_MS) {
+            return "in_progress";
+        }
+        const sameCheckpoint = data.historyVersion === HISTORY_VERSION &&
+            data.historyCheckpointVersion === HISTORY_CHECKPOINT_VERSION;
+        const checkpointStage = sameCheckpoint
+            ? normalizeHistoryStage(data.historyStage)
+            : "pending";
+        const update = {
             version: AUTOMATION_VERSION,
             historyVersion: HISTORY_VERSION,
+            historyCheckpointVersion: HISTORY_CHECKPOINT_VERSION,
+            historyStage: checkpointStage,
             historyStatus: "in_progress",
             historyRunId: runId,
             historyLockAt: admin.firestore.FieldValue.serverTimestamp(),
+            historyLastCheckpointAt: admin.firestore.FieldValue.serverTimestamp(),
+            historyLookbackDays: HISTORY_LOOKBACK_DAYS,
+            historyError: admin.firestore.FieldValue.delete(),
             automationStartedAt: data.automationStartedAt || admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
+        };
+        if (!sameCheckpoint) {
+            update.historyRangeStart = admin.firestore.FieldValue.delete();
+            update.historyRangeEnd = admin.firestore.FieldValue.delete();
+            update.sourceTripCount = admin.firestore.FieldValue.delete();
+            update.generatedHistoryCount = admin.firestore.FieldValue.delete();
+            update.createdCount = admin.firestore.FieldValue.delete();
+            update.updatedCount = admin.firestore.FieldValue.delete();
+            update.ignoredCount = admin.firestore.FieldValue.delete();
+            update.companyApprovalCreatedCount = admin.firestore.FieldValue.delete();
+            update.companyApprovalUpdatedCount = admin.firestore.FieldValue.delete();
+            update.companyApprovalIgnoredCount = admin.firestore.FieldValue.delete();
+            update.migratedCommunications = admin.firestore.FieldValue.delete();
+            update.removedLegacyClassifications = admin.firestore.FieldValue.delete();
+        }
+        transaction.set(ref, update, { merge: true });
         return "run";
     });
+}
+async function saveHistoryCheckpoint(controlRef, runId, stage, data = {}) {
+    await controlRef.set(Object.assign({ version: AUTOMATION_VERSION, historyVersion: HISTORY_VERSION, historyCheckpointVersion: HISTORY_CHECKPOINT_VERSION, historyStatus: stage === "completed" ? "completed" : "in_progress", historyStage: stage, historyRunId: runId, historyLockAt: admin.firestore.FieldValue.serverTimestamp(), historyLastCheckpointAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, data), { merge: true });
 }
 async function generateFullHistory() {
     const generationKey = `${HISTORY_VERSION}_${dateKey(new Date())}`;
@@ -701,47 +779,122 @@ async function generateFullHistory() {
         };
     }
     const controlRef = db.collection("system_settings").doc(CONTROL_DOCUMENT_ID);
+    let stage = "pending";
     try {
-        const rangeStart = new Date(0);
-        const rangeEnd = new Date();
-        const aggregated = await aggregateTrips(rangeStart, rangeEnd, ["semana", "mes"], true);
-        const generated = await buildGeneratedDocuments(aggregated.groups, aggregated.companies, "historico");
-        const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
-        const removedLegacyClassifications = await deleteLegacyCombinedClassifications();
-        const migratedCommunications = await migrateLegacyCommunications();
-        await controlRef.set({
-            version: AUTOMATION_VERSION,
-            historyVersion: HISTORY_VERSION,
-            historyStatus: "completed",
-            historyRunId: runId,
-            sourceTripCount: aggregated.sourceTrips,
-            generatedHistoryCount: generated.length,
-            createdCount: writeResult.created,
-            updatedCount: writeResult.updated,
-            ignoredCount: writeResult.ignored,
+        const controlSnapshot = await controlRef.get();
+        const control = controlSnapshot.data() || {};
+        const sameCheckpoint = control.historyVersion === HISTORY_VERSION &&
+            control.historyCheckpointVersion === HISTORY_CHECKPOINT_VERSION;
+        stage = sameCheckpoint ? normalizeHistoryStage(control.historyStage) : "pending";
+        const storedRangeEnd = sameCheckpoint ? parseDate(control.historyRangeEnd) : null;
+        const storedRangeStart = sameCheckpoint ? parseDate(control.historyRangeStart) : null;
+        const rangeEnd = storedRangeEnd || new Date();
+        const rangeStart = storedRangeStart || subtractDays(rangeEnd, HISTORY_LOOKBACK_DAYS);
+        let sourceTrips = storedCount(control.sourceTripCount);
+        let generatedHistoryCount = storedCount(control.generatedHistoryCount);
+        let created = storedCount(control.createdCount);
+        let updated = storedCount(control.updatedCount);
+        let ignored = storedCount(control.ignoredCount);
+        let companyApprovalCreated = storedCount(control.companyApprovalCreatedCount);
+        let companyApprovalUpdated = storedCount(control.companyApprovalUpdatedCount);
+        let companyApprovalIgnored = storedCount(control.companyApprovalIgnoredCount);
+        let removedLegacyClassifications = storedCount(control.removedLegacyClassifications);
+        let migratedCommunications = storedCount(control.migratedCommunications);
+        if (stage === "pending") {
+            await saveHistoryCheckpoint(controlRef, runId, "pending", {
+                historyRangeStart: admin.firestore.Timestamp.fromDate(rangeStart),
+                historyRangeEnd: admin.firestore.Timestamp.fromDate(rangeEnd),
+                historyLookbackDays: HISTORY_LOOKBACK_DAYS,
+            });
+        }
+        if (!historyStageAtLeast(stage, "classifications_written")) {
+            const aggregated = await aggregateTrips(rangeStart, rangeEnd, ["semana", "mes"]);
+            const generated = await buildGeneratedDocuments(aggregated.groups, aggregated.companies, "historico");
+            const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+            sourceTrips = aggregated.sourceTrips;
+            generatedHistoryCount = generated.length;
+            created = writeResult.created;
+            updated = writeResult.updated;
+            ignored = writeResult.ignored;
+            stage = "classifications_written";
+            await saveHistoryCheckpoint(controlRef, runId, stage, {
+                historyRangeStart: admin.firestore.Timestamp.fromDate(rangeStart),
+                historyRangeEnd: admin.firestore.Timestamp.fromDate(rangeEnd),
+                sourceTripCount: sourceTrips,
+                generatedHistoryCount,
+                createdCount: created,
+                updatedCount: updated,
+                ignoredCount: ignored,
+            });
+        }
+        if (!historyStageAtLeast(stage, "company_approvals_written")) {
+            const approvalWriteResult = await (0, companyApprovalNews_1.syncCompanyApprovalNewsHistory)();
+            companyApprovalCreated = approvalWriteResult.created;
+            companyApprovalUpdated = approvalWriteResult.updated;
+            companyApprovalIgnored = approvalWriteResult.ignored;
+            created += companyApprovalCreated;
+            updated += companyApprovalUpdated;
+            ignored += companyApprovalIgnored;
+            stage = "company_approvals_written";
+            await saveHistoryCheckpoint(controlRef, runId, stage, {
+                createdCount: created,
+                updatedCount: updated,
+                ignoredCount: ignored,
+                companyApprovalCreatedCount: companyApprovalCreated,
+                companyApprovalUpdatedCount: companyApprovalUpdated,
+                companyApprovalIgnoredCount: companyApprovalIgnored,
+            });
+        }
+        if (!historyStageAtLeast(stage, "legacy_classifications_removed")) {
+            removedLegacyClassifications = await deleteLegacyCombinedClassifications();
+            stage = "legacy_classifications_removed";
+            await saveHistoryCheckpoint(controlRef, runId, stage, {
+                removedLegacyClassifications,
+            });
+        }
+        if (!historyStageAtLeast(stage, "communications_migrated")) {
+            migratedCommunications = await migrateLegacyCommunications();
+            stage = "communications_migrated";
+            await saveHistoryCheckpoint(controlRef, runId, stage, {
+                migratedCommunications,
+            });
+        }
+        stage = "completed";
+        await saveHistoryCheckpoint(controlRef, runId, stage, {
+            historyRangeStart: admin.firestore.Timestamp.fromDate(rangeStart),
+            historyRangeEnd: admin.firestore.Timestamp.fromDate(rangeEnd),
+            historyLookbackDays: HISTORY_LOOKBACK_DAYS,
+            sourceTripCount: sourceTrips,
+            generatedHistoryCount,
+            createdCount: created,
+            updatedCount: updated,
+            ignoredCount: ignored,
+            companyApprovalCreatedCount: companyApprovalCreated,
+            companyApprovalUpdatedCount: companyApprovalUpdated,
+            companyApprovalIgnoredCount: companyApprovalIgnored,
             migratedCommunications,
             removedLegacyClassifications,
             historyCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             publicationPolicy: {
                 timeZone: NEWS_TIME_ZONE,
                 weekly: "segunda-feira às 00:35, após o encerramento de domingo",
                 monthly: "primeiro dia do mês às 00:40",
-                history: "migração única de todas as semanas e meses encerrados",
+                history: "migração única limitada aos últimos 70 dias, retomada por checkpoints persistentes",
                 pagination: "o aplicativo lê somente 10 publicações por vez",
                 captions: "cinco modelos fixos alternados sem uso de inteligência artificial",
                 posts: "empresa e motorista publicados em notícias independentes; participante único recebe somente o post Fim da temporada",
                 companies: "empresas removidas não participam do histórico nem das próximas classificações",
+                approvals: "cada empresa aprovada recebe um post automático ordenado pela data de aprovação registrada no Painel Sênior",
             },
-        }, { merge: true });
+        });
         return {
             success: true,
             status: "completed",
-            created: writeResult.created,
-            updated: writeResult.updated,
-            ignored: writeResult.ignored,
+            created,
+            updated,
+            ignored,
             migratedCommunications,
-            sourceTrips: aggregated.sourceTrips,
+            sourceTrips,
             generationKey,
             historyVersion: HISTORY_VERSION,
             removedLegacyClassifications,
@@ -749,10 +902,13 @@ async function generateFullHistory() {
     }
     catch (error) {
         await controlRef.set({
+            historyCheckpointVersion: HISTORY_CHECKPOINT_VERSION,
             historyStatus: "failed",
+            historyStage: stage,
             historyRunId: runId,
             historyError: error instanceof Error ? error.message : String(error),
             historyFailedAt: admin.firestore.FieldValue.serverTimestamp(),
+            historyLastCheckpointAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         }, { merge: true });
         console.error("[NVU NEWS] Falha ao gerar histórico compacto:", error);
@@ -766,7 +922,7 @@ async function generateRecent(periodTypes, sourceLabel) {
     var _a;
     const now = new Date();
     const rangeStart = subtractDays(now, periodTypes.includes("mes") ? 70 : 16);
-    const aggregated = await aggregateTrips(rangeStart, now, periodTypes, false);
+    const aggregated = await aggregateTrips(rangeStart, now, periodTypes);
     const controlSnapshot = await db.collection("system_settings").doc(CONTROL_DOCUMENT_ID).get();
     const automationStartedAt = parseDate((_a = controlSnapshot.data()) === null || _a === void 0 ? void 0 : _a.automationStartedAt) || new Date(0);
     const futureGroups = new Map(Array.from(aggregated.groups.entries()).filter(([, group]) => group.period.publicationAt.getTime() > automationStartedAt.getTime()));

@@ -17,7 +17,10 @@ import {
   CalendarCheck,
   DollarSign,
 } from "lucide-react";
-import { getWeeklyRange } from "../lib/metricsEngine";
+import {
+  filterTripsBySimulator,
+  getWeeklyRange,
+} from "../lib/metricsEngine";
 import { normalizeTrip } from "../lib/tripNormalizer";
 import { mergeTripDatasetsInInterval } from "../lib/tripDatasetReconciliation";
 import { buildCanonicalDriverRankingContext } from "../lib/rankingPageEngine";
@@ -36,6 +39,7 @@ export interface DriverPerformanceCardProps {
   historicoTrips: any[];
   globalHistoricoTrips?: any[];
   globalTripsLoading?: boolean;
+  driverTripsLoading?: boolean;
   driverId: string;
   activeCompanyId: string | null;
   allCompanyMembers: any[];
@@ -53,6 +57,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
   historicoTrips,
   globalHistoricoTrips,
   globalTripsLoading,
+  driverTripsLoading = false,
   driverId,
   activeCompanyId,
   allCompanyMembers,
@@ -207,6 +212,20 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
   const normalizedCurrentTrips = useMemo(() => {
     return reconciledCurrentTrips.map(normalizeTrip).filter((t) => t.isValid);
   }, [reconciledCurrentTrips]);
+  const normalizedOwnHistory = useMemo(
+    () => historicoTrips.map(normalizeTrip).filter((trip) => trip.isValid),
+    [historicoTrips],
+  );
+  const ownSimulatorTrips = useMemo(
+    () =>
+      filterTripsBySimulator(
+        normalizedOwnHistory,
+        simulatorId,
+        allCompanies,
+        simulators,
+      ).filter((trip) => getCanonicalTripDriverId(trip) === driverId),
+    [allCompanies, driverId, normalizedOwnHistory, simulatorId, simulators],
+  );
   const normalizedClassificationTrips = useMemo(() => {
     return reconciledClassificationTrips
       .map(normalizeTrip)
@@ -324,15 +343,65 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     : globalPreviousContext;
 
   const currentDriverStats = currentRankingContext.current;
-  const hasCurrentDriverActivity = currentDriverStats.trips > 0;
+  const isSelectedScopeLoading = effectiveGlobalTripsLoading;
+  const localCurrentTrips = useMemo(
+    () =>
+      ownSimulatorTrips.filter(
+        (trip) => trip.metricDate >= sDate && trip.metricDate <= eDate,
+      ),
+    [eDate, ownSimulatorTrips, sDate],
+  );
+  const localPreviousTrips = useMemo(
+    () =>
+      ownSimulatorTrips.filter(
+        (trip) =>
+          trip.metricDate >= prevSDate && trip.metricDate <= prevEDate,
+      ),
+    [ownSimulatorTrips, prevEDate, prevSDate],
+  );
+  const localCurrentEarnings = useMemo(
+    () =>
+      localCurrentTrips.reduce(
+        (total, trip) => total + trip.normalizedValor,
+        0,
+      ),
+    [localCurrentTrips],
+  );
+  const localPreviousEarnings = useMemo(
+    () =>
+      localPreviousTrips.reduce(
+        (total, trip) => total + trip.normalizedValor,
+        0,
+      ),
+    [localPreviousTrips],
+  );
+  const currentTrips = isSelectedScopeLoading
+    ? localCurrentTrips
+    : currentRankingContext.entityTrips;
+  const prevTrips = isSelectedScopeLoading
+    ? localPreviousTrips
+    : previousRankingContext.entityTrips;
+  const currentEarnings = isSelectedScopeLoading
+    ? localCurrentEarnings
+    : currentDriverStats.earnings;
+  const prevEarnings = isSelectedScopeLoading
+    ? localPreviousEarnings
+    : previousRankingContext.current.earnings;
+  const viagensRealizadas = isSelectedScopeLoading
+    ? localCurrentTrips.length
+    : currentDriverStats.trips;
+  const driverMetricsLoading =
+    driverTripsLoading &&
+    localCurrentTrips.length === 0 &&
+    isSelectedScopeLoading;
+  const hasCurrentDriverActivity = viagensRealizadas > 0;
   const currentPositionDisplay =
-    effectiveGlobalTripsLoading
+    isSelectedScopeLoading
       ? "…"
       : currentRankingContext.position
         ? `#${currentRankingContext.position}`
         : "—";
   const currentTotalDrivers = currentRankingContext.totalParticipants;
-  const isSelectedScopeLoading = effectiveGlobalTripsLoading;
   const currentDiffToNext = isSelectedScopeLoading
     ? 0
     : currentRankingContext.differenceToNext;
@@ -351,22 +420,17 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     );
   }, [allCompanies, currentNextCompetitor, rankingScope]);
 
-  const currentTrips = currentRankingContext.entityTrips;
-  const prevTrips = previousRankingContext.entityTrips;
-
-  const currentEarnings = currentDriverStats.earnings;
-  const prevEarnings = previousRankingContext.current.earnings;
-
   let evolution =
     prevEarnings === 0
       ? currentEarnings > 0
         ? 100
         : 0
       : ((currentEarnings - prevEarnings) / prevEarnings) * 100;
-  const evolutionText =
-    evolution > 0 ? `+${Math.round(evolution)}%` : `${Math.round(evolution)}%`;
-
-  const viagensRealizadas = currentDriverStats.trips;
+  const evolutionText = driverMetricsLoading
+    ? "…"
+    : evolution > 0
+      ? `+${Math.round(evolution)}%`
+      : `${Math.round(evolution)}%`;
 
   const actualEndDate = eDate > new Date() ? new Date() : eDate;
   const runDays = Math.max(1, differenceInDays(actualEndDate, sDate) + 1);
@@ -378,10 +442,28 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     ganhosScore,
     finalIndex: score,
   } = currentRankingContext;
-  const displayScore = hasCurrentDriverActivity ? Math.min(100, score) : "—";
+  const displayScore = isSelectedScopeLoading
+    ? "…"
+    : hasCurrentDriverActivity
+      ? Math.min(100, score)
+      : "—";
   // --------------------------------------
 
-  const getStatus = (score: number, hasActivity: boolean) => {
+  const getStatus = (score: number, hasActivity: boolean, loading: boolean) => {
+    if (loading) {
+      return {
+        label: "Sincronizando",
+        color: "text-teal-500 dark:text-teal-400",
+        bg: "bg-teal-500 dark:bg-teal-400",
+        index: 0,
+        desc: (
+          <>
+            Atualizando participantes do<br />
+            mesmo simulador.
+          </>
+        ),
+      };
+    }
     if (!hasActivity) {
       return {
         label: "Sem atividade",
@@ -449,7 +531,11 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
     };
   };
 
-  const status = getStatus(score, hasCurrentDriverActivity);
+  const status = getStatus(
+    score,
+    hasCurrentDriverActivity,
+    isSelectedScopeLoading,
+  );
   const bannerTextColor = status.color.split(" ").find(c => c.startsWith("dark:"))?.replace("dark:", "") || status.color;
   const bannerBgColor = bannerTextColor.replace("text-", "bg-");
 
@@ -705,7 +791,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Ritmo</span>
-                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{ritmoOperacionalScore}%</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{isSelectedScopeLoading ? "…" : `${ritmoOperacionalScore}%`}</span>
                 </div>
               </div>
               <div className="w-px h-5 sm:h-8 bg-white/10 shrink-0"></div>
@@ -715,7 +801,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Viagens</span>
-                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{viagensScore}%</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{isSelectedScopeLoading ? "…" : `${viagensScore}%`}</span>
                 </div>
               </div>
               <div className="w-px h-5 sm:h-8 bg-white/10 shrink-0"></div>
@@ -725,7 +811,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                 </div>
                 <div className="flex flex-col">
                   <span className="text-[7px] sm:text-[10px] text-white/60 font-medium tracking-wider uppercase leading-none mb-0.5 sm:mb-1">Ganhos</span>
-                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{ganhosScore}%</span>
+                  <span className="text-[11px] sm:text-[18px] font-bold text-white leading-none">{isSelectedScopeLoading ? "…" : `${ganhosScore}%`}</span>
                 </div>
               </div>
             </div>
@@ -768,7 +854,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
               </span>
             </div>
             <span className="text-[13px] sm:text-[14px] md:text-[15px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight break-all">
-              {formatCurrency(currentEarnings)}
+              {driverMetricsLoading ? "…" : formatCurrency(currentEarnings)}
             </span>
             <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
               <ArrowUpRight size={12} strokeWidth={3} />
@@ -793,7 +879,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
                 {currentPositionDisplay}
               </span>
               <span className="text-[11px] md:text-[13px] text-slate-400 font-medium">
-                / {currentTotalDrivers}
+                / {isSelectedScopeLoading ? "…" : currentTotalDrivers}
               </span>
             </div>
             {isSelectedScopeLoading ? (
@@ -856,7 +942,7 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
               </span>
             </div>
             <span className="text-[17px] md:text-[20px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight">
-              {viagensRealizadas}
+              {driverMetricsLoading ? "…" : viagensRealizadas}
             </span>
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
               realizadas
@@ -876,7 +962,9 @@ export const DriverPerformanceCard = React.memo(function DriverPerformanceCard({
               </span>
             </div>
             <span className="text-[17px] md:text-[20px] font-bold text-slate-900 dark:text-white leading-none mb-1 tracking-tight">
-              {mediaDiaria.toLocaleString("pt-BR", {
+              {driverMetricsLoading
+                ? "…"
+                : mediaDiaria.toLocaleString("pt-BR", {
                 maximumFractionDigits: 1,
               })}
             </span>

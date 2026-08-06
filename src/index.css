@@ -148,3 +148,32 @@ html.nvu-route-loading-active [data-nvu-layout-brand] {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Full-screen backdrop blur is expensive in Android WebViews and in the AI
+ * Studio mobile iframe because every frame must repaint the entire page below
+ * it. Keep the same transition veil with a stable translucent fill instead. */
+@media (max-width: 820px), (pointer: coarse) {
+  [data-nvu-role-transition] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background-color: rgba(15, 23, 42, 0.42) !important;
+  }
+
+  .dark [data-nvu-role-transition],
+  html.dark [data-nvu-role-transition] {
+    background-color: rgba(0, 0, 0, 0.68) !important;
+  }
+}
+
+/* Modal backdrops keep their dark/translucent fill on mobile without forcing
+ * a full-screen live blur of the page underneath. This avoids frame drops when
+ * opening menus, notification panels and confirmation dialogs. */
+@media (max-width: 820px), (pointer: coarse) {
+  .fixed.inset-0.backdrop-blur-sm,
+  .fixed.inset-0.backdrop-blur-md,
+  .fixed.inset-0.backdrop-blur-xl,
+  .fixed.inset-0[class*="backdrop-blur-"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}

@@ -1,9 +1,11 @@
 import { resolveDriverPhoto } from '../../lib/resolveDriverPhoto';
 import React, { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
-import { useOperationalStore, useSessionStore } from "../../context/AppContext";
+import { useOperationalStore } from "../../context/AppContext";
+import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { StableImage } from "../../components/common/StableImage";
+import { OperationProgressBar } from "../../components/common/OperationProgressBar";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { getDriverLevelData } from "../../lib/levelUtils";
@@ -78,17 +80,29 @@ export default function DriverProfileIsolated() {
     }
   };
 
-  const { companies, allCompanies, activeCompanyId } = useSessionStore();
+  const {
+    companies,
+    allCompanies,
+    activeCompanyId,
+    companyCatalogLoaded,
+    companyCatalogAttempted,
+    loadCompanyCatalog,
+    allCompanyMembers,
+  } = useCompanyStore();
   const {
     users,
     jobs,
     contracts,
     vehicles,
     trailers,
-    allCompanyMembers,
     simulators,
     deleteJob,
   } = useOperationalStore();
+
+  useEffect(() => {
+    if (!secondaryReady || companyCatalogLoaded || companyCatalogAttempted) return;
+    void loadCompanyCatalog();
+  }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog, secondaryReady]);
 
   // Fleet navigation already carries the viewed company. Avoid opening a
   // second driver-wide listener before the profile header has painted.
@@ -442,7 +456,7 @@ export default function DriverProfileIsolated() {
         {visitedTabs.has("profile") && (
           <div className={cn(activeTab !== "profile" && "hidden")}>
             <div className="space-y-3 sm:space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-            {secondaryReady ? (
+            {secondaryReady && companyCatalogLoaded ? (
               <DriverPerformanceCard
                 historicoTrips={viewedCompanyTrips}
                 driverId={driverId as string}
@@ -596,15 +610,18 @@ export default function DriverProfileIsolated() {
 
                     {/* Compact Progress bar */}
                     <div className="flex flex-col gap-1.5 mt-1 mb-0.5">
-                      <div className="w-full bg-gray-100 dark:bg-[#2A2F3A] rounded-full h-1 overflow-hidden mx-auto max-w-full">
-                        <div
-                          className="h-full w-full origin-left rounded-full bg-slate-800 dark:bg-gray-300 transition-transform duration-500 ease-out [transform:translateZ(0)]"
-                          style={{
-                            transform: `scaleX(${Math.min(100, Math.max(3, activeContract.totalDeliveries > 0 ? Math.round((activeJob.progress / activeContract.totalDeliveries) * 100) : 0)) / 100})`,
-                            willChange: "transform",
-                          }}
-                        ></div>
-                      </div>
+                      <OperationProgressBar
+                        percent={
+                          activeContract.totalDeliveries > 0
+                            ? Math.round(
+                                (activeJob.progress /
+                                  activeContract.totalDeliveries) *
+                                  100,
+                              )
+                            : 0
+                        }
+                        replayKey={`${location.key}:${driverId ?? "driver"}:${activeJob.id}`}
+                      />
                       <p className="text-[8px] uppercase tracking-wider font-semibold text-gray-400 dark:text-gray-500 text-center">
                         Progresso da operação
                       </p>

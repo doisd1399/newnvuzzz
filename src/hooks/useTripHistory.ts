@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { TripsRepository } from "../repositories/TripsRepository";
+import { getTripMetricDate } from "../lib/tripNormalizer";
 import {
   isAuthTeardownActive,
   onAuthTeardown,
@@ -21,6 +22,9 @@ type TripHistoryCacheEntry = TripHistoryState & {
 
 const CACHE_RELEASE_DELAY_MS = 120_000;
 const RETRY_MAX_DELAY_MS = 30_000;
+const PERSISTED_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
+const PERSISTED_TRIP_LIMIT = 240;
+const PERSISTED_CACHE_PREFIX = "nvu.instant.v1.company-trips.";
 const tripHistoryCache = new Map<string, TripHistoryCacheEntry>();
 
 const EMPTY_STATE: TripHistoryState = {
@@ -30,6 +34,55 @@ const EMPTY_STATE: TripHistoryState = {
 };
 
 let teardownListenerAttached = false;
+
+const stripHeavyTripFields = (trip: any) => {
+  const compact: Record<string, unknown> = {};
+  Object.entries(trip || {}).forEach(([key, value]) => {
+    if (typeof value === "string" && value.length > 40_000) return;
+    compact[key] = value;
+  });
+  return compact;
+};
+
+const persistedCacheKey = (companyId: string) =>
+  `${PERSISTED_CACHE_PREFIX}${encodeURIComponent(companyId)}`;
+
+const readPersistedTrips = (companyId: string): any[] => {
+  try {
+    const raw = sessionStorage.getItem(persistedCacheKey(companyId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as { trips?: any[]; cachedAt?: number };
+    if (
+      !Array.isArray(parsed.trips) ||
+      typeof parsed.cachedAt !== "number" ||
+      Date.now() - parsed.cachedAt > PERSISTED_CACHE_MAX_AGE_MS
+    ) {
+      sessionStorage.removeItem(persistedCacheKey(companyId));
+      return [];
+    }
+    return parsed.trips;
+  } catch {
+    return [];
+  }
+};
+
+const writePersistedTrips = (companyId: string, trips: any[]) => {
+  try {
+    const compactTrips = [...trips]
+      .sort(
+        (a, b) =>
+          getTripMetricDate(b).getTime() - getTripMetricDate(a).getTime(),
+      )
+      .slice(0, PERSISTED_TRIP_LIMIT)
+      .map(stripHeavyTripFields);
+    sessionStorage.setItem(
+      persistedCacheKey(companyId),
+      JSON.stringify({ trips: compactTrips, cachedAt: Date.now() }),
+    );
+  } catch {
+    // Persistent cache is only an acceleration layer.
+  }
+};
 
 function ensureTeardownListener() {
   if (teardownListenerAttached || typeof window === "undefined") return;
@@ -101,14 +154,15 @@ function subscribeEntry(companyId: string, entry: TripHistoryCacheEntry) {
         entry.trips = trips;
         entry.loading = false;
         entry.error = null;
+        writePersistedTrips(companyId, trips);
         notify(entry);
       },
       (error) => {
         if (isAuthTeardownActive()) return;
         console.warn("Error fetching trip history:", error);
         entry.error = error;
-        // Keep a previous complete dataset during a retry. The repository
-        // never supplies a canonical-only subset.
+        // Keep the latest visible dataset during a retry. The repository may
+        // publish canonical data first and reconcile legacy aliases afterward.
         entry.loading = entry.trips.length === 0;
         notify(entry);
 
@@ -157,7 +211,7 @@ function ensureEntry(companyId: string): TripHistoryCacheEntry {
   }
 
   const entry: TripHistoryCacheEntry = {
-    trips: [],
+    trips: readPersistedTrips(companyId),
     loading: true,
     error: null,
     listeners: new Set(),
@@ -184,9 +238,9 @@ function getInitialState(companyId: string | null | undefined): TripHistoryState
   if (!companyId) return EMPTY_STATE;
 
   const cachedEntry = tripHistoryCache.get(companyId);
-  return cachedEntry
-    ? getState(cachedEntry)
-    : { trips: [], loading: true, error: null };
+  if (cachedEntry) return getState(cachedEntry);
+  const persistedTrips = readPersistedTrips(companyId);
+  return { trips: persistedTrips, loading: true, error: null };
 }
 
 type HookState = {
@@ -206,7 +260,7 @@ export function useTripHistory(
     value: getInitialState(normalizedCompanyId),
   }));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled || !companyId || isAuthTeardownActive()) {
       setState({ companyId: null, value: EMPTY_STATE });
       return;
