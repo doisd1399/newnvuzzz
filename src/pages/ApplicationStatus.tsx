@@ -1,15 +1,21 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useSessionStore } from "../context/AppContext";
+import type { RecruitmentApplication } from "../context/AppContext";
 import { useCompanyStore } from "../context/CompanyContext";
 import { Button } from "../components/ui/Button";
+import { StableImage } from "../components/common/StableImage";
 import { repairApprovedMembership } from "../services/recruitmentAccessService";
 import { toast } from "sonner";
+import { db } from "../lib/firebase";
+import { doc, setDoc } from "firebase/firestore";
 import {
   ShieldAlert,
   CheckCircle2,
   ArrowRight,
   ChevronLeft,
+  Building2,
+  User,
 } from "lucide-react";
 
 const PENDING_RECRUITMENT_APPLICATION_ID_KEY =
@@ -55,18 +61,92 @@ export default function ApplicationStatus() {
 
   const myApp = React.useMemo(() => {
     if (!requestedApplicationId || !currentUser?.id) return null;
-    // A tela nunca escolhe "a mais recente" por e-mail. Ela só aceita o
-    // documento que a sessão acabou de criar (ou que o usuário canônico aponta)
-    // e cuja identidade pertence à conta autenticada.
-    return recruitmentApplications.find(
-      (application) =>
-        application.id === requestedApplicationId &&
-        application.userId === currentUser.id,
-    ) ?? null;
+    const normalizedCurrentEmail = String(currentUser.email || "")
+      .trim()
+      .toLowerCase();
+
+    // Driver applications remain strictly tied to their Firebase UID. Company
+    // registrations may have been submitted before authentication, so the
+    // verified Google e-mail is also accepted for that specific flow.
+    return (
+      recruitmentApplications.find((application) => {
+        if (application.id !== requestedApplicationId) return false;
+        const applicationType = String(
+          application.type || (application as any).registrationType || "",
+        );
+        if (applicationType !== "company_registration") {
+          return application.userId === currentUser.id;
+        }
+
+        const normalizedApplicationEmail = String(application.email || "")
+          .trim()
+          .toLowerCase();
+        return (
+          application.userId === currentUser.id ||
+          (Boolean(normalizedCurrentEmail) &&
+            normalizedApplicationEmail === normalizedCurrentEmail)
+        );
+      }) ?? null
+    );
   }, [
+    currentUser?.email,
     currentUser?.id,
     recruitmentApplications,
     requestedApplicationId,
+  ]);
+
+  const isCompanyRegistration = Boolean(
+    myApp &&
+      String(myApp.type || (myApp as any).registrationType || "") ===
+        "company_registration",
+  );
+  const companyRegistration = (myApp || null) as
+    | (RecruitmentApplication & {
+        registrationType?: string;
+        companyName?: string;
+        ownerName?: string;
+        companyLogoURL?: string;
+        ownerPhotoUrl?: string;
+        simulatorName?: string;
+        rejectionReason?: string;
+      })
+    | null;
+
+  React.useEffect(() => {
+    if (!isCompanyRegistration || !companyRegistration || !currentUser?.id) return;
+    const currentPointer = String(
+      (currentUser as any).currentRecruitmentApplicationId || "",
+    ).trim();
+    const currentStatus = String(
+      (currentUser as any).currentRecruitmentStatus || "",
+    ).trim();
+    if (
+      currentPointer === companyRegistration.id &&
+      currentStatus === companyRegistration.status
+    ) {
+      return;
+    }
+
+    void setDoc(
+      doc(db, "users", currentUser.id),
+      {
+        applicationSubmitted: true,
+        currentRecruitmentApplicationId: companyRegistration.id,
+        currentRecruitmentStatus: companyRegistration.status,
+        currentRecruitmentType: "company_registration",
+        currentRecruitmentSimulatorId: companyRegistration.simulatorId || "",
+      },
+      { merge: true },
+    ).catch((error) => {
+      console.warn(
+        "[NVU Company Registration] Não foi possível persistir o acompanhamento da solicitação.",
+        error,
+      );
+    });
+  }, [
+    companyRegistration,
+    currentUser,
+    isCompanyRegistration,
   ]);
 
   const handleLogout = async () => {
@@ -112,6 +192,7 @@ export default function ApplicationStatus() {
 
   React.useEffect(() => {
     if (
+      !isCompanyRegistration &&
       myApp?.status === "approved" &&
       membershipsLoaded &&
       !memberships.some((membership) => membership.status === "active") &&
@@ -120,7 +201,13 @@ export default function ApplicationStatus() {
       repairAttemptedRef.current = true;
       void handleContinueApproved();
     }
-  }, [myApp?.status, membershipsLoaded, memberships, handleContinueApproved]);
+  }, [
+    isCompanyRegistration,
+    myApp?.status,
+    membershipsLoaded,
+    memberships,
+    handleContinueApproved,
+  ]);
 
   React.useEffect(() => {
     if (authInitialized && !currentUser) {
@@ -152,6 +239,32 @@ export default function ApplicationStatus() {
   const isRejected = myApp?.status === "rejected";
   const isPending = myApp?.status === "pending";
   const isApproved = myApp?.status === "approved";
+  const companyRegistrationDateTime = (() => {
+    if (!companyRegistration?.createdAt) return "Data indisponível";
+    const parsedDate = new Date(companyRegistration.createdAt);
+    if (Number.isNaN(parsedDate.getTime())) return "Data indisponível";
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(parsedDate);
+  })();
+
+  const handleNewCompanyRegistration = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(PENDING_RECRUITMENT_APPLICATION_ID_KEY);
+    }
+    navigate("/register-company");
+  };
+
+  const handleContinueCompanyApproved = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(PENDING_RECRUITMENT_APPLICATION_ID_KEY);
+      window.location.replace("/select-profile");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex items-center justify-center p-4">
@@ -161,7 +274,7 @@ export default function ApplicationStatus() {
             NVU
           </h1>
           <p className="text-slate-500 dark:text-[#a1a1aa] text-sm font-medium">
-            Portal do Candidato
+            {isCompanyRegistration ? "Cadastro de Empresa" : "Portal do Candidato"}
           </p>
         </div>
 
@@ -173,17 +286,25 @@ export default function ApplicationStatus() {
                 <ShieldAlert size={32} />
               </div>
               <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-2">
-                Inscrição Não Aprovada
+                {isCompanyRegistration
+                  ? "Cadastro da empresa não aprovado"
+                  : "Inscrição Não Aprovada"}
               </h2>
               <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm">
-                Seu vínculo foi encerrado pela empresa. Envie uma nova
-                inscrição para voltar à análise.
+                {isCompanyRegistration
+                  ? companyRegistration?.rejectionReason ||
+                    "Sua solicitação de cadastro não foi aprovada. Você pode revisar os dados e enviar uma nova solicitação."
+                  : "Seu vínculo foi encerrado pela empresa. Envie uma nova inscrição para voltar à análise."}
               </p>
               <Button
-                onClick={handleApply}
+                onClick={
+                  isCompanyRegistration ? handleNewCompanyRegistration : handleApply
+                }
                 className="w-full h-12 rounded-xl font-semibold mb-3"
               >
-                Enviar Nova Inscrição
+                {isCompanyRegistration
+                  ? "Enviar novo cadastro"
+                  : "Enviar Nova Inscrição"}
               </Button>
               <Button
                 onClick={handleLogout}
@@ -202,47 +323,177 @@ export default function ApplicationStatus() {
                 />
               </div>
               <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-3 tracking-tight">
-                Inscrição aprovada
+                {isCompanyRegistration ? "Empresa aprovada" : "Inscrição aprovada"}
               </h2>
               <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm leading-relaxed px-4">
-                Sua inscrição foi aprovada. O acesso será liberado assim que o
-                vínculo com a empresa terminar de sincronizar.
+                {isCompanyRegistration
+                  ? "Sua empresa foi aprovada e o perfil corporativo já pode ser acessado."
+                  : "Sua inscrição foi aprovada. O acesso será liberado assim que o vínculo com a empresa terminar de sincronizar."}
               </p>
               <Button
-                onClick={handleContinueApproved}
-                disabled={repairingAccess}
+                onClick={
+                  isCompanyRegistration
+                    ? handleContinueCompanyApproved
+                    : handleContinueApproved
+                }
+                disabled={!isCompanyRegistration && repairingAccess}
                 className="w-full h-12 rounded-xl font-semibold"
               >
-                {repairingAccess ? "Sincronizando acesso..." : "Continuar"}
-                {!repairingAccess && <ArrowRight size={18} />}
+                {!isCompanyRegistration && repairingAccess
+                  ? "Sincronizando acesso..."
+                  : "Continuar"}
+                {(isCompanyRegistration || !repairingAccess) && (
+                  <ArrowRight size={18} />
+                )}
               </Button>
             </div>
           ) : isPending ? (
-            <div className="flex flex-col items-center">
-              <div className="w-20 h-20 bg-emerald-50 dark:bg-green-500/10 border border-emerald-100 dark:border-green-500/20 rounded-2xl flex items-center justify-center mb-6">
-                <CheckCircle2
-                  size={40}
-                  className="text-emerald-500 dark:text-green-400"
-                />
+            isCompanyRegistration && companyRegistration ? (
+              <div className="flex flex-col items-center">
+                <div className="w-16 h-16 bg-emerald-50 dark:bg-green-500/10 border border-emerald-100 dark:border-green-500/20 rounded-2xl flex items-center justify-center mb-5">
+                  <CheckCircle2
+                    size={32}
+                    className="text-emerald-500 dark:text-green-400"
+                  />
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-2 tracking-tight">
+                  Cadastro em avaliação
+                </h2>
+                <p className="text-slate-500 dark:text-[#a1a1aa] mb-5 text-sm leading-relaxed px-2">
+                  Sua empresa ainda está aguardando avaliação da NVU.
+                </p>
+
+                <div className="w-full rounded-2xl border border-slate-200 dark:border-[#2A2F3A] bg-slate-50/80 dark:bg-[#111318] p-3.5 text-left mb-5">
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-[#71717a]">
+                        Cadastro enviado
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-[#a1a1aa] mt-0.5">
+                        {companyRegistrationDateTime}
+                      </p>
+                    </div>
+                    <span className="inline-flex items-center rounded-full bg-amber-50 dark:bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20 whitespace-nowrap">
+                      Aguardando avaliação
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
+                      <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
+                        {companyRegistration.ownerPhotoUrl ? (
+                          <StableImage
+                            src={companyRegistration.ownerPhotoUrl}
+                            alt={companyRegistration.ownerName || "Proprietário"}
+                            wrapperClassName="w-full h-full"
+                            className="object-cover"
+                            fallback={
+                              <User
+                                size={16}
+                                className="text-slate-400 dark:text-[#a1a1aa]"
+                              />
+                            }
+                          />
+                        ) : (
+                          <User
+                            size={16}
+                            className="text-slate-400 dark:text-[#a1a1aa]"
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
+                          Proprietário
+                        </p>
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {companyRegistration.ownerName || currentUser.name || "Proprietário"}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
+                      <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
+                        {companyRegistration.companyLogoURL ? (
+                          <StableImage
+                            src={companyRegistration.companyLogoURL}
+                            alt={companyRegistration.companyName || "Empresa"}
+                            wrapperClassName="w-full h-full"
+                            className="object-cover"
+                            fallback={
+                              <Building2
+                                size={16}
+                                className="text-slate-400 dark:text-[#a1a1aa]"
+                              />
+                            }
+                          />
+                        ) : (
+                          <Building2
+                            size={16}
+                            className="text-slate-400 dark:text-[#a1a1aa]"
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
+                          Empresa
+                        </p>
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                          {companyRegistration.companyName || "Empresa em análise"}
+                        </p>
+                        {(companyRegistration.simulatorName || companyRegistration.simulatorId) && (
+                          <p className="text-[11px] text-slate-500 dark:text-[#a1a1aa] truncate mt-0.5">
+                            {companyRegistration.simulatorName || companyRegistration.simulatorId}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Button
+                    onClick={handleLogout}
+                    variant="outline"
+                    className="w-full h-12 rounded-xl font-semibold border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+                  >
+                    Desconectar
+                  </Button>
+                  <Button
+                    onClick={handleBackToStart}
+                    variant="outline"
+                    className="w-full h-12 rounded-xl font-semibold text-slate-600 dark:text-[#f4f4f5] hover:text-slate-900 dark:hover:text-[#fafafa]"
+                  >
+                    Voltar para o início
+                  </Button>
+                </div>
               </div>
-              <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-3 tracking-tight">
-                Sua inscrição foi enviada
-              </h2>
-              <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm leading-relaxed px-4">
-                Sua inscrição foi enviada com sucesso e está aguardando análise
-                da empresa.
-                <br />
-                <br />
-                Você receberá acesso ao sistema após aprovação do RH.
-              </p>
-              <Button
-                onClick={handleBackToStart}
-                variant="outline"
-                className="w-full h-12 rounded-xl font-semibold text-slate-600 dark:text-[#f4f4f5] hover:text-slate-900 dark:hover:text-[#fafafa]"
-              >
-                Voltar para o início
-              </Button>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center">
+                <div className="w-20 h-20 bg-emerald-50 dark:bg-green-500/10 border border-emerald-100 dark:border-green-500/20 rounded-2xl flex items-center justify-center mb-6">
+                  <CheckCircle2
+                    size={40}
+                    className="text-emerald-500 dark:text-green-400"
+                  />
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-3 tracking-tight">
+                  Sua inscrição foi enviada
+                </h2>
+                <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-sm leading-relaxed px-4">
+                  Sua inscrição foi enviada com sucesso e está aguardando análise
+                  da empresa.
+                  <br />
+                  <br />
+                  Você receberá acesso ao sistema após aprovação do RH.
+                </p>
+                <Button
+                  onClick={handleBackToStart}
+                  variant="outline"
+                  className="w-full h-12 rounded-xl font-semibold text-slate-600 dark:text-[#f4f4f5] hover:text-slate-900 dark:hover:text-[#fafafa]"
+                >
+                  Voltar para o início
+                </Button>
+              </div>
+            )
           ) : (
             // Hasn't applied yet, just logged in with Google implicitly
             <div className="flex flex-col items-center">

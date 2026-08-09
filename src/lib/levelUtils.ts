@@ -1,5 +1,6 @@
 import { getNomeContratoHistorico } from "./utils";
 import { getJobRealTimestamp } from "./utils";
+import { isOpenJobStatus } from "./jobStatus";
 
 export function getDriverLevelData(driverId: string, jobs: any[], contracts: any[], historicoTrips: any[] = []) {
     const allCompletedJobs = jobs.filter(
@@ -20,7 +21,7 @@ export function getDriverLevelData(driverId: string, jobs: any[], contracts: any
     const validActiveJobs = jobs.filter(
         (j) =>
             j.driverId === driverId &&
-            ["pending", "active", "delayed"].includes(j.status) &&
+            isOpenJobStatus(j.status) &&
             contracts.some((c) => c.id === j.contractId)
     );
 

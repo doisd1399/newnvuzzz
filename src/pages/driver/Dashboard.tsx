@@ -54,6 +54,7 @@ import { OperationalSuspensionNotice } from "../../components/OperationalSuspens
 import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import TripHistory from "./TripHistory";
 import { OperationProgressBar } from "../../components/common/OperationProgressBar";
+import { isRunningJobStatus } from "../../lib/jobStatus";
 
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { useDriverTrips } from "../../hooks/useDriverTrips";
@@ -149,8 +150,7 @@ function DashboardComponent({
   const myJob = useMemo(() => {
     const validJobs = jobs.filter(
       (j) =>
-        j.driverId === currentUser?.id &&
-        (j.status === "active" || j.status === "awaiting_completion"),
+        j.driverId === currentUser?.id && isRunningJobStatus(j.status),
     );
 
     // Prioritize active, then sort by newest
@@ -187,15 +187,20 @@ function DashboardComponent({
 
     const assignedTime = myJob.assignedAt
       ? new Date(myJob.assignedAt).getTime()
-      : 0;
+      : myJob.createdAt
+        ? new Date(myJob.createdAt).getTime()
+        : 0;
     const completedTime = myJob.completedAt
       ? new Date(myJob.completedAt).getTime()
       : Date.now() + 86_400_000;
 
     return normalizedCompanyTrips.filter((trip: any) => {
       if (trip.jobId && trip.jobId === myJob.id) return true;
-      if (trip.contratoId !== myJob.contractId) return false;
-      if (trip.motoristaId !== currentUser?.id) return false;
+      const tripContractId = trip.contractId || trip.contratoId;
+      const tripDriverId =
+        trip.driverId || trip.motoristaId || trip.motorista_id || trip.userId;
+      if (tripContractId !== myJob.contractId) return false;
+      if (tripDriverId !== currentUser?.id) return false;
       const tripTime = trip.metricDate.getTime();
       return tripTime >= assignedTime && tripTime <= completedTime;
     });
@@ -860,10 +865,11 @@ function DashboardComponent({
 
   const isPending = myJob.status === "pending";
   const isAwaitingCompletion = myJob.status === "awaiting_completion";
-  const isActive = myJob.status === "active" || isAwaitingCompletion;
+  const isActive = isRunningJobStatus(myJob.status);
+  const persistedProgress = Math.max(0, Number(myJob.progress) || 0);
   const realProgress = tripHistoryLoading
-    ? Math.max(0, Number(myJob.progress) || 0)
-    : currentOperationTrips.length;
+    ? persistedProgress
+    : Math.max(persistedProgress, currentOperationTrips.length);
   const progressPercent =
     Math.round(
       (realProgress / Math.max(1, contract.totalDeliveries || 1)) * 100,

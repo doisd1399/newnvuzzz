@@ -1,8 +1,13 @@
 import type { RankingPageDriverItem } from "./rankingPageEngine";
+import { hasSimulatorIdentity, resolveSimulatorId } from "./resolveSimulator";
+import { buildRankingUtcPeriodKey } from "./rankingPeriods";
 
 export const RANKING_AGGREGATES_COLLECTION = "ranking_aggregates";
-export const RANKING_AGGREGATE_SCHEMA_VERSION = 1;
-export const RANKING_AGGREGATE_RECONCILE_AFTER_MS = 24 * 60 * 60 * 1000;
+// v4 is reserved for aggregates produced after every live/open period moved
+// to the canonical historico_viagens source. Closed-period documents remain a
+// performance snapshot, never a competing source for mutable current totals.
+export const RANKING_AGGREGATE_SCHEMA_VERSION = 4;
+export const RANKING_AGGREGATE_RECONCILE_AFTER_MS = 60 * 60 * 1000;
 
 export type RankingAggregatePeriodType = "semana" | "mes";
 
@@ -33,51 +38,11 @@ export interface RankingAggregateDocument {
   lastReconciledAt?: unknown;
 }
 
-const SAO_PAULO_TIME_ZONE = "America/Sao_Paulo";
-const zonedDateFormatter = new Intl.DateTimeFormat("en-CA", {
-  timeZone: SAO_PAULO_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function readZonedDateParts(date: Date) {
-  const values: Record<string, string> = {};
-  zonedDateFormatter.formatToParts(date).forEach((part) => {
-    if (part.type !== "literal") values[part.type] = part.value;
-  });
-
-  return {
-    year: Number(values.year),
-    month: Number(values.month),
-    day: Number(values.day),
-  };
-}
-
-function pad(value: number) {
-  return String(value).padStart(2, "0");
-}
-
-function formatUtcDateKey(date: Date) {
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
-}
-
 export function buildRankingAggregatePeriodKey(
   periodType: RankingAggregatePeriodType,
   referenceDate = new Date(),
 ) {
-  const parts = readZonedDateParts(referenceDate);
-  if (periodType === "mes") {
-    return `mes_${parts.year}-${pad(parts.month)}`;
-  }
-
-  const localCalendarDate = new Date(
-    Date.UTC(parts.year, parts.month - 1, parts.day),
-  );
-  localCalendarDate.setUTCDate(
-    localCalendarDate.getUTCDate() - localCalendarDate.getUTCDay(),
-  );
-  return `semana_${formatUtcDateKey(localCalendarDate)}`;
+  return buildRankingUtcPeriodKey(periodType, referenceDate);
 }
 
 export function buildRankingAggregateDocumentId(
@@ -196,6 +161,48 @@ function readEntityText(record: Record<string, unknown> | undefined, key: string
   return typeof value === "string" ? value.trim() : "";
 }
 
+export function isRankingEligibleCompany(
+  company: Record<string, unknown> | undefined,
+): boolean {
+  if (!company) return false;
+  const status = String(
+    company.status || company.situacao || company.state || "active",
+  )
+    .trim()
+    .toLocaleLowerCase("pt-BR");
+  const deleted =
+    company.deleted === true ||
+    company.softDeleted === true ||
+    company.excluida === true ||
+    company.excluido === true ||
+    [
+      "deleted",
+      "excluida",
+      "excluido",
+      "removed",
+      "removida",
+      "removido",
+    ].includes(status);
+  return (
+    !deleted &&
+    ["active", "approved", "ativo"].includes(status) &&
+    hasSimulatorIdentity(company)
+  );
+}
+
+function stableRankingSort<
+  T extends { val: number; trips: number; name?: string; id: string },
+>(left: T, right: T): number {
+  if (right.val !== left.val) return right.val - left.val;
+  if (right.trips !== left.trips) return right.trips - left.trips;
+  const nameOrder = String(left.name || "").localeCompare(
+    String(right.name || ""),
+    "pt-BR",
+    { sensitivity: "base", numeric: true },
+  );
+  return nameOrder || left.id.localeCompare(right.id);
+}
+
 function shortDriverName(value: unknown) {
   const parts = String(value || "Motorista Desconhecido")
     .trim()
@@ -207,6 +214,7 @@ function shortDriverName(value: unknown) {
 export function buildCompanyRankingFromAggregate(
   aggregate: RankingAggregateDocument,
   companies: Record<string, unknown>[],
+  simulators: Record<string, unknown>[] = [],
 ) {
   const companiesById = new Map(
     companies
@@ -217,8 +225,11 @@ export function buildCompanyRankingFromAggregate(
   return Object.entries(aggregate.companies)
     .map(([id, stats]) => {
       const company = companiesById.get(id);
-      // A hard-deleted company must not be recreated by an old aggregate.
-      if (!company) return null;
+      // Only the current active company catalog can authorize a ranking row.
+      if (!isRankingEligibleCompany(company)) return null;
+      if (
+        resolveSimulatorId(company, simulators, companies) !== aggregate.simulatorId
+      ) return null;
       return {
         id,
         name:
@@ -236,16 +247,15 @@ export function buildCompanyRankingFromAggregate(
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
-    .sort((a, b) => {
-      if (b.val !== a.val) return b.val - a.val;
-      return b.trips - a.trips;
-    });
+    .sort(stableRankingSort);
 }
 
 export function buildDriverRankingFromAggregate(
   aggregate: RankingAggregateDocument,
   users: Record<string, unknown>[],
   companies: Record<string, unknown>[],
+  simulators: Record<string, unknown>[] = [],
+  companyMembers: Record<string, unknown>[] = [],
 ): RankingPageDriverItem[] {
   const usersById = new Map(
     users
@@ -257,13 +267,72 @@ export function buildDriverRankingFromAggregate(
       .map((company) => [readEntityText(company, "id"), company] as const)
       .filter(([id]) => Boolean(id)),
   );
+  const activeMembershipByUser = new Map<
+    string,
+    { companyId: string; joinedAt: number }
+  >();
+  companyMembers.forEach((membership) => {
+    const userId = readEntityText(membership, "userId");
+    const companyId = readEntityText(membership, "companyId");
+    const status = readEntityText(membership, "status").toLowerCase();
+    const roles = Array.isArray(membership.roles)
+      ? membership.roles.map((role) => String(role).toLowerCase())
+      : [];
+    const isDriver =
+      roles.includes("driver") ||
+      readEntityText(membership, "role").toLowerCase() === "driver";
+    const company = companiesById.get(companyId);
+    if (
+      !userId ||
+      !companyId ||
+      status !== "active" ||
+      !isDriver ||
+      !isRankingEligibleCompany(company) ||
+      resolveSimulatorId(company, simulators, companies) !== aggregate.simulatorId
+    ) {
+      return;
+    }
+
+    const joinedAtValue = membership.joinedAt;
+    const joinedAt =
+      joinedAtValue instanceof Date
+        ? joinedAtValue.getTime()
+        : typeof (joinedAtValue as { toDate?: unknown })?.toDate === "function"
+          ? (joinedAtValue as { toDate: () => Date }).toDate().getTime()
+          : new Date(joinedAtValue as string | number).getTime() || 0;
+    const current = activeMembershipByUser.get(userId);
+    if (!current || joinedAt >= current.joinedAt) {
+      activeMembershipByUser.set(userId, { companyId, joinedAt });
+    }
+  });
 
   return Object.entries(aggregate.drivers)
-    .map(([id, stats]) => {
+    .map(([id, stats]): RankingPageDriverItem | null => {
       const user = usersById.get(id);
-      const company = stats.companyId
-        ? companiesById.get(stats.companyId)
+      const membershipCompanyId = activeMembershipByUser.get(id)?.companyId || "";
+      const profileCompanyId =
+        readEntityText(user, "companyId") ||
+        readEntityText(user, "activeCompanyId");
+      const profileCompany = profileCompanyId
+        ? companiesById.get(profileCompanyId)
         : undefined;
+      const profileCompanyMatchesAggregate = Boolean(
+        isRankingEligibleCompany(profileCompany) &&
+          resolveSimulatorId(profileCompany, simulators, companies) ===
+            aggregate.simulatorId,
+      );
+      const candidateCompanyId =
+        membershipCompanyId ||
+        (profileCompanyMatchesAggregate ? profileCompanyId : "") ||
+        stats.companyId ||
+        "";
+      const company = candidateCompanyId
+        ? companiesById.get(candidateCompanyId)
+        : undefined;
+      if (!isRankingEligibleCompany(company)) return null;
+      if (
+        resolveSimulatorId(company, simulators, companies) !== aggregate.simulatorId
+      ) return null;
 
       return {
         id,
@@ -278,14 +347,12 @@ export function buildDriverRankingFromAggregate(
           readEntityText(user, "photo"),
         trips: stats.trips,
         val: stats.val,
-        companyId: stats.companyId,
+        companyId: candidateCompanyId,
         companyName:
           readEntityText(company, "companyName") ||
           readEntityText(company, "name"),
       };
     })
-    .sort((a, b) => {
-      if (b.val !== a.val) return b.val - a.val;
-      return b.trips - a.trips;
-    });
+    .filter((item): item is RankingPageDriverItem => item !== null)
+    .sort(stableRankingSort);
 }

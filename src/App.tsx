@@ -7,6 +7,7 @@ import InitialBootOverlay from "./components/common/InitialBootOverlay";
 import RoleTransitionOverlay from "./components/common/RoleTransitionOverlay";
 import Login from "./pages/Login";
 import SelectProfile from "./pages/SelectProfile";
+import PendingApplications from "./pages/PendingApplications";
 import { AppProvider, useOperationalStore, useSessionStore } from "./context/AppContext";
 import { useCompanyStore } from "./context/CompanyContext";
 import { isAuthTeardownActive, onAuthTeardown } from "./lib/authLifecycle";
@@ -17,6 +18,7 @@ import { membershipHasRole } from "./lib/membershipRoles";
 import { writeBatch, doc } from "firebase/firestore";
 import { db } from "./lib/firebase";
 import { getRuntimePerformanceProfile } from "./lib/runtimePerformance";
+import { announceForegroundRoute } from "./lib/foregroundRoute";
 
 // Placeholders for Pages
 const Portal = lazy(() => import("./pages/Portal"));
@@ -155,7 +157,7 @@ const RouteScrollMemory = () => {
   return null;
 };
 
-const RouteWarmup = () => {
+const RouteWarmup = ({ pathname }: { pathname: string }) => {
   const {
     authInitialized,
     sessionReady,
@@ -164,6 +166,11 @@ const RouteWarmup = () => {
   } = useSessionStore();
   const { activeCompanyId, allCompanies, companiesLoading } = useCompanyStore();
   const backgroundLogoSignatureRef = useRef("");
+  const holdSpeculativeWarmup =
+    pathname === "/login" ||
+    pathname === "/select-profile" ||
+    pathname === "/pending-applications" ||
+    pathname === "/status";
 
   const activeCompany = useMemo(
     () => allCompanies.find((company) => company.id === activeCompanyId),
@@ -196,18 +203,32 @@ const RouteWarmup = () => {
   useEffect(() => {
     if (!authInitialized || !currentUser) return;
 
-    // Critical destinations remain warmed immediately. This is a small module
-    // preload and does not start background Firestore/image work.
+    // SelectProfile/Pendências are deliberately interaction-first screens.
+    // Parsing a large admin/driver chunk while the user is about to tap a
+    // lightweight control can block the browser main thread for hundreds of
+    // milliseconds (or more inside AI Studio/Android WebViews). The target
+    // workspace is loaded normally after the user selects it.
     void preloadRoute("/select-profile");
-    if (activeRole) {
+    if (activeRole && !holdSpeculativeWarmup) {
       void preloadRoute(
         activeRole === "admin" ? "/admin/fleet" : "/driver/profile",
       );
     }
-  }, [activeRole, authInitialized, currentUser?.id]);
+  }, [
+    activeRole,
+    authInitialized,
+    currentUser?.id,
+    holdSpeculativeWarmup,
+  ]);
 
   useEffect(() => {
     if (!authInitialized || !activeRole || companiesLoading) return;
+
+    // The selector/status surfaces must not spend their first interactive
+    // frames decoding even "helpful" identity images in the background. The
+    // visible StableImage instances load what is actually on screen; every
+    // speculative image warm-up resumes after the user enters a workspace.
+    if (holdSpeculativeWarmup) return;
 
     const runtime = getRuntimePerformanceProfile();
     if (identityImages.length > 0) {
@@ -218,8 +239,9 @@ const RouteWarmup = () => {
       );
     }
 
-    // Speculative logo decoding is useful on desktop, but it competes with the
-    // active page in mobile WebViews and especially inside AI Studio's iframe.
+    // While the lightweight selector/status screens are active, stop here.
+    // Identity images above are part of the visible UI; the remaining catalog
+    // logos are speculative and must not compete with taps or panel opening.
     if (runtime.backgroundImageLimit <= 0) return;
 
     const additionalLogos = Array.from(
@@ -279,10 +301,16 @@ const RouteWarmup = () => {
     companiesLoading,
     identityImageSignature,
     identityImages,
+    holdSpeculativeWarmup,
   ]);
 
   useEffect(() => {
-    if (!authInitialized || !sessionReady || !activeRole) return;
+    if (
+      !authInitialized ||
+      !sessionReady ||
+      !activeRole ||
+      holdSpeculativeWarmup
+    ) return;
 
     void preloadRoute(
       activeRole === "admin" ? "/admin/fleet" : "/driver/profile",
@@ -317,7 +345,12 @@ const RouteWarmup = () => {
       window.clearTimeout(timer);
       if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
     };
-  }, [authInitialized, sessionReady, activeRole]);
+  }, [
+    authInitialized,
+    sessionReady,
+    activeRole,
+    holdSpeculativeWarmup,
+  ]);
 
   return null;
 };
@@ -329,18 +362,28 @@ const RouteWarmup = () => {
  * feel slower even when the route itself is ready. Once the shell has had an
  * idle window, the existing account-scoped warm-up can proceed normally.
  */
-const DeferredRankingWarmup = () => {
+const DeferredRankingWarmup = ({ pathname }: { pathname: string }) => {
   const { authInitialized, sessionReady, currentUser, activeRole } =
     useSessionStore();
   const [enabled, setEnabled] = useState(false);
+  const runtime = useMemo(getRuntimePerformanceProfile, []);
+  const holdRankingWarmup =
+    pathname === "/login" ||
+    pathname === "/select-profile" ||
+    pathname === "/pending-applications" ||
+    pathname === "/status";
 
   useEffect(() => {
-    if (!authInitialized || !sessionReady || !currentUser || !activeRole) {
+    if (
+      !authInitialized ||
+      !sessionReady ||
+      !currentUser ||
+      !activeRole ||
+      holdRankingWarmup
+    ) {
       setEnabled(false);
       return;
     }
-
-    const runtime = getRuntimePerformanceProfile();
 
     let cancelled = false;
     const enable = () => {
@@ -355,9 +398,6 @@ const DeferredRankingWarmup = () => {
     };
     let idleId: number | null = null;
     const timer = window.setTimeout(() => {
-      // Constrained runtimes still warm the single aggregate document and its
-      // referenced companies. Avoid waiting for a long idle window because
-      // mobile WebViews often never grant one while animations/listeners run.
       if (runtime.allowRankingWarmup && idleApi.requestIdleCallback) {
         idleId = idleApi.requestIdleCallback(enable, {
           timeout: runtime.mobileViewport ? 5200 : 2600,
@@ -365,16 +405,25 @@ const DeferredRankingWarmup = () => {
       } else {
         enable();
       }
-    }, runtime.allowRankingWarmup ? runtime.rankingWarmupDelayMs : 350);
+    }, runtime.rankingWarmupDelayMs);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
       if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
     };
-  }, [activeRole, authInitialized, currentUser?.id, sessionReady]);
+  }, [
+    activeRole,
+    authInitialized,
+    currentUser?.id,
+    holdRankingWarmup,
+    runtime.allowRankingWarmup,
+    runtime.mobileViewport,
+    runtime.rankingWarmupDelayMs,
+    sessionReady,
+  ]);
 
-  if (!enabled) return null;
+  if (holdRankingWarmup || !enabled) return null;
   return (
     <Suspense fallback={null}>
       <RankingStartupWarmup />
@@ -479,8 +528,18 @@ function AppRouteContent() {
     location.state as { backgroundLocation?: typeof location } | null
   )?.backgroundLocation;
 
+  // AppProvider intentionally lives outside BrowserRouter. Mirror only the
+  // foreground pathname to it so expensive account-scoped realtime work can
+  // be paused while interaction-first screens (notably Select Profile) are
+  // visible. useLayoutEffect publishes before the next paint on route changes.
+  useLayoutEffect(() => {
+    announceForegroundRoute(location.pathname);
+  }, [location.pathname]);
+
   return (
     <>
+      <RouteWarmup pathname={location.pathname} />
+      <DeferredRankingWarmup pathname={location.pathname} />
       <NotificationToastListener />
       <RoleTransitionOverlay />
       <RouteScrollMemory />
@@ -493,6 +552,7 @@ function AppRouteContent() {
         <Route path="/apply/:companyId" element={<LazyRoute fullPage><RecruitmentApply /></LazyRoute>} />
         <Route path="/register-company" element={<LazyRoute fullPage><RegisterCompany /></LazyRoute>} />
         <Route path="/status" element={<LazyRoute fullPage><ApplicationStatus /></LazyRoute>} />
+        <Route path="/pending-applications" element={<LazyRoute fullPage><PendingApplications /></LazyRoute>} />
         <Route path="/audit" element={<LazyRoute fullPage><AuditPage /></LazyRoute>} />
 
         {/* Admin Routes */}
@@ -784,14 +844,12 @@ export default function App() {
   return (
     <AppProvider>
       <InitialBootOverlay />
-      <DeferredRankingWarmup />
       {CLIENT_MIGRATIONS_ENABLED && (
         <>
           <ContractSnapshotMigration />
           <LegacyMigration />
         </>
       )}
-      <RouteWarmup />
       <Toaster position="top-right" richColors />
       <AppRoutes />
     </AppProvider>

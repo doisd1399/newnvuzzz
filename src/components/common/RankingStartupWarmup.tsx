@@ -6,7 +6,7 @@ import {
 } from "../../context/AppContext";
 import { useCompanyStore } from "../../context/CompanyContext";
 import { auth } from "../../lib/firebase";
-import { getCustomRange, getEndOfDay, getMonthlyRange, getStartOfDay, getWeeklyRange } from "../../lib/metricsEngine";
+
 import { preloadRoute } from "../../lib/routePreload";
 import { useLiveCalendarReference } from "../../hooks/useLiveCalendarReference";
 import { useTripsRealtime } from "../../hooks/useTripsRealtime";
@@ -20,7 +20,14 @@ import {
 } from "../../lib/rankingPhotoWarmup";
 import { getRuntimePerformanceProfile } from "../../lib/runtimePerformance";
 import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
-import { buildRankingAggregatePeriodKey } from "../../lib/rankingAggregates";
+import { buildRankingAggregatePeriodKey, isRankingEligibleCompany } from "../../lib/rankingAggregates";
+import {
+  getRankingUtcCustomRange,
+  getRankingUtcEndOfDay,
+  getRankingUtcMonthlyRange,
+  getRankingUtcStartOfDay,
+  getRankingUtcWeeklyRange,
+} from "../../lib/rankingPeriods";
 import { warmRankingAggregate } from "../../repositories/RankingAggregateRepository";
 import { warmRankingCompaniesByIds } from "../../hooks/useRankingCompaniesByIds";
 
@@ -44,7 +51,7 @@ export default function RankingStartupWarmup() {
     globalStartDateStr: startDateStr,
     globalEndDateStr: endDateStr,
   } = useRankingFilterStore();
-  const referenceDate = useLiveCalendarReference();
+  const referenceDate = useLiveCalendarReference("utc");
   const uid = currentUser?.id || "";
   const authenticatedForUid =
     Boolean(uid) && auth.currentUser?.uid === uid;
@@ -54,7 +61,9 @@ export default function RankingStartupWarmup() {
     authenticatedForUid;
 
   const activeCompany = useMemo(() => {
-    const companyPool = [...allCompanies, ...profileCompanies];
+    const companyPool = [...allCompanies, ...profileCompanies].filter(
+      (company) => isRankingEligibleCompany(company as Record<string, unknown>),
+    );
     return companyPool.find(
       (company: any) => String(company?.id || "") === activeCompanyId,
     );
@@ -64,7 +73,9 @@ export default function RankingStartupWarmup() {
       resolveCompanySimulatorFilterValue(
         activeCompany as Record<string, unknown> | undefined,
         simulators as Record<string, unknown>[],
-        [...allCompanies, ...profileCompanies] as Record<string, unknown>[],
+        [...allCompanies, ...profileCompanies].filter((company) =>
+          isRankingEligibleCompany(company as Record<string, unknown>),
+        ) as Record<string, unknown>[],
       ),
     [activeCompany, allCompanies, profileCompanies, simulators],
   );
@@ -113,21 +124,21 @@ export default function RankingStartupWarmup() {
   ]);
 
   const rankingRange = useMemo(() => {
-    if (periodPreset === "semana") return getWeeklyRange(referenceDate);
-    if (periodPreset === "mes") return getMonthlyRange(referenceDate);
+    if (periodPreset === "semana") return getRankingUtcWeeklyRange(referenceDate);
+    if (periodPreset === "mes") return getRankingUtcMonthlyRange(referenceDate);
     if (startDateStr && endDateStr) {
-      return getCustomRange(startDateStr, endDateStr);
+      return getRankingUtcCustomRange(startDateStr, endDateStr);
     }
     if (startDateStr || endDateStr) {
-      const fallback = getMonthlyRange(referenceDate);
+      const fallback = getRankingUtcMonthlyRange(referenceDate);
       return {
         start: startDateStr
-          ? getStartOfDay(startDateStr)
+          ? getRankingUtcStartOfDay(startDateStr)
           : fallback.start,
-        end: endDateStr ? getEndOfDay(endDateStr) : fallback.end,
+        end: endDateStr ? getRankingUtcEndOfDay(endDateStr) : fallback.end,
       };
     }
-    return getMonthlyRange(referenceDate);
+    return getRankingUtcMonthlyRange(referenceDate);
   }, [endDateStr, periodPreset, referenceDate, startDateStr]);
 
   // Weekly and monthly rankings now read one consolidated document on the

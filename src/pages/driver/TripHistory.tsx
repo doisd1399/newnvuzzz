@@ -72,6 +72,11 @@ import {
   getTripDisplayDate,
   summarizeTripHistory,
 } from "../../lib/tripHistoryEngine";
+import {
+  isTripReceiptExpired,
+  shouldLoadTripReceipt,
+  TRIP_RECEIPT_RETENTION_DAYS,
+} from "../../lib/tripReceiptRetention";
 
 export interface TripRecord {
   id: string;
@@ -814,11 +819,11 @@ const TripListItem = React.memo(({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              if (trip.comprovanteUrl) void preloadComprovante(trip.comprovanteUrl);
+              if (shouldLoadTripReceipt(trip)) void preloadComprovante(trip.comprovanteUrl);
               setSelectedTrip(trip);
             }}
             onMouseEnter={() => {
-              if (trip.comprovanteUrl) void preloadComprovante(trip.comprovanteUrl);
+              if (shouldLoadTripReceipt(trip)) void preloadComprovante(trip.comprovanteUrl);
             }}
             title="Visualizar Detalhes"
             className="w-7 h-6 rounded-lg border border-blue-100/60 dark:border-gray-800 bg-blue-50/50 dark:bg-[#121213] flex items-center justify-center text-blue-500 hover:bg-blue-100 dark:hover:bg-gray-800 transition-colors"
@@ -1266,6 +1271,7 @@ export default function TripHistory({
             batchStart + TRIP_IMAGE_BATCH_SIZE,
           );
           const urls = batch
+            .filter((trip) => shouldLoadTripReceipt(trip))
             .map((trip) => String((trip as any).comprovanteUrl || "").trim())
             .filter(Boolean);
           if (urls.length === 0) return;
@@ -1473,6 +1479,9 @@ export default function TripHistory({
     () => getTripReceiptOriginalTitle(selectedTrip),
     [selectedTrip],
   );
+  const selectedTripReceiptExpired = selectedTrip
+    ? isTripReceiptExpired(selectedTrip)
+    : false;
   const selectedTripIndex = React.useMemo(
     () =>
       selectedTrip
@@ -2520,26 +2529,46 @@ export default function TripHistory({
                     </div>
                   </div>
 
-                  {/* Receipt Image */}
+                  {/* Receipt Image / retention notice */}
                   {selectedTrip.comprovanteUrl && (
                     <div className="mt-4 mb-2">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 mb-2">
-                        <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-200">
-                          Comprovante da Viagem
-                        </span>
-                        {selectedTripReceiptTitle && (
-                          <span className="text-[10px] sm:text-[11px] font-medium text-gray-500 dark:text-gray-400 leading-tight break-all">
-                            {selectedTripReceiptTitle}
-                          </span>
-                        )}
-                      </div>
-                      <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 z-0 relative flex justify-center items-center min-h-[180px]">
-                        <CachedImageViewer 
-                          url={selectedTrip.comprovanteUrl} 
-                          alt={selectedTripReceiptTitle || "Comprovante da Viagem"}
-                          className="w-full h-auto object-contain max-h-[180px] cursor-pointer" 
-                        />
-                      </div>
+                      {selectedTripReceiptExpired ? (
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-4 dark:border-emerald-900/40 dark:bg-emerald-500/5">
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-emerald-200 bg-white text-emerald-600 dark:border-emerald-800 dark:bg-[#121213] dark:text-emerald-400">
+                              <Check size={15} strokeWidth={2.5} />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-[12px] font-bold text-gray-900 dark:text-white">
+                                Viagem verificada
+                              </p>
+                              <p className="mt-1 text-[11px] leading-relaxed text-gray-600 dark:text-gray-400">
+                                A validação desta viagem foi concluída. Após {TRIP_RECEIPT_RETENTION_DAYS} dias, o print deixa de ser necessário e é removido da consulta, enquanto os dados da viagem permanecem preservados no histórico.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 mb-2">
+                            <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-200">
+                              Comprovante da Viagem
+                            </span>
+                            {selectedTripReceiptTitle && (
+                              <span className="text-[10px] sm:text-[11px] font-medium text-gray-500 dark:text-gray-400 leading-tight break-all">
+                                {selectedTripReceiptTitle}
+                              </span>
+                            )}
+                          </div>
+                          <div className="rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 z-0 relative flex justify-center items-center min-h-[180px]">
+                            <CachedImageViewer
+                              url={selectedTrip.comprovanteUrl}
+                              alt={selectedTripReceiptTitle || "Comprovante da Viagem"}
+                              className="w-full h-auto object-contain max-h-[180px] cursor-pointer"
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

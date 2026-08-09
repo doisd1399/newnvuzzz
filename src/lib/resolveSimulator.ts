@@ -22,8 +22,30 @@ export function normalizeSimulatorId(value: unknown = ""): string {
     .replace(/^-+|-+$/g, "");
 }
 
+const UNSUPPORTED_SIMULATOR_ALIASES = new Set([
+  "grand-truck-simulator",
+]);
+
+export function isUnsupportedSimulatorAlias(value: unknown): boolean {
+  return UNSUPPORTED_SIMULATOR_ALIASES.has(normalizeSimulatorId(value));
+}
+
+const simulatorSemanticValues = (record: SimulatorLike): unknown[] => [
+  record.simulatorName,
+  record.simuladorNome,
+  record.simulator,
+  record.name,
+  record.nome,
+  record.label,
+  record.title,
+  record.displayName,
+];
+
+const hasUnsupportedSimulatorSemantic = (record: SimulatorLike): boolean =>
+  simulatorSemanticValues(record).some(isUnsupportedSimulatorAlias);
+
 const KNOWN_SIMULATOR_ALIAS_GROUPS: readonly (readonly string[])[] = [
-  ["gto", "grand-truck-simulator"],
+  ["gto", "global-truck-online"],
   ["wtds", "world-truck-driving-simulator"],
   ["wbds", "world-bus-driving-simulator"],
   ["toe-3", "toe3", "truckers-of-europe-3"],
@@ -65,35 +87,34 @@ export function collectSimulatorAliases(
 
   if (typeof source === "string") {
     const normalized = normalizeSimulatorId(source);
-    if (normalized) aliases.add(normalized);
+    if (normalized && !isUnsupportedSimulatorAlias(normalized)) {
+      aliases.add(normalized);
+    }
     return expandKnownAliases(aliases);
   }
 
   if (!source || typeof source !== "object") return aliases;
   const record = source as SimulatorLike;
+  const semanticValues = simulatorSemanticValues(record);
+  if (hasUnsupportedSimulatorSemantic(record)) return aliases;
 
   [
     includeDocumentId ? record.id : undefined,
     record.simulatorId,
     record.simuladorId,
-    record.simulatorName,
-    record.simuladorNome,
-    record.simulator,
-    record.name,
-    record.nome,
-    record.label,
-    record.title,
-    record.displayName,
+    ...semanticValues,
   ].forEach((value) => {
     const normalized = normalizeSimulatorId(value);
-    if (normalized) aliases.add(normalized);
+    if (normalized && !isUnsupportedSimulatorAlias(normalized)) {
+      aliases.add(normalized);
+    }
   });
 
   return expandKnownAliases(aliases);
 }
 
 export function hasSimulatorIdentity(data: unknown): boolean {
-  if (typeof data === "string") return Boolean(normalizeSimulatorId(data));
+  if (typeof data === "string") return collectSimulatorAliases(data).size > 0;
   if (!data || typeof data !== "object") return false;
   return collectSimulatorAliases(data).size > 0;
 }
@@ -277,12 +298,17 @@ export function resolveSimulatorId(
   const group = findIdentityGroup(data, simulators, companies);
   if (group) return pickCanonicalId(group);
 
-  if (typeof data === "string") return normalizeSimulatorId(data);
+  if (typeof data === "string") {
+    return isUnsupportedSimulatorAlias(data) ? "" : normalizeSimulatorId(data);
+  }
   if (typeof data !== "object") return "";
 
   const record = data as SimulatorLike;
+  if (hasUnsupportedSimulatorSemantic(record)) return "";
   const explicitId = readText(record.simulatorId, record.simuladorId);
-  if (explicitId) return explicitId;
+  if (explicitId) {
+    return isUnsupportedSimulatorAlias(explicitId) ? "" : explicitId;
+  }
 
   const legacyName = readText(
     record.simulatorName,
@@ -292,7 +318,9 @@ export function resolveSimulatorId(
     record.nome,
     record.label,
   );
-  return normalizeSimulatorId(legacyName);
+  return isUnsupportedSimulatorAlias(legacyName)
+    ? ""
+    : normalizeSimulatorId(legacyName);
 }
 
 export function resolveSimulatorName(
@@ -301,6 +329,17 @@ export function resolveSimulatorName(
   companies: SimulatorLike[] = [],
 ): string {
   if (!data) return "";
+
+  if (typeof data === "string" && isUnsupportedSimulatorAlias(data)) {
+    return "";
+  }
+  if (
+    data &&
+    typeof data === "object" &&
+    hasUnsupportedSimulatorSemantic(data as SimulatorLike)
+  ) {
+    return "";
+  }
 
   const group = findIdentityGroup(data, simulators, companies);
   const groupLabel = group?.labels.find(Boolean);

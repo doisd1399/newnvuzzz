@@ -3,9 +3,10 @@ import { Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useSessionStore } from "../context/AppContext";
 import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
-import { auth } from "../lib/firebase";
+import { auth, db } from "../lib/firebase";
 import { unifyUserDocument } from "../services/userIdentityService";
 import { GoogleAuthProvider, signInWithPopup, signInWithCredential } from "firebase/auth";
+import { collection, doc, getDocs, limit, query, setDoc, where } from "firebase/firestore";
 import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import { preloadRoute } from "../lib/routePreload";
@@ -24,6 +25,7 @@ export default function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const accessCheckInFlightRef = useRef(false);
+  const legacyIdentityRecoveryAttemptedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -62,19 +64,222 @@ export default function Login() {
             return;
           }
 
-          // Só a inscrição corrente, gravada no documento canônico do usuário,
-          // pode abrir o acompanhamento. O histórico por e-mail não decide rota.
+          const normalizedEmail = String(currentUser.email || "")
+            .trim()
+            .toLowerCase();
+
+          // Company registration is intentionally allowed before Google login.
+          // Load only registrations already scoped to the authenticated Google
+          // e-mail. This keeps the handoff safe even on a shared device and
+          // avoids reading an arbitrary document id from Web Storage.
+          let companyRegistrationsForEmail:
+            | Array<{ id: string } & Record<string, any>>
+            | null = null;
+          const loadCompanyRegistrationsForEmail = async () => {
+            if (companyRegistrationsForEmail) {
+              return companyRegistrationsForEmail;
+            }
+            if (!normalizedEmail) {
+              companyRegistrationsForEmail = [];
+              return companyRegistrationsForEmail;
+            }
+
+            const snapshot = await getDocs(
+              query(
+                collection(db, "recruitment_applications"),
+                where("email", "==", normalizedEmail),
+                limit(20),
+              ),
+            );
+            companyRegistrationsForEmail = snapshot.docs
+              .map((registrationDocument) => ({
+                id: registrationDocument.id,
+                ...(registrationDocument.data() as Record<string, any>),
+              }))
+              .filter((application) => {
+                const applicationType = String(
+                  application.type || application.registrationType || "",
+                );
+                return (
+                  applicationType === "company_registration" &&
+                  String(application.email || "").trim().toLowerCase() ===
+                    normalizedEmail
+                );
+              });
+            return companyRegistrationsForEmail;
+          };
+
+          // A company registration submitted immediately before this login is
+          // more specific than an older canonical recruitment pointer. Honor
+          // that exact request first after confirming ownership by e-mail.
+          const pendingSessionApplicationId =
+            typeof window !== "undefined"
+              ? window.sessionStorage
+                  .getItem("nvu.pendingRecruitmentApplicationId")
+                  ?.trim() || ""
+              : "";
+          if (pendingSessionApplicationId && normalizedEmail) {
+            const ownedCompanyRegistrations =
+              await loadCompanyRegistrationsForEmail();
+            const sessionApplication = ownedCompanyRegistrations.find(
+              (application) => application.id === pendingSessionApplicationId,
+            );
+
+            if (sessionApplication) {
+              try {
+                await setDoc(
+                  doc(db, "users", currentUser.id),
+                  {
+                    applicationSubmitted: true,
+                    currentRecruitmentApplicationId:
+                      pendingSessionApplicationId,
+                    currentRecruitmentStatus: String(
+                      sessionApplication.status || "pending",
+                    ),
+                    currentRecruitmentType: "company_registration",
+                    currentRecruitmentSimulatorId: String(
+                      sessionApplication.simulatorId || "",
+                    ),
+                  },
+                  { merge: true },
+                );
+              } catch (pointerError) {
+                console.warn(
+                  "[NVU Login] Solicitação localizada; falha apenas ao persistir o acompanhamento.",
+                  pointerError,
+                );
+              }
+
+              if (active) {
+                if (String(sessionApplication.status || "pending") === "pending") {
+                  navigate("/select-profile", { replace: true });
+                } else {
+                  navigate("/status", {
+                    replace: true,
+                    state: { applicationId: pendingSessionApplicationId },
+                  });
+                }
+              }
+              return;
+            }
+
+            if (typeof window !== "undefined") {
+              try {
+                window.sessionStorage.removeItem(
+                  "nvu.pendingRecruitmentApplicationId",
+                );
+              } catch {
+                // Storage is only a handoff optimization.
+              }
+            }
+          }
+
+          // Fora do handoff imediato acima, a inscrição corrente gravada no
+          // documento canônico do usuário continua sendo a fonte principal do
+          // fluxo de motorista e dos cadastros já vinculados anteriormente.
           const currentApplicationId = String(
             (currentUser as any).currentRecruitmentApplicationId || "",
           ).trim();
           if (currentApplicationId) {
+            const currentRecruitmentType = String(
+              (currentUser as any).currentRecruitmentType || "",
+            ).trim();
+            const currentRecruitmentStatus = String(
+              (currentUser as any).currentRecruitmentStatus || "",
+            ).trim();
             if (active) {
-              navigate("/status", {
-                replace: true,
-                state: { applicationId: currentApplicationId },
-              });
+              if (currentRecruitmentStatus === "pending") {
+                navigate("/select-profile", { replace: true });
+              } else {
+                navigate("/status", {
+                  replace: true,
+                  state: { applicationId: currentApplicationId },
+                });
+              }
             }
             return;
+          }
+
+          // If the browser session was closed after a public company signup,
+          // recover only a still-pending company registration owned by the
+          // authenticated Google e-mail. Driver applications never use this
+          // fallback and continue relying exclusively on their canonical id.
+          if (normalizedEmail) {
+            const pendingCompanyRegistration = (
+              await loadCompanyRegistrationsForEmail()
+            )
+              .filter((application) => application.status === "pending")
+              .sort((a, b) => {
+                const timeA = Date.parse(String(a.createdAt || "")) || 0;
+                const timeB = Date.parse(String(b.createdAt || "")) || 0;
+                return timeB - timeA;
+              })[0];
+
+            if (pendingCompanyRegistration) {
+              try {
+                await setDoc(
+                  doc(db, "users", currentUser.id),
+                  {
+                    applicationSubmitted: true,
+                    currentRecruitmentApplicationId:
+                      pendingCompanyRegistration.id,
+                    currentRecruitmentStatus: "pending",
+                    currentRecruitmentType: "company_registration",
+                    currentRecruitmentSimulatorId: String(
+                      pendingCompanyRegistration.simulatorId || "",
+                    ),
+                  },
+                  { merge: true },
+                );
+              } catch (pointerError) {
+                console.warn(
+                  "[NVU Login] Cadastro de empresa localizado; falha apenas ao persistir o acompanhamento.",
+                  pointerError,
+                );
+              }
+              if (typeof window !== "undefined") {
+                try {
+                  window.sessionStorage.setItem(
+                    "nvu.pendingRecruitmentApplicationId",
+                    pendingCompanyRegistration.id,
+                  );
+                } catch {
+                  // The canonical user pointer above is sufficient.
+                }
+              }
+              if (active) {
+                navigate("/select-profile", { replace: true });
+              }
+              return;
+            }
+          }
+
+          // Legacy identity reconciliation can scan several collections and migrate
+          // references. Running it immediately after every Google login used to
+          // continue in the background after /select-profile was already visible,
+          // occasionally blocking the main thread exactly when Pendências was tapped.
+          // Only run that expensive recovery when the lightweight checks above found
+          // no active membership and no current/pending request at all. In that case
+          // the user is still on the login screen, so the work cannot compete with
+          // the profile selector interaction.
+          const firebaseUser = auth.currentUser;
+          if (
+            firebaseUser?.uid === currentUser.id &&
+            !legacyIdentityRecoveryAttemptedRef.current
+          ) {
+            legacyIdentityRecoveryAttemptedRef.current = true;
+            try {
+              const recoveredUser = await unifyUserDocument(firebaseUser);
+              if (active && auth.currentUser?.uid === firebaseUser.uid) {
+                setCurrentUser(recoveredUser as any);
+              }
+              return;
+            } catch (reconciliationError) {
+              console.warn(
+                "[NVU Login] Reconciliação legada não encontrou acesso adicional.",
+                reconciliationError,
+              );
+            }
           }
 
           // Sem vínculo e sem uma inscrição corrente, o usuário inicia o fluxo
@@ -186,9 +391,9 @@ export default function Login() {
       
       // Firebase Auth is authoritative for the click acknowledgement. Publish
       // a minimal identity immediately so the session/profile route can start
-      // without waiting for the legacy identity merge and reference migration.
-      // The full reconciliation remains active in the background and replaces
-      // this fallback as soon as it completes.
+      // without waiting for legacy identity migration. AppContext hydrates the
+      // canonical user document; expensive legacy recovery is reserved for the
+      // no-access fallback while Login is still on screen.
       setCurrentUser({
         id: user.uid,
         name: user.displayName?.trim() || user.email?.split("@")[0] || "Usuário",
@@ -199,20 +404,11 @@ export default function Login() {
         role: "driver",
         roles: ["driver"],
       } as any);
-      void unifyUserDocument(user)
-        .then((finalUserData) => {
-          // Do not let a slow reconciliation from an older account overwrite
-          // a later login/logout session.
-          if (auth.currentUser?.uid === user.uid) {
-            setCurrentUser(finalUserData as any);
-          }
-        })
-        .catch((reconciliationError) => {
-          // AppContext's auth listener still hydrates the canonical document.
-          // A background reconciliation failure must not make the login look
-          // unsuccessful after Firebase has already authenticated the user.
-          console.warn("[NVU Login] Reconciliação de identidade pendente.", reconciliationError);
-        });
+      // Do not start the legacy identity merge here. It can perform many
+      // Firestore reads/migrations and would keep running after the selector
+      // appears. AppContext hydrates the canonical user document normally; the
+      // legacy recovery above runs only when no usable access/pending state was
+      // found.
     } catch (err: any) {
       sessionStorage.removeItem("loginRedirect");
       

@@ -1,6 +1,10 @@
 import { buildDriverRankingContext, RankingScope } from "./performanceEngine";
 import { filterTripsBySimulator } from "./metricsEngine";
 import type { NormalizedTrip } from "./tripNormalizer";
+import {
+  isAllSimulatorSelection,
+  resolveSimulatorId,
+} from "./resolveSimulator";
 
 export interface RankingPageDriverItem {
   id: string;
@@ -22,6 +26,7 @@ export interface BuildDriverRankingPageDataParams {
   companies?: Record<string, unknown>[];
   simulators?: Record<string, unknown>[];
   users?: Record<string, unknown>[];
+  companyMembers?: Record<string, unknown>[];
 }
 
 export interface BuildCanonicalDriverRankingContextParams
@@ -87,6 +92,7 @@ export function buildDriverRankingPageData({
   companies = [],
   simulators = [],
   users = [],
+  companyMembers = [],
 }: BuildDriverRankingPageDataParams): RankingPageDriverItem[] {
   if (scope === "internal" && !companyId) return [];
 
@@ -119,11 +125,66 @@ export function buildDriverRankingPageData({
       .map((company) => [readText(company, "id"), company] as const)
       .filter(([id]) => Boolean(id)),
   );
+  const canonicalSimulatorId = simulatorId
+    ? resolveSimulatorId({ simulatorId }, simulators, companies)
+    : "";
+  const activeMembershipByUser = new Map<
+    string,
+    { companyId: string; joinedAt: number }
+  >();
+  companyMembers.forEach((membership) => {
+    const userId = readText(membership, "userId");
+    const membershipCompanyId = readText(membership, "companyId");
+    const roles = Array.isArray(membership.roles)
+      ? membership.roles.map((role) => String(role).toLowerCase())
+      : [];
+    const isDriver =
+      roles.includes("driver") ||
+      readText(membership, "role").toLowerCase() === "driver";
+    if (
+      !userId ||
+      !membershipCompanyId ||
+      readText(membership, "status").toLowerCase() !== "active" ||
+      !isDriver ||
+      !companiesById.has(membershipCompanyId) ||
+      (scope === "internal" && membershipCompanyId !== companyId)
+    ) {
+      return;
+    }
+    const membershipCompany = companiesById.get(membershipCompanyId);
+    if (
+      canonicalSimulatorId &&
+      !isAllSimulatorSelection(canonicalSimulatorId) &&
+      resolveSimulatorId(membershipCompany, simulators, companies) !==
+        canonicalSimulatorId
+    ) {
+      return;
+    }
+
+    const joinedAtValue = membership.joinedAt;
+    const joinedAt =
+      joinedAtValue instanceof Date
+        ? joinedAtValue.getTime()
+        : typeof (joinedAtValue as { toDate?: unknown })?.toDate === "function"
+          ? (joinedAtValue as { toDate: () => Date }).toDate().getTime()
+          : new Date(joinedAtValue as string | number).getTime() || 0;
+    const current = activeMembershipByUser.get(userId);
+    if (!current || joinedAt >= current.joinedAt) {
+      activeMembershipByUser.set(userId, {
+        companyId: membershipCompanyId,
+        joinedAt,
+      });
+    }
+  });
 
   return context.ranking.map((entry) => {
     const user = usersById.get(entry.id);
-    const company = entry.companyId
-      ? companiesById.get(entry.companyId)
+    const currentCompanyId =
+      scope === "internal"
+        ? companyId || entry.companyId
+        : activeMembershipByUser.get(entry.id)?.companyId || entry.companyId;
+    const company = currentCompanyId
+      ? companiesById.get(currentCompanyId)
       : undefined;
 
     return {
@@ -142,7 +203,7 @@ export function buildDriverRankingPageData({
         readText(user, "photo"),
       trips: entry.trips,
       val: entry.earnings,
-      companyId: entry.companyId,
+      companyId: currentCompanyId,
       companyName:
         readText(company, "companyName") || readText(company, "name"),
     };

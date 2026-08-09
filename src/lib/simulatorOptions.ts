@@ -2,6 +2,7 @@ import {
   collectSimulatorAliases,
   normalizeSimulatorId,
   resolveSimulatorId,
+  resolveSimulatorName,
 } from "./resolveSimulator";
 
 export interface SimulatorSelectorOption {
@@ -51,6 +52,7 @@ const knownSimulatorLabel = (normalized: string): string | null => {
   const compact = normalized.replace(/-/g, "");
   const labels: Record<string, string> = {
     gto: "GTO",
+    globaltruckonline: "GTO",
     wtds: "WTDS",
     wbds: "WBDS",
     toe3: "TOE 3",
@@ -283,6 +285,36 @@ export function companyMatchesSimulatorOption(
   if (!option) return false;
   const companyAliases = collectAliases(company);
   return option.aliases.some((alias) => companyAliases.has(alias));
+}
+
+
+export function resolveSimulatorDisplayLabel(
+  source: SimulatorLike | null | undefined,
+  simulators: SimulatorLike[] = [],
+  companies: SimulatorLike[] = [],
+): string {
+  if (!source) return "";
+
+  const sourceAliases = collectAliases(source);
+  const catalogMatch = (Array.isArray(simulators) ? simulators : []).find(
+    (simulator) => intersects(sourceAliases, collectAliases(simulator, true)),
+  );
+
+  if (catalogMatch) {
+    const canonicalLabel = readText(
+      catalogMatch.name,
+      catalogMatch.simulatorName,
+      catalogMatch.nome,
+      catalogMatch.label,
+      catalogMatch.title,
+      catalogMatch.displayName,
+    );
+    if (canonicalLabel) return canonicalLabel;
+  }
+
+  return formatSimulatorLabel(
+    resolveSimulatorName(source, simulators, companies),
+  );
 }
 
 export function resolveCompanySimulatorFilterValue(

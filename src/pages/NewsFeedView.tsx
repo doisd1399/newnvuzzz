@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  AlertCircle,
   Award,
   BadgeCheck,
   Building2,
@@ -55,6 +56,7 @@ type Props = {
   searching: boolean;
   hasMore: boolean;
   historyPreparing: boolean;
+  feedError: string | null;
   searchTerm: string;
   selectedSimulator: string;
   simulatorOptions: SimulatorOption[];
@@ -657,6 +659,7 @@ export default function NewsFeedView({
   searching,
   hasMore,
   historyPreparing,
+  feedError,
   searchTerm,
   selectedSimulator,
   simulatorOptions,
@@ -788,18 +791,39 @@ export default function NewsFeedView({
       </div>
 
       <div className="mt-4 space-y-4">
+        {feedError && filteredPosts.length > 0 && !loading && (
+          <div className="flex items-start justify-between gap-3 rounded-[16px] border border-amber-200 bg-amber-50 px-3.5 py-3 text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+            <div className="flex min-w-0 items-start gap-2">
+              <AlertCircle size={15} className="mt-0.5 shrink-0" />
+              <p className="text-[11px] leading-relaxed">{feedError}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="shrink-0 text-[10px] font-black uppercase tracking-wide hover:underline"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        )}
         {loading ? (
           <LoadingCardSkeleton />
         ) : filteredPosts.length === 0 ? (
           <div className="rounded-[18px] border border-dashed border-slate-300 bg-white px-5 py-10 text-center dark:border-slate-700 dark:bg-[#0f0f12]">
             <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-              {activeSection === "noticias" ? <Newspaper size={20} /> : <Megaphone size={20} />}
+              {feedError ? <AlertCircle size={20} /> : activeSection === "noticias" ? <Newspaper size={20} /> : <Megaphone size={20} />}
             </span>
             <h2 className="mt-3 text-[14px] font-black text-slate-900 dark:text-white">
-              {historyPreparing && activeSection === "noticias" ? "Preparando o histórico" : "Nenhuma publicação encontrada"}
+              {feedError
+                ? "Não foi possível carregar"
+                : historyPreparing && activeSection === "noticias"
+                  ? "Preparando o histórico"
+                  : "Nenhuma publicação encontrada"}
             </h2>
             <p className="mx-auto mt-1 max-w-md text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
-              {historyPreparing && activeSection === "noticias"
+              {feedError
+                ? feedError
+                : historyPreparing && activeSection === "noticias"
                 ? "As classificações anteriores estão sendo organizadas para este simulador."
                 : `Não há publicações compatíveis com ${activeSimulatorLabel} e os filtros selecionados.`}
             </p>

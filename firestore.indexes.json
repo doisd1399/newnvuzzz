@@ -1,6 +1,42 @@
 {
   "indexes": [
     {
+      "collectionGroup": "nvu_comunicados",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "simuladorKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sortAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nvu_classificacoes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "simuladorKey",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "sortAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "nvu_classificacoes",
       "queryScope": "COLLECTION",
       "fields": [

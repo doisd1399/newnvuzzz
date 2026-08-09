@@ -93,13 +93,23 @@ export function buildDriverRankingContext(
       if (!trip.isValid) return false;
       const time = tripDate(trip).getTime();
       return Number.isFinite(time) && time >= start && time <= end;
+    })
+    .sort((left, right) => {
+      const dateOrder = tripDate(left).getTime() - tripDate(right).getTime();
+      if (dateOrder !== 0) return dateOrder;
+      return String(left?.id || "").localeCompare(String(right?.id || ""));
     });
 
-  // Aggregate each driver's totals once from the full simulator-period
-  // dataset. The ranking scope only controls participant eligibility; it must
-  // never change a driver's own trips or earnings for the same period.
+  // Internal rankings are company-scoped in both participation and totals.
+  // A driver who worked for more than one company in the same simulator must
+  // never carry earnings from another company into the selected fleet.
+  const scopedPeriodTrips =
+    query.scope === "internal" && query.companyId
+      ? periodTrips.filter((trip) => companyIdOf(trip) === query.companyId)
+      : periodTrips;
+
   const canonicalStats = new Map<string, DriverRankingEntry>();
-  for (const trip of periodTrips) {
+  for (const trip of scopedPeriodTrips) {
     const id = driverIdOf(trip);
     if (!id) continue;
     const current = canonicalStats.get(id) || {
@@ -110,30 +120,32 @@ export function buildDriverRankingContext(
       earnings: 0,
     };
     if (!current.name) current.name = driverNameOf(trip);
-    if (!current.companyId) current.companyId = companyIdOf(trip);
+    if (query.scope === "global") {
+      current.companyId = companyIdOf(trip) || current.companyId;
+    } else if (!current.companyId) {
+      current.companyId = companyIdOf(trip);
+    }
     current.trips += 1;
     current.earnings += tripValue(trip);
     canonicalStats.set(id, current);
   }
 
   const eligibleDriverIds = new Set<string>();
-  if (query.scope === "global") {
-    canonicalStats.forEach((_entry, id) => eligibleDriverIds.add(id));
-  } else if (query.companyId) {
-    for (const trip of periodTrips) {
-      if (companyIdOf(trip) !== query.companyId) continue;
-      const id = driverIdOf(trip);
-      if (id) eligibleDriverIds.add(id);
-    }
-  }
+  canonicalStats.forEach((_entry, id) => eligibleDriverIds.add(id));
 
   const ranking = Array.from(eligibleDriverIds)
     .map((id) => canonicalStats.get(id))
     .filter((entry): entry is DriverRankingEntry => Boolean(entry))
     .sort((a, b) => {
-    if (b.earnings !== a.earnings) return b.earnings - a.earnings;
-    return b.trips - a.trips;
-  });
+      if (b.earnings !== a.earnings) return b.earnings - a.earnings;
+      if (b.trips !== a.trips) return b.trips - a.trips;
+      const nameOrder = String(a.name || "").localeCompare(
+        String(b.name || ""),
+        "pt-BR",
+        { sensitivity: "base", numeric: true },
+      );
+      return nameOrder || a.id.localeCompare(b.id);
+    });
 
   const index = ranking.findIndex((entry) => entry.id === query.driverId);
   const current = canonicalStats.get(query.driverId) ||
@@ -177,8 +189,8 @@ export function buildDriverRankingContext(
     differenceToNext,
     nextCompetitor,
     current,
-    entityTrips: periodTrips.filter((trip) => driverIdOf(trip) === query.driverId),
-    periodTrips,
+    entityTrips: scopedPeriodTrips.filter((trip) => driverIdOf(trip) === query.driverId),
+    periodTrips: scopedPeriodTrips,
     ...scores,
     finalIndex: Math.round(
       (scores.ritmoOperacionalScore + scores.viagensScore + scores.ganhosScore) / 3,

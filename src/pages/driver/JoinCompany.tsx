@@ -4,6 +4,7 @@ import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { useCompanyStore } from "../../context/CompanyContext";
 import { Button } from "../../components/ui/Button";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
+import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import { StableImage } from "../../components/common/StableImage";
 import {
   UserCog,
@@ -38,6 +39,12 @@ export default function JoinCompany() {
   }, [companyCatalogAttempted, companyCatalogLoaded, loadCompanyCatalog]);
 
   const activeSimulators = simulators.filter((s:any) => s.active !== false).sort((a:any, b:any) => a.name.localeCompare(b.name));
+  const getSimulatorLabel = (company: any) =>
+    resolveSimulatorDisplayLabel(
+      company,
+      simulators as any[],
+      allCompanies as any[],
+    ) || company?.simulatorName || "Global Truck";
 
   // Check if there is an active request
   const myPendingRequest = driverRequests.find(
@@ -109,7 +116,9 @@ export default function JoinCompany() {
 
   const filteredCompanies = companiesWithCount.filter((c) => {
     if (!selectedSimulatorId) return false;
-    const matchesSimulator = ((c as any).simulatorId || resolveSimulatorId(c as any)) === selectedSimulatorId;
+    const matchesSimulator =
+      resolveSimulatorId(c as any, simulators as any[], allCompanies as any[]) ===
+      selectedSimulatorId;
     const matchesSearch = c.companyName.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesSimulator && matchesSearch;
   });
@@ -241,7 +250,7 @@ export default function JoinCompany() {
                     </div>
                   )}
                   <span className="sm:hidden px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded-md text-[9px] font-bold tracking-wide truncate max-w-[60px]">
-                    {company.simulatorName}
+                    {getSimulatorLabel(company)}
                   </span>
                 </div>
 
@@ -255,7 +264,7 @@ export default function JoinCompany() {
                       {company.memberCount === 1 ? "membro" : "membros"}
                     </span>
                     <span className="hidden sm:inline px-2 py-0.5 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-400 rounded-md text-xs font-bold tracking-wide border border-blue-100 dark:border-blue-500/20/50">
-                      {company.simulatorName || "Global Truck"}
+                      {getSimulatorLabel(company)}
                     </span>
                   </div>
                 </div>

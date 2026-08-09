@@ -37,7 +37,7 @@ export const normalizeTripSimulatorCode = (value: unknown): string => {
     return "TOE3";
   }
 
-  if (compact === "GTO" || compact.includes("GRANDTRUCKONLINE")) {
+  if (compact === "GTO" || compact.includes("GLOBALTRUCKONLINE")) {
     return "GTO";
   }
 
@@ -99,23 +99,49 @@ export const parseTripDistance = (value: unknown): number => {
 
   let normalized = cleaned;
   const hasComma = cleaned.includes(",");
-  const hasDot = cleaned.includes(".");
+  const dotCount = (cleaned.match(/\./g) || []).length;
+  const hasDot = dotCount > 0;
 
   if (hasComma && hasDot) {
+    // Accept both pt-BR (1.234,56) and en-US (1,234.56) input.
     normalized = cleaned.lastIndexOf(",") > cleaned.lastIndexOf(".")
       ? cleaned.replace(/\./g, "").replace(",", ".")
       : cleaned.replace(/,/g, "");
   } else if (hasComma) {
+    // The form is presented in pt-BR, where comma is the decimal separator.
     normalized = cleaned.replace(/\./g, "").replace(",", ".");
-  } else if ((cleaned.match(/\./g) || []).length > 1) {
-    const lastDot = cleaned.lastIndexOf(".");
-    normalized =
-      cleaned.slice(0, lastDot).replace(/\./g, "") + cleaned.slice(lastDot);
+  } else if (hasDot) {
+    const groups = cleaned.split(".");
+    const looksLikePtBrThousands =
+      groups.length > 1 &&
+      groups[0].length >= 1 &&
+      groups.slice(1).every((group) => group.length === 3);
+
+    if (looksLikePtBrThousands) {
+      // OCR values were being formatted with toLocaleString("pt-BR"). A value
+      // such as 1.234 km must therefore be saved as 1234, not 1.234 km.
+      normalized = cleaned.replace(/\./g, "");
+    } else if (dotCount > 1) {
+      const lastDot = cleaned.lastIndexOf(".");
+      normalized =
+        cleaned.slice(0, lastDot).replace(/\./g, "") + cleaned.slice(lastDot);
+    }
   }
 
   const parsed = Number(normalized);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
+
+/**
+ * Formats a distance for the editable form without a thousands separator.
+ * This keeps the value unambiguous when it is parsed again on submit.
+ */
+export const formatTripDistanceInput = (distance: number): string =>
+  new Intl.NumberFormat("pt-BR", {
+    useGrouping: false,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(distance);
 
 export const readTripDistance = (trip: Record<string, unknown> | null | undefined): number =>
   parseTripDistance(

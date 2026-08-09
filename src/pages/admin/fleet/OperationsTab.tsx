@@ -82,6 +82,7 @@ import {
 } from "../../../lib/metricsEngine";
 import { DesempenhoOperacionalCard } from "../../../components/DesempenhoOperacionalCard";
 import { useTripHistory } from "../../../hooks/useTripHistory";
+import { isTerminalJobStatus } from "../../../lib/jobStatus";
 
 function OperationsTab() {
   const { currentUser } = useSessionStore();
@@ -199,8 +200,24 @@ function OperationsTab() {
         color: "bg-red-500",
         bg: "bg-red-50 dark:bg-red-500/10 dark:border-red-500/20",
       };
+    if (job.status === "awaiting_completion")
+      return {
+        text: "Aguardando conclusão",
+        color: "bg-emerald-500",
+        bg: "bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/20",
+        icon: CheckCircle2,
+      };
+    if (job.status === "delayed")
+      return {
+        text: "Atrasado",
+        color: "bg-red-500",
+        bg: "bg-red-50 dark:bg-red-500/10 dark:border-red-500/20",
+      };
 
-    const daysLeft = differenceInDays(new Date(job.deadlineDate), new Date());
+    const daysLeft = differenceInDays(
+      new Date(job.dueAt || job.deadlineDate),
+      new Date(),
+    );
 
     if (daysLeft < 0)
       return {
@@ -245,7 +262,7 @@ function OperationsTab() {
 
         const statusDetails = getJobStatusDetails(job, contract);
         const daysLeft = differenceInDays(
-          new Date(job.deadlineDate),
+          new Date(job.dueAt || job.deadlineDate),
           now,
         );
 
@@ -264,7 +281,7 @@ function OperationsTab() {
         (j) =>
           j.contract &&
           j.driver &&
-          !["completed", "cancelled"].includes(j.status),
+          !isTerminalJobStatus(j.status),
       );
   }, [
     companiesById,
@@ -277,9 +294,15 @@ function OperationsTab() {
 
   const filteredActiveJobsList = useMemo(() => {
     return activeJobsList.filter((job) => {
-      if (activeJobsFilter === "late") return job.daysLeft < 0;
+      if (activeJobsFilter === "late")
+        return job.status === "delayed" || job.daysLeft < 0;
       if (activeJobsFilter === "attention")
-        return job.daysLeft >= 0 && job.daysLeft <= 2;
+        return (
+          job.status !== "delayed" &&
+          job.status !== "awaiting_completion" &&
+          job.daysLeft >= 0 &&
+          job.daysLeft <= 2
+        );
       if (activeJobsFilter === "pending") return job.status === "pending";
       return true;
     });
@@ -294,12 +317,73 @@ function OperationsTab() {
 
   const validTripCountByJobId = useMemo(() => {
     const counts = new Map<string, number>();
-    normalizedHistoricoTrips.forEach((trip: any) => {
-      if (!trip.isValid || !trip.jobId) return;
-      counts.set(trip.jobId, (counts.get(trip.jobId) || 0) + 1);
+    const fallbackCandidates = new Map<string, any[]>();
+
+    activeJobsList.forEach((job) => {
+      counts.set(job.id, 0);
+      const key = `${String(job.driverId || "").trim()}|${String(job.contractId || "").trim()}`;
+      if (key === "|") return;
+      const current = fallbackCandidates.get(key) || [];
+      current.push(job);
+      current.sort((a, b) => {
+        const aTime = new Date(a.assignedAt || a.createdAt || 0).getTime() || 0;
+        const bTime = new Date(b.assignedAt || b.createdAt || 0).getTime() || 0;
+        return bTime - aTime;
+      });
+      fallbackCandidates.set(key, current);
     });
+
+    normalizedHistoricoTrips.forEach((trip: any) => {
+      if (!trip.isValid) return;
+
+      const directJobId = String(trip.jobId || "").trim();
+      if (directJobId) {
+        if (counts.has(directJobId)) {
+          counts.set(directJobId, (counts.get(directJobId) || 0) + 1);
+        }
+        return;
+      }
+
+      // Compatibility for trips created before jobId became mandatory. The
+      // driver card already used this contract/driver/time fallback; applying
+      // the same rule here prevents the company card from showing a different
+      // progress for the very same active operation.
+      const driverId = String(
+        trip.driverId || trip.motoristaId || trip.motorista_id || trip.userId || "",
+      ).trim();
+      const contractId = String(trip.contractId || trip.contratoId || "").trim();
+      if (!driverId || !contractId) return;
+
+      const candidates = fallbackCandidates.get(`${driverId}|${contractId}`) || [];
+      const tripTime = trip.metricDate?.getTime?.() || 0;
+      if (!tripTime) return;
+
+      const matchedJob = candidates.find((job) => {
+        const assignedTime =
+          new Date(job.assignedAt || job.createdAt || 0).getTime() || 0;
+        const completedTime = job.completedAt
+          ? new Date(job.completedAt).getTime() || Number.POSITIVE_INFINITY
+          : Number.POSITIVE_INFINITY;
+        return tripTime >= assignedTime && tripTime <= completedTime;
+      });
+
+      if (matchedJob) {
+        counts.set(matchedJob.id, (counts.get(matchedJob.id) || 0) + 1);
+      }
+    });
+
     return counts;
-  }, [normalizedHistoricoTrips]);
+  }, [activeJobsList, normalizedHistoricoTrips]);
+
+  const getResolvedJobProgress = React.useCallback(
+    (job: any) =>
+      Math.max(
+        0,
+        Number(job?.progress) || 0,
+        validTripCountByJobId.get(String(job?.id || "")) || 0,
+      ),
+    [validTripCountByJobId],
+  );
 
   const {
     summaryActiveDriversCount,
@@ -324,7 +408,7 @@ function OperationsTab() {
           currentActiveContracts.add(job.contractId);
         }
         activeJobsCount++;
-        const realProgress = validTripCountByJobId.get(job.id) || 0;
+        const realProgress = getResolvedJobProgress(job);
         comp += realProgress || 0;
 
         req += job.contract?.totalDeliveries || 0;
@@ -344,7 +428,7 @@ function OperationsTab() {
       summaryActiveContractsCount: activeJobsCount,
       summaryEfficiency: eff,
     };
-  }, [activeJobsList, activeCompanyId, validTripCountByJobId]);
+  }, [activeJobsList, activeCompanyId, getResolvedJobProgress]);
 
   const resumoMetrics = useMemo(() => {
     const { start, end } =
@@ -609,12 +693,25 @@ function OperationsTab() {
         w = 0,
         d = 0;
       for (const j of activeJobsList) {
-        if (j.status === "pending") p++;
-        if (j.status === "active" && j.daysLeft > 2) i++;
-        if (["active", "pending"].includes(j.status)) {
-          if (j.daysLeft >= 0 && j.daysLeft <= 2) w++;
-          if (j.daysLeft < 0) d++;
+        // Every open job belongs to exactly one status bucket so the counts
+        // and percentages cannot drift above the number of active jobs.
+        if (j.status === "pending") {
+          p++;
+          continue;
         }
+        if (j.status === "awaiting_completion") {
+          i++;
+          continue;
+        }
+        if (j.status === "delayed" || j.daysLeft < 0) {
+          d++;
+          continue;
+        }
+        if (j.daysLeft <= 2) {
+          w++;
+          continue;
+        }
+        i++;
       }
       return {
         pendingJobs: p,
@@ -1041,7 +1138,7 @@ function OperationsTab() {
             <div className="p-3 space-y-1.5 overflow-hidden">
               {filteredActiveJobsList.map((job) => {
                 const isExpanded = expandedJobId === job.id;
-                  const realProgress = validTripCountByJobId.get(job.id) || 0;
+                  const realProgress = getResolvedJobProgress(job);
                 const progressPct =
                   Math.round(
                     (realProgress /
@@ -1674,7 +1771,7 @@ function OperationsTab() {
               ) : (
                 filteredActiveJobsList.map((job) => {
                   const isExpanded = expandedJobId === job.id;
-                  const realProgress = validTripCountByJobId.get(job.id) || 0;
+                  const realProgress = getResolvedJobProgress(job);
                   const progressPct =
                     Math.round(
                       (realProgress /

@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import { syncCompanyApprovalNewsHistory } from "./companyApprovalNews";
 
 const db = admin.firestore();
-const NEWS_TIME_ZONE = "America/Sao_Paulo";
-const AUTOMATION_VERSION = "nvu_news_individual_v4";
-const HISTORY_VERSION = "nvu_news_recent_history_individual_v7";
+const NEWS_TIME_ZONE = "UTC";
+const AUTOMATION_VERSION = "nvu_news_individual_v6_utc_consistent";
+const HISTORY_VERSION = "nvu_news_recent_history_individual_v9_utc_consistent";
+const RANKING_AGGREGATE_SCHEMA_VERSION = 4;
 const CONTROL_DOCUMENT_ID = AUTOMATION_VERSION;
 const CLASSIFICATIONS_COLLECTION = "nvu_classificacoes";
 const COMMUNICATIONS_COLLECTION = "nvu_comunicados";
@@ -18,7 +19,7 @@ const PUBLICATION_DELAY_MINUTES = 30;
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
 const HISTORY_LOOKBACK_DAYS = 70;
 const FAILED_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const HISTORY_CHECKPOINT_VERSION = 3;
+const HISTORY_CHECKPOINT_VERSION = 5;
 
 type PeriodType = "semana" | "mes";
 type RankingEntity = "empresa" | "motorista";
@@ -47,6 +48,14 @@ type SimulatorDescriptor = {
   key: string;
   id: string;
   name: string;
+  aliases: string[];
+};
+
+type SimulatorCatalog = {
+  descriptors: SimulatorDescriptor[];
+  byAlias: Map<string, string>;
+  byId: Map<string, SimulatorDescriptor>;
+  ids: Set<string>;
 };
 
 type PeriodDescriptor = {
@@ -133,30 +142,130 @@ function normalizeSimulatorKey(value: unknown): string {
   if (normalized === "ets2" || normalized.includes("eurotrucksimulator2")) return "ets2";
   if (normalized === "ats" || normalized.includes("americantrucksimulator")) return "ats";
   if (normalized === "toe3" || normalized.includes("truckersofeurope3")) return "toe3";
+  if (normalized === "wtds" || normalized.includes("worldtruckdrivingsimulator")) return "wtds";
+  if (normalized === "wbds" || normalized.includes("worldbusdrivingsimulator")) return "wbds";
+  if (normalized === "pbs" || normalized.includes("protonbussimulator")) return "pbs";
   return normalized;
 }
 
-function preferredSimulatorName(id: string, name: string): string {
-  const nameKey = normalizeSimulatorKey(name);
-  const idKey = normalizeSimulatorKey(id);
-  const key = ["gto", "ets2", "ats", "toe3"].includes(nameKey) ? nameKey : idKey;
-  if (key === "gto") return "GTO";
-  if (key === "ets2") return "Euro Truck Simulator 2";
-  if (key === "ats") return "American Truck Simulator";
-  if (key === "toe3") return "Truckers of Europe 3";
-  return firstNonEmpty(name, id, "Não informado");
+function isUnsupportedSimulatorAlias(value: unknown): boolean {
+  return normalizeText(value).replace(/[^a-z0-9]/g, "") === "grandtrucksimulator";
+}
+
+function hasUnsupportedSimulatorIdentity(
+  data: FirebaseFirestore.DocumentData | undefined,
+): boolean {
+  if (!data) return false;
+  return [
+    data.simulatorName,
+    data.simuladorNome,
+    data.simulator,
+    data.simulador,
+    data.name,
+    data.nome,
+    data.label,
+    data.title,
+    data.displayName,
+  ].some(isUnsupportedSimulatorAlias);
+}
+
+function simulatorCandidates(data: FirebaseFirestore.DocumentData | undefined): string[] {
+  if (!data) return [];
+  return [
+    data.simulatorId,
+    data.simuladorId,
+    data.simulatorKey,
+    data.simuladorKey,
+    data.simulatorName,
+    data.simuladorNome,
+    data.simulator,
+    data.simulador,
+  ]
+    .map((value) => firstNonEmpty(value))
+    .filter(Boolean);
+}
+
+let simulatorCatalogCache: { expiresAt: number; value: SimulatorCatalog } | null = null;
+
+async function loadSimulatorCatalog(): Promise<SimulatorCatalog> {
+  if (simulatorCatalogCache && simulatorCatalogCache.expiresAt > Date.now()) {
+    return simulatorCatalogCache.value;
+  }
+
+  const snapshot = await db.collection("simulators").get();
+  const descriptors: SimulatorDescriptor[] = [];
+  const byAlias = new Map<string, string>();
+  const byId = new Map<string, SimulatorDescriptor>();
+  const ids = new Set<string>();
+
+  snapshot.docs.forEach((document) => {
+    const data = document.data();
+    if (hasUnsupportedSimulatorIdentity(data)) return;
+    const id = document.id;
+    const name = firstNonEmpty(
+      data.name,
+      data.nome,
+      data.label,
+      data.title,
+      data.displayName,
+      id,
+    );
+    const rawAliases = [
+      id,
+      name,
+      data.code,
+      data.slug,
+      data.key,
+      data.simulatorId,
+      data.simuladorId,
+      ...(Array.isArray(data.aliases) ? data.aliases : []),
+    ]
+      .map((value) => firstNonEmpty(value))
+      .filter((value) => value && !isUnsupportedSimulatorAlias(value));
+    const aliasSet = new Set<string>();
+    rawAliases.forEach((value) => {
+      [
+        value,
+        normalizeText(value).replace(/[^a-z0-9]/g, ""),
+        normalizeSimulatorKey(value),
+      ].filter(Boolean).forEach((alias) => aliasSet.add(alias));
+    });
+    const aliases = Array.from(aliasSet);
+    const semanticKey = normalizeSimulatorKey(
+      firstNonEmpty(data.code, data.slug, data.key, name, id),
+    );
+    const descriptor: SimulatorDescriptor = {
+      id,
+      name,
+      key: semanticKey === "nao-informado" ? normalizeSimulatorKey(id) : semanticKey,
+      aliases,
+    };
+    descriptors.push(descriptor);
+    byId.set(id, descriptor);
+    ids.add(id);
+    aliases.forEach((alias) => {
+      byAlias.set(alias, id);
+      byAlias.set(normalizeText(alias).replace(/[^a-z0-9]/g, ""), id);
+      byAlias.set(normalizeSimulatorKey(alias), id);
+    });
+  });
+
+  const value = { descriptors, byAlias, byId, ids };
+  simulatorCatalogCache = { expiresAt: Date.now() + 5 * 60 * 1000, value };
+  return value;
 }
 
 function isEligibleCompany(company: FirebaseFirestore.DocumentData | undefined): boolean {
   if (!company || Object.keys(company).length === 0) return false;
-  const status = normalizeText(company.status || company.situacao || company.state);
-  return !(
+  if (hasUnsupportedSimulatorIdentity(company)) return false;
+  const status = normalizeText(company.status || company.situacao || company.state || "active");
+  const deleted =
     company.deleted === true ||
     company.softDeleted === true ||
     company.excluida === true ||
     company.excluido === true ||
-    ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status)
-  );
+    ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
+  return !deleted && ["active", "approved", "ativo"].includes(status);
 }
 
 function parseTripValue(value: unknown): number {
@@ -323,8 +432,9 @@ function periodForDate(date: Date, type: PeriodType, now: Date): PeriodDescripto
 
   if (type === "semana") {
     const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
-    const mondayOffset = (weekday + 6) % 7;
-    start = zonedDate(parts.year, parts.month, parts.day - mondayOffset);
+    // The platform-wide canonical week is Sunday through Saturday in UTC,
+    // matching Ranking, dashboards, profiles and Histórico de Viagens.
+    start = zonedDate(parts.year, parts.month, parts.day - weekday);
     const startParts = zonedParts(start);
     end = new Date(zonedDate(startParts.year, startParts.month, startParts.day + 7).getTime() - 1);
     label = `${formatDatePt(start)} a ${formatDatePt(end)}`;
@@ -350,27 +460,31 @@ function periodForDate(date: Date, type: PeriodType, now: Date): PeriodDescripto
 function simulatorOf(
   trip: NormalizedTrip,
   company: FirebaseFirestore.DocumentData | undefined,
-): SimulatorDescriptor {
-  const id = firstNonEmpty(trip.simulatorId, company?.simulatorId, company?.simuladorId);
-  const name = preferredSimulatorName(
-    id,
-    firstNonEmpty(
-      trip.simulatorName,
-      company?.simulatorName,
-      company?.simuladorNome,
-      company?.simulator,
-      id,
-    ),
-  );
-  const nameKey = normalizeSimulatorKey(name);
-  const idKey = normalizeSimulatorKey(id);
-  return {
-    key: ["gto", "ets2", "ats", "toe3"].includes(nameKey)
-      ? nameKey
-      : firstNonEmpty(idKey === "nao-informado" ? "" : idKey, nameKey),
-    id,
-    name,
-  };
+  catalog: SimulatorCatalog,
+): SimulatorDescriptor | null {
+  if (hasUnsupportedSimulatorIdentity(company)) return null;
+
+  // The current company catalog is authoritative. Trip snapshots are used
+  // only as a compatibility fallback for old records whose company document
+  // does not contain a usable simulator identity.
+  const candidates = [
+    ...simulatorCandidates(company),
+    trip.simulatorId,
+    trip.simulatorName,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (isUnsupportedSimulatorAlias(candidate)) continue;
+    const direct = catalog.byId.get(candidate);
+    if (direct) return direct;
+    const rawKey = normalizeText(candidate).replace(/[^a-z0-9]/g, "");
+    const resolvedId = catalog.byAlias.get(candidate) ||
+      catalog.byAlias.get(rawKey) ||
+      catalog.byAlias.get(normalizeSimulatorKey(candidate));
+    if (resolvedId) return catalog.byId.get(resolvedId) || null;
+  }
+
+  return null;
 }
 
 async function loadDocumentsByIds(
@@ -412,14 +526,24 @@ function addAggregate(
   current.earnings += trip.value;
   if (!current.driverName && trip.driverName) current.driverName = trip.driverName;
   if (!current.companyName && trip.companyName) current.companyName = trip.companyName;
-  if (trip.date.getTime() > current.reachedAt.getTime()) current.reachedAt = trip.date;
+  if (trip.date.getTime() >= current.reachedAt.getTime()) {
+    current.reachedAt = trip.date;
+    if (entity === "motorista") {
+      current.companyId = trip.companyId;
+      if (trip.companyName) current.companyName = trip.companyName;
+    }
+  }
   map.set(key, current);
 }
 
 function compareRanking(left: Aggregate, right: Aggregate): number {
   return right.earnings - left.earnings ||
     right.trips - left.trips ||
-    left.reachedAt.getTime() - right.reachedAt.getTime() ||
+    firstNonEmpty(left.driverName, left.companyName).localeCompare(
+      firstNonEmpty(right.driverName, right.companyName),
+      "pt-BR",
+      { sensitivity: "base", numeric: true },
+    ) ||
     left.id.localeCompare(right.id);
 }
 
@@ -488,6 +612,7 @@ async function aggregateTrips(
 ): Promise<{ groups: Map<string, PeriodGroup>; sourceTrips: number; companies: Map<string, FirebaseFirestore.DocumentData> }> {
   const groups = new Map<string, PeriodGroup>();
   const companyCache = new Map<string, FirebaseFirestore.DocumentData>();
+  const simulatorCatalog = await loadSimulatorCatalog();
   const now = new Date();
   const seenTripIds = new Set<string>();
   let sourceTrips = 0;
@@ -513,8 +638,8 @@ async function aggregateTrips(
       // A viagem permanece no histórico, mas uma empresa removida não pode
       // reaparecer em classificações antigas ou futuras.
       if (!isEligibleCompany(company)) return;
-      const simulator = simulatorOf(trip, company);
-      if (!simulator.key || simulator.key === "nao-informado") return;
+      const simulator = simulatorOf(trip, company, simulatorCatalog);
+      if (!simulator || !simulator.key || simulator.key === "nao-informado") return;
 
       periodTypes.forEach((periodType) => {
         const period = periodForDate(trip.date, periodType, now);
@@ -774,6 +899,272 @@ async function buildGeneratedDocuments(
   return generated.sort((left, right) => String(left.id).localeCompare(String(right.id)));
 }
 
+function periodIdentity(period: PeriodDescriptor): string {
+  return `${period.type}:${dateKey(period.start)}`;
+}
+
+function uniquePeriods(periods: PeriodDescriptor[]): PeriodDescriptor[] {
+  const byIdentity = new Map<string, PeriodDescriptor>();
+  periods.forEach((period) => byIdentity.set(periodIdentity(period), period));
+  return Array.from(byIdentity.values()).sort(
+    (left, right) => left.start.getTime() - right.start.getTime() ||
+      left.type.localeCompare(right.type),
+  );
+}
+
+function closedPeriodsInRange(
+  rangeStart: Date,
+  rangeEnd: Date,
+  periodTypes: PeriodType[],
+  now = new Date(),
+): PeriodDescriptor[] {
+  const periods: PeriodDescriptor[] = [];
+  const startParts = zonedParts(rangeStart);
+  const endParts = zonedParts(rangeEnd);
+  const cursor = zonedDate(startParts.year, startParts.month, startParts.day);
+  const lastDay = zonedDate(endParts.year, endParts.month, endParts.day);
+
+  while (cursor.getTime() <= lastDay.getTime()) {
+    periodTypes.forEach((type) => {
+      const period = periodForDate(cursor, type, now);
+      if (period) periods.push(period);
+    });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return uniquePeriods(periods);
+}
+
+async function deleteUnexpectedSystemClassifications(
+  periods: PeriodDescriptor[],
+  expectedIds: Set<string>,
+  simulatorScope?: SimulatorDescriptor,
+): Promise<number> {
+  let removed = 0;
+  for (const period of uniquePeriods(periods)) {
+    const snapshot = await db.collection(CLASSIFICATIONS_COLLECTION)
+      .where("periodoInicioKey", "==", dateKey(period.start))
+      .get();
+    const stale = snapshot.docs.filter((document) => {
+      const data = document.data() || {};
+      const periodType = firstNonEmpty(data.periodoTipo, data.periodicidade);
+      const matchesSimulator = !simulatorScope ||
+        firstNonEmpty(data.simuladorId) === simulatorScope.id ||
+        normalizeSimulatorKey(data.simuladorKey || data.simulador) === simulatorScope.key;
+      return data.createdBySystem === true &&
+        data.tipo === "classificacao" &&
+        periodType === period.type &&
+        matchesSimulator &&
+        !expectedIds.has(document.id);
+    });
+
+    for (let offset = 0; offset < stale.length; offset += WRITE_BATCH_SIZE) {
+      const batch = db.batch();
+      stale.slice(offset, offset + WRITE_BATCH_SIZE).forEach((document) => {
+        batch.delete(document.ref);
+      });
+      await batch.commit();
+      removed += Math.min(WRITE_BATCH_SIZE, stale.length - offset);
+    }
+  }
+  return removed;
+}
+
+async function reconcileClosedPeriods(
+  periods: PeriodDescriptor[],
+  source: GenerationSource,
+): Promise<WriteResult & { removed: number; sourceTrips: number; generated: number }> {
+  const canonicalPeriods = uniquePeriods(periods).filter(
+    (period) => period.publicationAt.getTime() <= Date.now(),
+  );
+  if (canonicalPeriods.length === 0) {
+    return {
+      created: 0,
+      updated: 0,
+      ignored: 0,
+      removed: 0,
+      sourceTrips: 0,
+      generated: 0,
+    };
+  }
+
+  const rangeStart = new Date(
+    Math.min(...canonicalPeriods.map((period) => period.start.getTime())),
+  );
+  const rangeEnd = new Date(
+    Math.max(...canonicalPeriods.map((period) => period.end.getTime())),
+  );
+  const periodTypes = Array.from(
+    new Set(canonicalPeriods.map((period) => period.type)),
+  );
+  const expectedPeriodIds = new Set(canonicalPeriods.map(periodIdentity));
+  const aggregated = await aggregateTrips(rangeStart, rangeEnd, periodTypes);
+  const selectedGroups = new Map(
+    Array.from(aggregated.groups.entries()).filter(([, group]) =>
+      expectedPeriodIds.has(periodIdentity(group.period)),
+    ),
+  );
+  const generated = await buildGeneratedDocuments(
+    selectedGroups,
+    aggregated.companies,
+    source,
+  );
+  const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+  const removed = await deleteUnexpectedSystemClassifications(
+    canonicalPeriods,
+    new Set(generated.map((document) => document.id)),
+  );
+  return {
+    ...writeResult,
+    removed,
+    sourceTrips: aggregated.sourceTrips,
+    generated: generated.length,
+  };
+}
+
+function periodFromRankingAggregate(
+  data: FirebaseFirestore.DocumentData,
+): PeriodDescriptor | null {
+  const type = firstNonEmpty(data.periodType) as PeriodType;
+  if (!(["semana", "mes"] as string[]).includes(type)) return null;
+  const start = parseDate(data.periodStart);
+  const end = parseDate(data.periodEnd);
+  if (!start || !end || end.getTime() < start.getTime()) return null;
+  const publicationAt = new Date(
+    end.getTime() + 1 + PUBLICATION_DELAY_MINUTES * 60 * 1000,
+  );
+  return {
+    key: firstNonEmpty(data.periodKey, `${type}_${dateKey(start)}`),
+    type,
+    start,
+    end,
+    publicationAt,
+    label: type === "mes"
+      ? formatMonthPt(start)
+      : `${formatDatePt(start)} a ${formatDatePt(end)}`,
+  };
+}
+
+async function reconcileFromRankingAggregate(
+  data: FirebaseFirestore.DocumentData,
+): Promise<void> {
+  if (
+    Number(data.schemaVersion) !== RANKING_AGGREGATE_SCHEMA_VERSION ||
+    data.complete !== true
+  ) return;
+  const period = periodFromRankingAggregate(data);
+  if (!period || period.publicationAt.getTime() > Date.now()) return;
+
+  const simulatorId = firstNonEmpty(data.simulatorId);
+  const catalog = await loadSimulatorCatalog();
+  const simulator = catalog.byId.get(simulatorId);
+  if (!simulator) return;
+
+  const group: PeriodGroup = {
+    period,
+    simulator,
+    companies: new Map<string, Aggregate>(),
+    drivers: new Map<string, Aggregate>(),
+  };
+  const companyStats = data.companies && typeof data.companies === "object"
+    ? data.companies as Record<string, FirebaseFirestore.DocumentData>
+    : {};
+  const driverStats = data.drivers && typeof data.drivers === "object"
+    ? data.drivers as Record<string, FirebaseFirestore.DocumentData>
+    : {};
+
+  Object.entries(companyStats).forEach(([companyId, raw]) => {
+    const trips = Math.max(0, Math.trunc(Number(raw?.trips) || 0));
+    const earnings = Math.max(0, Number(raw?.val) || 0);
+    group.companies.set(companyId, {
+      id: companyId,
+      driverId: "",
+      companyId,
+      driverName: "",
+      companyName: firstNonEmpty(raw?.name),
+      trips,
+      earnings,
+      reachedAt: period.end,
+      simulator,
+    });
+  });
+  Object.entries(driverStats).forEach(([driverId, raw]) => {
+    const companyId = firstNonEmpty(raw?.companyId);
+    if (!companyId) return;
+    const trips = Math.max(0, Math.trunc(Number(raw?.trips) || 0));
+    const earnings = Math.max(0, Number(raw?.val) || 0);
+    group.drivers.set(driverId, {
+      id: driverId,
+      driverId,
+      companyId,
+      driverName: firstNonEmpty(raw?.name),
+      companyName: "",
+      trips,
+      earnings,
+      reachedAt: period.end,
+      simulator,
+    });
+  });
+
+  const companies = new Map<string, FirebaseFirestore.DocumentData>();
+  await loadDocumentsByIds(
+    "frotas",
+    Array.from(new Set([
+      ...group.companies.keys(),
+      ...Array.from(group.drivers.values()).map((entry) => entry.companyId),
+    ])),
+    companies,
+  );
+  const generated = await buildGeneratedDocuments(
+    new Map([[`${periodIdentity(period)}:${simulator.key}`, group]]),
+    companies,
+    "automatico",
+  );
+  await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+  await deleteUnexpectedSystemClassifications(
+    [period],
+    new Set(generated.map((document) => document.id)),
+    simulator,
+  );
+}
+
+function closedPeriodsForTripData(
+  data: FirebaseFirestore.DocumentData | undefined,
+): PeriodDescriptor[] {
+  if (!data) return [];
+  const date = tripMetricDate(data);
+  if (!date) return [];
+  const now = new Date();
+  return (["semana", "mes"] as PeriodType[])
+    .map((type) => periodForDate(date, type, now))
+    .filter((period): period is PeriodDescriptor => Boolean(period));
+}
+
+function companyClassificationSignature(
+  data: FirebaseFirestore.DocumentData | undefined,
+): string {
+  if (!data) return "missing";
+  return [
+    data.status,
+    data.situacao,
+    data.state,
+    data.deleted,
+    data.softDeleted,
+    data.excluida,
+    data.excluido,
+    data.simulatorId,
+    data.simuladorId,
+    data.simulatorName,
+    data.simuladorNome,
+    data.companyName,
+    data.fleetName,
+    data.name,
+    data.logoUrl,
+    data.logoURL,
+    data.companyLogoURL,
+  ].map((value) => String(value ?? "").trim()).join("|");
+}
+
 async function commitDocuments(
   collectionName: string,
   documents: GeneratedDocument[],
@@ -823,7 +1214,9 @@ async function commitDocuments(
 }
 
 
-async function deleteLegacyCombinedClassifications(): Promise<number> {
+async function deleteLegacyCombinedClassifications(
+  recentRangeStart?: Date,
+): Promise<number> {
   let removed = 0;
   let cursor: FirebaseFirestore.QueryDocumentSnapshot | null = null;
 
@@ -839,7 +1232,23 @@ async function deleteLegacyCombinedClassifications(): Promise<number> {
 
     const legacyDocs = snapshot.docs.filter((document) => {
       const data = document.data() || {};
-      return data.tipo === "classificacao" && !["empresa", "motorista"].includes(data.entidade);
+      if (data.tipo !== "classificacao") return false;
+
+      const isLegacyCombined = !["empresa", "motorista"].includes(data.entidade);
+      if (isLegacyCombined) return true;
+
+      // UTC changed the canonical weekly/monthly boundaries and therefore the
+      // deterministic document ids. Remove only recent system-generated
+      // documents from older automation versions so the replacement history
+      // cannot coexist as a duplicate. Older archived history is preserved.
+      if (!recentRangeStart || data.createdBySystem !== true) return false;
+      if (String(data.schemaVersion || "") === AUTOMATION_VERSION) return false;
+      const referenceDate = parseDate(
+        data.dataReferencia || data.periodoFim || data.sortAt || data.createdAt,
+      );
+      return Boolean(
+        referenceDate && referenceDate.getTime() >= recentRangeStart.getTime(),
+      );
     });
     if (legacyDocs.length > 0) {
       const batch = db.batch();
@@ -1102,18 +1511,18 @@ async function generateFullHistory(): Promise<GenerationResult> {
     }
 
     if (!historyStageAtLeast(stage, "classifications_written")) {
-      const aggregated = await aggregateTrips(rangeStart, rangeEnd, ["semana", "mes"]);
-      const generated = await buildGeneratedDocuments(
-        aggregated.groups,
-        aggregated.companies,
-        "historico",
+      const periods = closedPeriodsInRange(
+        rangeStart,
+        rangeEnd,
+        ["semana", "mes"],
       );
-      const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
-      sourceTrips = aggregated.sourceTrips;
-      generatedHistoryCount = generated.length;
-      created = writeResult.created;
-      updated = writeResult.updated;
-      ignored = writeResult.ignored;
+      const reconciliation = await reconcileClosedPeriods(periods, "historico");
+      sourceTrips = reconciliation.sourceTrips;
+      generatedHistoryCount = reconciliation.generated;
+      created = reconciliation.created;
+      updated = reconciliation.updated;
+      ignored = reconciliation.ignored;
+      removedLegacyClassifications += reconciliation.removed;
       stage = "classifications_written";
       await saveHistoryCheckpoint(controlRef, runId, stage, {
         historyRangeStart: admin.firestore.Timestamp.fromDate(rangeStart),
@@ -1123,6 +1532,7 @@ async function generateFullHistory(): Promise<GenerationResult> {
         createdCount: created,
         updatedCount: updated,
         ignoredCount: ignored,
+        removedLegacyClassifications,
       });
     }
 
@@ -1146,7 +1556,9 @@ async function generateFullHistory(): Promise<GenerationResult> {
     }
 
     if (!historyStageAtLeast(stage, "legacy_classifications_removed")) {
-      removedLegacyClassifications = await deleteLegacyCombinedClassifications();
+      removedLegacyClassifications += await deleteLegacyCombinedClassifications(
+        rangeStart,
+      );
       stage = "legacy_classifications_removed";
       await saveHistoryCheckpoint(controlRef, runId, stage, {
         removedLegacyClassifications,
@@ -1179,7 +1591,7 @@ async function generateFullHistory(): Promise<GenerationResult> {
       historyCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
       publicationPolicy: {
         timeZone: NEWS_TIME_ZONE,
-        weekly: "segunda-feira às 00:35, após o encerramento de domingo",
+        weekly: "domingo às 00:35 UTC, após o encerramento de sábado",
         monthly: "primeiro dia do mês às 00:40",
         history: "migração única limitada aos últimos 70 dias, retomada por checkpoints persistentes",
         pagination: "o aplicativo lê somente 10 publicações por vez",
@@ -1225,29 +1637,97 @@ function subtractDays(date: Date, days: number): Date {
 async function generateRecent(periodTypes: PeriodType[], sourceLabel: string): Promise<void> {
   const now = new Date();
   const rangeStart = subtractDays(now, periodTypes.includes("mes") ? 70 : 16);
-  const aggregated = await aggregateTrips(rangeStart, now, periodTypes);
   const controlSnapshot = await db.collection("system_settings").doc(CONTROL_DOCUMENT_ID).get();
   const automationStartedAt = parseDate(controlSnapshot.data()?.automationStartedAt) || new Date(0);
-  const futureGroups = new Map(
-    Array.from(aggregated.groups.entries()).filter(([, group]) =>
-      group.period.publicationAt.getTime() > automationStartedAt.getTime(),
-    ),
+  const periods = closedPeriodsInRange(rangeStart, now, periodTypes, now).filter(
+    (period) => period.publicationAt.getTime() > automationStartedAt.getTime(),
   );
-  const generated = await buildGeneratedDocuments(futureGroups, aggregated.companies, "automatico");
-  const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+  const reconciliation = await reconcileClosedPeriods(periods, "automatico");
 
   await db.collection("system_settings").doc(CONTROL_DOCUMENT_ID).set({
     version: AUTOMATION_VERSION,
     lastAutomaticSource: sourceLabel,
     lastAutomaticRunAt: admin.firestore.FieldValue.serverTimestamp(),
-    lastAutomaticSourceTrips: aggregated.sourceTrips,
-    lastAutomaticGenerated: generated.length,
-    lastAutomaticCreated: writeResult.created,
-    lastAutomaticUpdated: writeResult.updated,
-    lastAutomaticIgnored: writeResult.ignored,
+    lastAutomaticSourceTrips: reconciliation.sourceTrips,
+    lastAutomaticGenerated: reconciliation.generated,
+    lastAutomaticCreated: reconciliation.created,
+    lastAutomaticUpdated: reconciliation.updated,
+    lastAutomaticIgnored: reconciliation.ignored,
+    lastAutomaticRemoved: reconciliation.removed,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   }, { merge: true });
 }
+
+export const updateNvuNewsClassificationsOnRankingAggregateWrite = functions
+  .runWith({ timeoutSeconds: 300, memory: "512MB" })
+  .firestore.document("ranking_aggregates/{aggregateId}")
+  .onWrite(async (change) => {
+    if (!change.after.exists) return;
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.data();
+    if (!after) return;
+    const beforeRevision = Number(before?.revision || 0);
+    const afterRevision = Number(after.revision || 0);
+    if (
+      before &&
+      beforeRevision === afterRevision &&
+      Number(before.schemaVersion) === Number(after.schemaVersion) &&
+      before.complete === after.complete
+    ) {
+      return;
+    }
+    await reconcileFromRankingAggregate(after);
+  });
+
+export const updateNvuNewsClassificationsOnClosedTripWrite = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .firestore.document("historico_viagens/{tripId}")
+  .onWrite(async (change) => {
+    const periods = uniquePeriods([
+      ...closedPeriodsForTripData(
+        change.before.exists ? change.before.data() : undefined,
+      ),
+      ...closedPeriodsForTripData(
+        change.after.exists ? change.after.data() : undefined,
+      ),
+    ]);
+    if (periods.length === 0) return;
+    await reconcileClosedPeriods(periods, "automatico");
+  });
+
+export const updateNvuNewsClassificationsOnCompanyWrite = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .firestore.document("frotas/{companyId}")
+  .onWrite(async (change) => {
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.exists ? change.after.data() : undefined;
+    if (companyClassificationSignature(before) === companyClassificationSignature(after)) {
+      return;
+    }
+    const now = new Date();
+    const periods = closedPeriodsInRange(
+      subtractDays(now, HISTORY_LOOKBACK_DAYS),
+      now,
+      ["semana", "mes"],
+      now,
+    );
+    await reconcileClosedPeriods(periods, "automatico");
+  });
+
+export const updateNvuNewsClassificationsOnSimulatorWrite = functions
+  .runWith({ timeoutSeconds: 540, memory: "1GB" })
+  .firestore.document("simulators/{simulatorId}")
+  .onWrite(async () => {
+    simulatorCatalogCache = null;
+    const now = new Date();
+    const periods = closedPeriodsInRange(
+      subtractDays(now, HISTORY_LOOKBACK_DAYS),
+      now,
+      ["semana", "mes"],
+      now,
+    );
+    await reconcileClosedPeriods(periods, "automatico");
+  });
 
 export const generateNvuNewsBackfill = functions
   .runWith({ timeoutSeconds: 540, memory: "1GB" })
@@ -1265,7 +1745,7 @@ export const generateNvuNewsBackfill = functions
 
 export const generateNvuNewsScheduled = functions
   .runWith({ timeoutSeconds: 300, memory: "512MB" })
-  .pubsub.schedule("35 0 * * 1")
+  .pubsub.schedule("35 0 * * 0")
   .timeZone(NEWS_TIME_ZONE)
   .onRun(async () => {
     await generateRecent(["semana"], "weekly_scheduler");

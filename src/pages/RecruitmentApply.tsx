@@ -620,9 +620,25 @@ export default function RecruitmentApply() {
         }
       }
 
+      const selectedSimulator = (Array.isArray(simulators) ? simulators : []).find(
+        (simulator: any) => String(simulator.id || "") === selectedSimulatorId,
+      );
+      const applicationCompanyName = String(
+        company.companyName || company.fleetName || "",
+      ).trim();
+      const applicationCompanyLogoURL = String(
+        company.logoUrl || company.logoURL || company.companyLogoURL || "",
+      ).trim();
+      const applicationSimulatorName = String(
+        selectedSimulator?.name || company.simulatorName || "",
+      ).trim();
+
       const applicationId = await submitRecruitmentApplication({
         companyId: company.id,
         simulatorId: selectedSimulatorId,
+        companyName: applicationCompanyName,
+        companyLogoURL: applicationCompanyLogoURL,
+        simulatorName: applicationSimulatorName,
         ...formData,
         userId: uid,
         email,

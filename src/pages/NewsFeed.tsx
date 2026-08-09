@@ -7,6 +7,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   QueryConstraint,
@@ -32,7 +33,8 @@ const PAGE_SIZE = 10;
 const SEARCH_LIMIT = 30;
 const UNREAD_SCAN_LIMIT = 100;
 const UNREAD_REFRESH_MIN_INTERVAL_MS = 2 * 60 * 1000;
-const NEWS_CACHE_VERSION = "nvu_news_feed_v7";
+const NEWS_CACHE_VERSION = "nvu_news_feed_v10_consistent_metrics";
+const NEWS_SCROLL_VERSION = "nvu_news_scroll_v1";
 const NEWS_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const NEWS_CACHE_FRESH_MS = 2 * 60 * 1000;
 const NEWS_CACHE_MAX_ENTRIES = 12;
@@ -76,6 +78,7 @@ type FeedPost = {
   simulador?: string;
   simuladorId?: string;
   simuladorKey?: string;
+  simuladorAliases?: string[];
   periodo?: string;
   periodoTipo?: "semana" | "mes";
   periodicidade?: "semana" | "mes";
@@ -122,6 +125,30 @@ const newsWarmupInFlight = new Map<string, Promise<void>>();
 
 function feedCacheStorageKey(key: string): string {
   return `${NEWS_CACHE_VERSION}:${key}`;
+}
+
+function feedScrollStorageKey(userId: string, key: string): string {
+  return `${NEWS_SCROLL_VERSION}:${userId}:${key}`;
+}
+
+function readFeedScrollPosition(userId: string, key: string): number {
+  if (typeof window === "undefined") return 0;
+  const value = Number(
+    window.sessionStorage.getItem(feedScrollStorageKey(userId, key)) || 0,
+  );
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function writeFeedScrollPosition(userId: string, key: string, value: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      feedScrollStorageKey(userId, key),
+      String(Math.max(0, Math.round(value))),
+    );
+  } catch {
+    // Session storage is best-effort only.
+  }
 }
 
 function readFeedCache(key: string): CachedFeed | null {
@@ -253,13 +280,13 @@ function normalizeLookup(value: unknown): string {
 function simulatorFilterKey(value: unknown): string {
   const normalized = normalizeLookup(value).replace(/\s/g, "");
   if (!normalized) return "";
-  if (["gto", "globaltruckonline", "grandtrucksimulator"].includes(normalized)) return "gto";
-  if (["ets2", "eurotrucksimulator2"].includes(normalized)) return "ets2";
-  if (["ats", "americantrucksimulator"].includes(normalized)) return "ats";
-  if (["toe3", "truckersofeurope3"].includes(normalized)) return "toe3";
-  if (["wtds", "worldtruckdrivingsimulator"].includes(normalized)) return "wtds";
-  if (["wbds", "worldbusdrivingsimulator"].includes(normalized)) return "wbds";
-  if (["pbs", "protonbussimulator"].includes(normalized)) return "pbs";
+  if (normalized === "gto" || normalized.includes("globaltruckonline")) return "gto";
+  if (normalized === "ets2" || normalized.includes("eurotrucksimulator2")) return "ets2";
+  if (normalized === "ats" || normalized.includes("americantrucksimulator")) return "ats";
+  if (normalized === "toe3" || normalized.includes("truckersofeurope3")) return "toe3";
+  if (normalized === "wtds" || normalized.includes("worldtruckdrivingsimulator")) return "wtds";
+  if (normalized === "wbds" || normalized.includes("worldbusdrivingsimulator")) return "wbds";
+  if (normalized === "pbs" || normalized.includes("protonbussimulator")) return "pbs";
   return normalized;
 }
 
@@ -272,7 +299,7 @@ function expandedSimulatorAliases(...values: unknown[]): string[] {
     if (canonical) aliases.add(canonical);
   });
 
-  if (aliases.has("gto")) ["gto", "globaltruckonline", "grandtrucksimulator"].forEach((value) => aliases.add(value));
+  if (aliases.has("gto")) ["gto", "globaltruckonline"].forEach((value) => aliases.add(value));
   if (aliases.has("ets2")) ["ets2", "eurotrucksimulator2"].forEach((value) => aliases.add(value));
   if (aliases.has("ats")) ["ats", "americantrucksimulator"].forEach((value) => aliases.add(value));
   if (aliases.has("toe3")) ["toe3", "truckersofeurope3"].forEach((value) => aliases.add(value));
@@ -311,13 +338,78 @@ function buildFeedConstraints(
     if (queryAliases.length === 1) constraints.push(where("simuladorKey", "==", queryAliases[0]));
     if (queryAliases.length > 1) constraints.push(where("simuladorKey", "in", queryAliases));
   }
-  if (section === "noticias" && period !== "all") {
-    constraints.push(where("periodoTipo", "==", period));
-  }
+  // Period filtering is applied after the read so system posts without
+  // `periodoTipo` (for example company approvals) remain visible in both
+  // Semana and Mês. Server-side filtering would hide those posts entirely.
+  void period;
   constraints.push(orderBy("sortAt", "desc"));
   if (cursor) constraints.push(startAfter(cursor));
   constraints.push(limit(PAGE_SIZE));
   return constraints;
+}
+
+function isCompanyApprovalPost(post: FeedPost): boolean {
+  const type = normalizeLookup(post.tipo || post.type || post.categoria || "");
+  const title = normalizeLookup(post.titulo || "");
+  return type === "empresa aprovada" ||
+    type === "empresa_aprovada" ||
+    type === "company approval" ||
+    type === "company_approval" ||
+    type === "nova empresa" ||
+    type === "nova_empresa" ||
+    title === "nova empresa no ecossistema nvu";
+}
+
+function approvalPostCompanyId(post: FeedPost): string {
+  const nestedCompany = post.empresa && typeof post.empresa === "object"
+    ? post.empresa as Record<string, unknown>
+    : null;
+  const legacyCompany = post.company && typeof post.company === "object"
+    ? post.company as Record<string, unknown>
+    : null;
+  return String(
+    post.empresaId ||
+    post.companyId ||
+    nestedCompany?.id ||
+    legacyCompany?.id ||
+    "",
+  ).trim();
+}
+
+function postMatchesPeriod(post: FeedPost, period: PeriodFilter): boolean {
+  if (period === "all") return true;
+  if (isCompanyApprovalPost(post)) return true;
+  return (post.periodoTipo || post.periodicidade) === period;
+}
+
+function feedPostQuality(post: FeedPost): number {
+  let score = 0;
+  if (normalizeLookup(post.status || "publicado") === "publicado") score += 2;
+  if (post.empresaLogo) score += 2;
+  if (post.proprietarioFoto) score += 2;
+  if (String(post.schemaVersion || "").includes("v6")) score += 4;
+  if (String(post.id || "").startsWith("empresa_aprovada_empresa_")) score += 3;
+  return score;
+}
+
+function deduplicateFeedPosts(posts: FeedPost[]): FeedPost[] {
+  const deduplicated = new Map<string, FeedPost>();
+  posts.forEach((post) => {
+    const current = deduplicated.get(post.id);
+    if (!current) {
+      deduplicated.set(post.id, post);
+      return;
+    }
+    const currentQuality = feedPostQuality(current);
+    const nextQuality = feedPostQuality(post);
+    if (
+      nextQuality > currentQuality ||
+      (nextQuality === currentQuality && postTimestamp(post) > postTimestamp(current))
+    ) {
+      deduplicated.set(post.id, post);
+    }
+  });
+  return Array.from(deduplicated.values());
 }
 
 function postMatchesSimulator(
@@ -327,7 +419,12 @@ function postMatchesSimulator(
   simulatorAliases: string[],
 ): boolean {
   if (isAllSimulator(simulator)) return true;
-  const postAliases = expandedSimulatorAliases(post.simuladorKey, post.simuladorId, post.simulador);
+  const postAliases = expandedSimulatorAliases(
+    post.simuladorKey,
+    post.simuladorId,
+    post.simulador,
+    ...(Array.isArray(post.simuladorAliases) ? post.simuladorAliases : []),
+  );
   if (section === "comunicados" && postAliases.some((value) => ["all", "todosossimuladores"].includes(value))) {
     return true;
   }
@@ -434,14 +531,12 @@ function expandIndividualPost(
     .map((entry, index) => ({ ...entry, posicao: index + 1 }));
 
   if (post.tipo !== "classificacao") {
-    if (post.tipo === "empresa_aprovada" || post.type === "company_approval") {
-      const companyId = String(post.empresaId || post.companyId || "").trim();
+    if (isCompanyApprovalPost(post)) {
+      const companyId = approvalPostCompanyId(post);
       if (companyId) {
-        if (validCompanyIds && !validCompanyIds.has(companyId)) {
-          return [];
-        }
-        
+        if (validCompanyIds && !validCompanyIds.has(companyId)) return [];
         const activeCompanyData = validCompaniesMap?.get(companyId);
+        if (!validCompanyIds && validCompaniesMap && !activeCompanyData) return [];
         if (activeCompanyData) {
           const resolvedCompanyName = activeCompanyData.companyName || activeCompanyData.fleetName || post.empresaNome;
           const resolvedCompanyLogo = activeCompanyData.logoUrl || activeCompanyData.logoURL || activeCompanyData.companyLogoURL || activeCompanyData.companyLogoUrl || post.empresaLogo;
@@ -449,7 +544,7 @@ function expandIndividualPost(
           const resolvedOwnerPhoto = activeCompanyData.ownerPhotoUrl || activeCompanyData.ownerPhotoURL || post.proprietarioFoto;
           return [{
             ...post,
-            id: `empresa_aprovada_${companyId}`,
+            id: `empresa_aprovada_empresa_${companyId}`,
             empresaNome: resolvedCompanyName,
             empresaLogo: resolvedCompanyLogo,
             proprietarioNome: resolvedOwnerName,
@@ -471,9 +566,10 @@ function expandIndividualPost(
         
         return [{
           ...post,
-          id: `empresa_aprovada_${companyId}`,
+          id: `empresa_aprovada_empresa_${companyId}`,
         }];
       }
+      if (validCompanyIds) return [];
     }
     return [post];
   }
@@ -538,13 +634,11 @@ export async function warmNvuNewsFirstPage({
           collection(db, COLLECTIONS[section]),
           ...buildFeedConstraints(section, "all", simulator, simulatorAliases),
         ));
-        const warmedPosts = Array.from(new Map(snapshot.docs
+        const warmedPosts = deduplicateFeedPosts(snapshot.docs
           .map((document) => ({ id: document.id, ...document.data() } as FeedPost))
           .filter((post) => normalizeLookup(post.status || "publicado") === "publicado")
           .filter((post) => postMatchesSimulator(post, section, simulator, simulatorAliases))
-          .flatMap((post) => expandIndividualPost(post, null))
-          .map((post) => [post.id, post])
-        ).values());
+          .flatMap((post) => expandIndividualPost(post, null)));
         memoryFeedCursors.set(cacheKey, snapshot.docs[snapshot.docs.length - 1] || null);
         writeFeedCache(cacheKey, {
           savedAt: Date.now(),
@@ -585,9 +679,9 @@ export default function NewsFeed() {
     (currentUser as any)?.simuladorId;
   const initialSimulatorDocument = (simulators || []).find((simulator: any) => simulator?.id === initialSimulatorId);
   const initialSimulatorKey = simulatorFilterKey(
+    initialSimulatorDocument?.name ||
     initialCompany?.simulatorName ||
     initialCompany?.simuladorNome ||
-    initialSimulatorDocument?.name ||
     (currentUser as any)?.simulatorName ||
     (currentUser as any)?.simuladorNome ||
     (currentUser as any)?.simulator ||
@@ -607,6 +701,7 @@ export default function NewsFeed() {
   const [hasMore, setHasMore] = useState(true);
   const [historyPreparing, setHistoryPreparing] = useState(false);
   const [feedReady, setFeedReady] = useState(false);
+  const [feedError, setFeedError] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<Section, number>>({ noticias: 0, comunicados: 0 });
   const [readStateReady, setReadStateReady] = useState(false);
   const seenTimestampsRef = useRef<Record<Section, number>>({ noticias: 0, comunicados: 0 });
@@ -626,7 +721,12 @@ export default function NewsFeed() {
   const nextPagePrefetchInFlightRef = useRef(new Map<string, Promise<void>>());
   const variantPrefetchInFlightRef = useRef(new Set<string>());
   const companyApprovalSyncScheduledRef = useRef(false);
+  const refreshAfterCompanyCatalogSyncRef = useRef(false);
   const backfillScheduledRef = useRef(false);
+  const liveFirstPageIdsRef = useRef<Set<string>>(new Set());
+  const companyCatalogRefreshAtRef = useRef(0);
+  const scrollRestoreKeyRef = useRef("");
+  const scrollSaveFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (companyCatalogLoaded || companyCatalogAttempted) return;
@@ -647,19 +747,32 @@ export default function NewsFeed() {
     ).trim();
     [...(allCompanies || []), ...(companies || [])].forEach((company: any) => {
       if (!company?.id || !isActiveCompany(company)) return;
+      const companySimulatorId = String(
+        company.simulatorId || company.simuladorId || "",
+      ).trim();
+      const catalogSimulator = (simulators || []).find(
+        (simulator: any) => String(simulator?.id || "") === companySimulatorId,
+      );
+      const canonicalCompany = catalogSimulator?.name
+        ? {
+            ...company,
+            simulatorId: catalogSimulator.id,
+            simulatorName: catalogSimulator.name,
+          }
+        : company;
       const isCurrentOwner = Boolean(
         currentUserId &&
-        (String(company.ownerId || "") === currentUserId ||
-          String(company.userId || "") === currentUserId),
+        (String(canonicalCompany.ownerId || "") === currentUserId ||
+          String(canonicalCompany.userId || "") === currentUserId),
       );
       map.set(company.id, isCurrentOwner ? {
-        ...company,
-        ownerName: String(currentUser?.name || company.ownerName || "").trim(),
-        ownerPhotoUrl: currentUserPhoto || company.ownerPhotoUrl || company.ownerPhotoURL || "",
-      } : company);
+        ...canonicalCompany,
+        ownerName: String(currentUser?.name || canonicalCompany.ownerName || "").trim(),
+        ownerPhotoUrl: currentUserPhoto || canonicalCompany.ownerPhotoUrl || canonicalCompany.ownerPhotoURL || "",
+      } : canonicalCompany);
     });
     return map;
-  }, [allCompanies, companies, currentUser]);
+  }, [allCompanies, companies, currentUser, simulators]);
 
   const validCompanies = useMemo(() => {
     return Array.from(validCompaniesMap.values());
@@ -679,7 +792,7 @@ export default function NewsFeed() {
     if (!validCompanyIds || !validCompaniesMap) return;
     setPosts((current) => {
       const sanitized = current.flatMap((post) => expandIndividualPost(post, validCompanyIds, validCompaniesMap));
-      const deduplicated = Array.from(new Map(sanitized.map((post) => [post.id, post])).values());
+      const deduplicated = deduplicateFeedPosts(sanitized);
       postsRef.current = deduplicated;
       return deduplicated;
     });
@@ -691,8 +804,8 @@ export default function NewsFeed() {
     const rawSimulatorId = activeCompany?.simulatorId || activeCompany?.simuladorId ||
       (currentUser as any)?.currentRecruitmentSimulatorId || (currentUser as any)?.simulatorId || (currentUser as any)?.simuladorId;
     const simulatorDocument = (simulators || []).find((simulator: any) => simulator?.id === rawSimulatorId);
-    const label = activeCompany?.simulatorName || activeCompany?.simuladorNome ||
-      simulatorDocument?.name || (currentUser as any)?.simulatorName || (currentUser as any)?.simuladorNome || (currentUser as any)?.simulator;
+    const label = simulatorDocument?.name || activeCompany?.simulatorName || activeCompany?.simuladorNome ||
+      (currentUser as any)?.simulatorName || (currentUser as any)?.simuladorNome || (currentUser as any)?.simulator;
     return {
       key: simulatorFilterKey(label || rawSimulatorId),
       label: String(label || rawSimulatorId || "").trim(),
@@ -845,12 +958,12 @@ export default function NewsFeed() {
       .flatMap((post) => expandIndividualPost(post, validCompanyIds, validCompaniesMap));
       
     // Deduplicate by ID
-    return Array.from(new Map(processed.map((post) => [post.id, post])).values());
+    return deduplicateFeedPosts(processed);
   }, [validCompanyIds, validCompaniesMap]);
 
   const sanitizeCachedPosts = useCallback((cachedPosts: FeedPost[]): FeedPost[] => {
     const processed = cachedPosts.flatMap((post) => expandIndividualPost(post, validCompanyIds, validCompaniesMap));
-    return Array.from(new Map(processed.map((post) => [post.id, post])).values());
+    return deduplicateFeedPosts(processed);
   }, [validCompanyIds, validCompaniesMap]);
 
   const markSectionSeen = useCallback((section: Section, timestamp: number) => {
@@ -912,6 +1025,7 @@ export default function NewsFeed() {
             const aggregateSnapshot = await getCountFromServer(query(
               collection(db, COLLECTIONS[section]),
               ...simulatorConstraints,
+              where("status", "==", "publicado"),
               where("sortAt", ">", Timestamp.fromMillis(seenAtMs)),
               orderBy("sortAt", "desc"),
             ));
@@ -1008,6 +1122,8 @@ export default function NewsFeed() {
   const fetchPosts = useCallback(async (loadMore = false, silent = false): Promise<void> => {
     if (!currentUser?.id || !simulatorReady || !activeQueryKey) return;
 
+    if (!loadMore) setFeedError(null);
+
     if (loadMore) {
       if (loadingMoreRef.current) return;
       loadingMoreRef.current = true;
@@ -1033,7 +1149,7 @@ export default function NewsFeed() {
       const prefetched = prefetchedNextPagesRef.current.get(activeQueryKey);
       if (prefetched) {
         prefetchedNextPagesRef.current.delete(activeQueryKey);
-        const merged = Array.from(new Map([...postsRef.current, ...prefetched.posts].map((post) => [post.id, post])).values());
+        const merged = deduplicateFeedPosts([...postsRef.current, ...prefetched.posts]);
         postsRef.current = merged;
         setPosts(merged);
         cursorRef.current = prefetched.cursor;
@@ -1081,10 +1197,11 @@ export default function NewsFeed() {
 
       const fetched = processDocuments(snapshot.docs, activeSection, selectedSimulator, selectedSimulatorAliases);
       const nextPosts = loadMore
-        ? Array.from(new Map([...postsRef.current, ...fetched].map((post) => [post.id, post])).values())
+        ? deduplicateFeedPosts([...postsRef.current, ...fetched])
         : fetched;
 
       if (!loadMore && activeSection === "noticias") warmCriticalNewsImages(nextPosts);
+      setFeedError(null);
       postsRef.current = nextPosts;
       setPosts(nextPosts);
       initialLoadCompletedRef.current = true;
@@ -1125,6 +1242,13 @@ export default function NewsFeed() {
       }
     } catch (error) {
       console.error("[NVU NEWS] Falha ao carregar publicações:", error);
+      if (!loadMore) {
+        setFeedError(
+          postsRef.current.length > 0
+            ? "Não foi possível atualizar agora. O conteúdo salvo continua disponível."
+            : "Não foi possível carregar as publicações. Verifique sua conexão e tente novamente.",
+        );
+      }
       if (!loadMore && postsRef.current.length === 0) setPosts([]);
       if (postsRef.current.length === 0) setHasMore(false);
     } finally {
@@ -1182,6 +1306,7 @@ export default function NewsFeed() {
     if (lastQueryKeyRef.current === activeQueryKey) return;
     lastQueryKeyRef.current = activeQueryKey;
     requestRef.current += 1;
+    setFeedError(null);
     const generation = requestRef.current;
     cursorRef.current = null;
     loadingMoreRef.current = false;
@@ -1289,14 +1414,109 @@ export default function NewsFeed() {
   }, [activeSection, feedReady, prefetchVariant]);
 
   useEffect(() => {
-    if (!feedReady || !currentUser?.id || companyApprovalSyncScheduledRef.current) return;
+    if (
+      !feedReady ||
+      !currentUser?.id ||
+      !simulatorReady ||
+      !activeQueryKey ||
+      remoteSearchActiveRef.current
+    ) return;
+
+    liveFirstPageIdsRef.current = new Set();
+    const liveQuery = query(
+      collection(db, COLLECTIONS[activeSection]),
+      ...buildFeedConstraints(
+        activeSection,
+        periodFilter,
+        selectedSimulator,
+        selectedSimulatorAliases,
+      ),
+    );
+
+    const unsubscribe = onSnapshot(
+      liveQuery,
+      (snapshot) => {
+        if (lastQueryKeyRef.current !== activeQueryKey) return;
+        const firstPage = processDocuments(
+          snapshot.docs,
+          activeSection,
+          selectedSimulator,
+          selectedSimulatorAliases,
+        );
+        const previousFirstPageIds = liveFirstPageIdsRef.current;
+        const nextFirstPageIds = new Set(firstPage.map((post) => post.id));
+        liveFirstPageIdsRef.current = nextFirstPageIds;
+
+        setPosts((current) => {
+          const olderPosts = current.filter(
+            (post) =>
+              !previousFirstPageIds.has(post.id) &&
+              !nextFirstPageIds.has(post.id),
+          );
+          const merged = deduplicateFeedPosts([...firstPage, ...olderPosts])
+            .sort((left, right) => postTimestamp(right) - postTimestamp(left));
+          postsRef.current = merged;
+          writeFeedCache(activeQueryKey, {
+            savedAt: Date.now(),
+            posts: merged,
+            hasMore: snapshot.size === PAGE_SIZE,
+          });
+          return merged;
+        });
+
+        cursorRef.current = snapshot.docs[snapshot.docs.length - 1] || null;
+        memoryFeedCursors.set(activeQueryKey, cursorRef.current);
+        setHasMore(snapshot.size === PAGE_SIZE);
+        if (activeSection === "noticias") warmCriticalNewsImages(firstPage);
+      },
+      (error) => {
+        console.warn("[NVU NEWS] Atualização em tempo real indisponível:", error);
+      },
+    );
+
+    return () => {
+      unsubscribe();
+      liveFirstPageIdsRef.current = new Set();
+    };
+  }, [
+    activeQueryKey,
+    activeSection,
+    currentUser?.id,
+    feedReady,
+    periodFilter,
+    processDocuments,
+    selectedSimulator,
+    selectedSimulatorAliases,
+    simulatorReady,
+  ]);
+
+  useEffect(() => {
+    if (
+      !feedReady ||
+      (!companyCatalogLoaded && !companyCatalogAttempted) ||
+      !currentUser?.id ||
+      companyApprovalSyncScheduledRef.current
+    ) return;
     const scheduledQueryKey = activeQueryKey;
     const delay = postsRef.current.length === 0 ? 350 : 1800;
     return scheduleIdleTask(() => {
       if (companyApprovalSyncScheduledRef.current) return;
       companyApprovalSyncScheduledRef.current = true;
-      void ensureCompanyApprovalNewsSync()
-        .then((result) => {
+      void ensureCompanyApprovalNewsSync(
+        false,
+        companyCatalogLoaded ? validCompanies.length : undefined,
+      )
+        .then(async (result) => {
+          const serverActiveCompanies = Number(result.activeCompanies);
+          if (
+            companyCatalogLoaded &&
+            Number.isFinite(serverActiveCompanies) &&
+            serverActiveCompanies !== validCompanies.length
+          ) {
+            refreshAfterCompanyCatalogSyncRef.current = true;
+            await loadCompanyCatalog(true);
+            return;
+          }
           if (
             (result.created > 0 || result.updated > 0 || (result.removed || 0) > 0) &&
             lastQueryKeyRef.current === scheduledQueryKey
@@ -1308,7 +1528,22 @@ export default function NewsFeed() {
           console.warn("[NVU NEWS] A sincronização das empresas aprovadas ainda não está disponível:", error);
         });
     }, delay);
-  }, [activeQueryKey, currentUser?.id, feedReady, fetchPosts]);
+  }, [
+    activeQueryKey,
+    companyCatalogAttempted,
+    companyCatalogLoaded,
+    currentUser?.id,
+    feedReady,
+    fetchPosts,
+    loadCompanyCatalog,
+    validCompanies.length,
+  ]);
+
+  useEffect(() => {
+    if (!refreshAfterCompanyCatalogSyncRef.current || !companyCatalogLoaded) return;
+    refreshAfterCompanyCatalogSyncRef.current = false;
+    void fetchPosts(false, true);
+  }, [companyCatalogLoaded, fetchPosts, validCompanies.length]);
 
   useEffect(() => {
     if (!feedReady || !currentUser?.id || backfillScheduledRef.current) return;
@@ -1341,7 +1576,23 @@ export default function NewsFeed() {
     if (!feedReady) return;
     const cancelInitialLoad = scheduleIdleTask(() => void loadUnreadIndicators(), 800);
     const refreshWhenVisible = () => {
-      if (document.visibilityState === "visible") void loadUnreadIndicators();
+      if (document.visibilityState !== "visible") return;
+      void loadUnreadIndicators();
+      void fetchPosts(false, true);
+
+      if (Date.now() - companyCatalogRefreshAtRef.current >= 5 * 60 * 1000) {
+        companyCatalogRefreshAtRef.current = Date.now();
+        void loadCompanyCatalog(true)
+          .then((catalog) => ensureCompanyApprovalNewsSync(false, catalog.filter(isActiveCompany).length))
+          .then((result) => {
+            if (result.created > 0 || result.updated > 0 || (result.removed || 0) > 0) {
+              void fetchPosts(false, true);
+            }
+          })
+          .catch((error) => {
+            console.warn("[NVU NEWS] Atualização de empresas indisponível:", error);
+          });
+      }
     };
     window.addEventListener("focus", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
@@ -1350,7 +1601,7 @@ export default function NewsFeed() {
       window.removeEventListener("focus", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [feedReady, loadUnreadIndicators]);
+  }, [feedReady, fetchPosts, loadCompanyCatalog, loadUnreadIndicators]);
 
   useEffect(() => {
     const normalized = normalizeLookup(searchTerm);
@@ -1394,7 +1645,7 @@ export default function NewsFeed() {
         ));
         if (canceled) return;
         const results = processDocuments(snapshot.docs, activeSection, selectedSimulator, selectedSimulatorAliases)
-          .filter((post) => activeSection !== "noticias" || periodFilter === "all" || post.periodoTipo === periodFilter)
+          .filter((post) => activeSection !== "noticias" || postMatchesPeriod(post, periodFilter))
           .sort((left, right) => postTimestamp(right) - postTimestamp(left));
         postsRef.current = results;
         setPosts(results);
@@ -1434,11 +1685,60 @@ export default function NewsFeed() {
     return () => observer.disconnect();
   }, [fetchPosts, hasMore, loading, loadingMore, searchTerm]);
 
+  useEffect(() => {
+    if (!activeQueryKey || !currentUser?.id || typeof window === "undefined") return;
+    const userId = String(currentUser.id);
+    const savePosition = () => {
+      if (scrollSaveFrameRef.current !== null) return;
+      scrollSaveFrameRef.current = window.requestAnimationFrame(() => {
+        scrollSaveFrameRef.current = null;
+        writeFeedScrollPosition(userId, activeQueryKey, window.scrollY);
+      });
+    };
+
+    window.addEventListener("scroll", savePosition, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", savePosition);
+      if (scrollSaveFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollSaveFrameRef.current);
+        scrollSaveFrameRef.current = null;
+      }
+      writeFeedScrollPosition(userId, activeQueryKey, window.scrollY);
+    };
+  }, [activeQueryKey, currentUser?.id]);
+
+  useEffect(() => {
+    if (
+      !feedReady ||
+      loading ||
+      !activeQueryKey ||
+      !currentUser?.id ||
+      scrollRestoreKeyRef.current === activeQueryKey ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    scrollRestoreKeyRef.current = activeQueryKey;
+    const position = readFeedScrollPosition(String(currentUser.id), activeQueryKey);
+    let secondFrame: number | null = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        window.scrollTo({ top: position, behavior: "auto" });
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [activeQueryKey, currentUser?.id, feedReady, loading, posts.length]);
+
   const filteredPosts = useMemo(() => {
     const normalized = normalizeLookup(searchTerm);
     const simulatorScoped = posts
       .filter(postMatchesSelectedSimulator)
-      .filter((post) => activeSection !== "noticias" || periodFilter === "all" || post.periodoTipo === periodFilter);
+      .filter((post) => activeSection !== "noticias" || postMatchesPeriod(post, periodFilter));
     if (!normalized || normalized.length >= 3) return simulatorScoped;
     return simulatorScoped.filter((post) => normalizeLookup([
       post.titulo,
@@ -1461,6 +1761,7 @@ export default function NewsFeed() {
     if (!currentUser?.id) return;
     const key = feedCacheKey(String(currentUser.id), section, period, simulator || "all");
     const cached = readFeedCache(key);
+    setFeedError(null);
     lastQueryKeyRef.current = "";
     requestRef.current += 1;
     cursorRef.current = null;
@@ -1519,6 +1820,7 @@ export default function NewsFeed() {
       searching={searching}
       hasMore={hasMore}
       historyPreparing={historyPreparing}
+      feedError={feedError}
       searchTerm={searchTerm}
       selectedSimulator={selectedSimulator || "all"}
       simulatorOptions={simulatorOptions}

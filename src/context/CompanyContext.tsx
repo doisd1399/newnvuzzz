@@ -145,6 +145,7 @@ export interface CompanyDataControllerOptions {
   currentUser: User | null;
   memberships: CompanyMember[];
   activeCompanyId: string | null;
+  suspendedRealtime?: boolean;
 }
 
 export interface CompanyDataController {
@@ -171,6 +172,7 @@ export const useCompanyDataController = ({
   currentUser,
   memberships,
   activeCompanyId,
+  suspendedRealtime = false,
 }: CompanyDataControllerOptions): CompanyDataController => {
   const initialCompanyState = useMemo(() => {
     const publicCatalog = readCachedCompanies();
@@ -360,7 +362,12 @@ export const useCompanyDataController = ({
   ]);
 
   // Preserve realtime behavior only for the company active in the session.
+  // The selector/pending screens use the already hydrated company identity and
+  // deliberately detach this listener so its cache writes/re-render cannot
+  // compete with a direct user interaction.
   useEffect(() => {
+    if (suspendedRealtime) return;
+
     const companyId = String(
       activeCompanyId || currentUser?.companyId || "",
     ).trim();
@@ -410,7 +417,13 @@ export const useCompanyDataController = ({
     );
 
     return () => unsubscribeActiveCompany();
-  }, [activeCompanyId, currentUser?.companyId, currentUser?.id, memberships]);
+  }, [
+    activeCompanyId,
+    currentUser?.companyId,
+    currentUser?.id,
+    memberships,
+    suspendedRealtime,
+  ]);
 
   return {
     companies,
@@ -432,6 +445,7 @@ interface CompanyScopedControllerOptions {
   userId: string | undefined;
   targetCompanyId: string | null;
   isActive: boolean;
+  suspended?: boolean;
 }
 
 export interface CompanyMembersController {
@@ -444,6 +458,7 @@ export const useCompanyMembersController = ({
   userId,
   targetCompanyId,
   isActive,
+  suspended = false,
 }: CompanyScopedControllerOptions): CompanyMembersController => {
   const [allCompanyMembers, setAllCompanyMembers] = useState<CompanyMember[]>([]);
   const generationRef = useRef(0);
@@ -455,6 +470,11 @@ export const useCompanyMembersController = ({
       !isAuthTeardownActive() &&
       Boolean(userId) &&
       auth.currentUser?.uid === userId;
+
+    // Foreground selector/status screens keep the last known company state but
+    // intentionally detach broad company listeners. Preserving the array here
+    // avoids an unnecessary context invalidation/re-render just to pause work.
+    if (suspended) return;
 
     if (!userId || !targetCompanyId || !isActive) {
       setAllCompanyMembers([]);
@@ -507,7 +527,7 @@ export const useCompanyMembersController = ({
       generationRef.current += 1;
       unsubscribe();
     };
-  }, [isActive, targetCompanyId, userId]);
+  }, [isActive, suspended, targetCompanyId, userId]);
 
   return { allCompanyMembers, setAllCompanyMembers };
 };
@@ -531,6 +551,7 @@ export const useCompanyRecruitmentController = ({
   activeRole,
   targetCompanyId,
   isActive,
+  suspended = false,
 }: CompanyRecruitmentControllerOptions): CompanyRecruitmentController => {
   const [driverRequests, setDriverRequests] = useState<DriverRequest[]>([]);
   const [recruitmentApplications, setRecruitmentApplications] = useState<
@@ -545,6 +566,12 @@ export const useCompanyRecruitmentController = ({
       !isAuthTeardownActive() &&
       Boolean(userId) &&
       auth.currentUser?.uid === userId;
+
+    // SelectProfile and PendingApplications already own a narrow, user-scoped
+    // pending request listener. Do not keep the broader recruitment controller
+    // attached at the same time; that duplicated Firestore work could publish
+    // a large company snapshot while the user is tapping the pending button.
+    if (suspended) return;
 
     if (!userId) {
       setDriverRequests([]);
@@ -670,7 +697,7 @@ export const useCompanyRecruitmentController = ({
       unsubscribeRequests();
       unsubscribeApplications();
     };
-  }, [activeRole, isActive, targetCompanyId, userEmail, userId]);
+  }, [activeRole, isActive, suspended, targetCompanyId, userEmail, userId]);
 
   return {
     driverRequests,

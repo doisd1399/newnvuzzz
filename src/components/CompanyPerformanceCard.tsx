@@ -897,17 +897,17 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
               {(() => {
                 const daysInPeriod: Date[] = [];
                 let currDate = new Date(sDate);
-                currDate.setHours(0, 0, 0, 0);
+                currDate.setUTCHours(0, 0, 0, 0);
                 const endOfDay = new Date(eDate);
-                endOfDay.setHours(23, 59, 59, 999);
+                endOfDay.setUTCHours(23, 59, 59, 999);
                 let maxDays = 365; // hard limit
                 while (currDate <= endOfDay && maxDays > 0) {
                   daysInPeriod.push(new Date(currDate));
-                  currDate.setDate(currDate.getDate() + 1);
+                  currDate.setUTCDate(currDate.getUTCDate() + 1);
                   maxDays--;
                 }
                 const firstDayOfWeek =
-                  daysInPeriod.length > 0 ? daysInPeriod[0].getDay() : 0;
+                  daysInPeriod.length > 0 ? daysInPeriod[0].getUTCDay() : 0;
 
                 return (
                   <>
@@ -920,9 +920,9 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
                     {daysInPeriod.map((d) => {
                       const hasTrip = currentTrips.some((t) => {
                         return (
-                          t.metricDate.getDate() === d.getDate() &&
-                          t.metricDate.getMonth() === d.getMonth() &&
-                          t.metricDate.getFullYear() === d.getFullYear()
+                          t.metricDate.getUTCDate() === d.getUTCDate() &&
+                          t.metricDate.getUTCMonth() === d.getUTCMonth() &&
+                          t.metricDate.getUTCFullYear() === d.getUTCFullYear()
                         );
                       });
                       return (
@@ -935,7 +935,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
                               : "bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-slate-400",
                           )}
                         >
-                          {d.getDate()}
+                          {d.getUTCDate()}
                         </div>
                       );
                     })}
@@ -949,7 +949,7 @@ export const CompanyPerformanceCard = React.memo(function CompanyPerformanceCard
             {["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"].map(
               (day, idx) => {
                 const hasTripOnDay = currentTrips.some((t) => {
-                  return t.metricDate.getDay() === idx;
+                  return t.metricDate.getUTCDay() === idx;
                 });
                 const isChecked = hasTripOnDay;
                 return (

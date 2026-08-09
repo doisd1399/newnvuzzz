@@ -19,6 +19,7 @@ import {
 } from "../lib/authLifecycle";
 import { normalizeTrip } from "../lib/tripNormalizer";
 import { mergeTripSources } from "../lib/tripDataset";
+import { isOpenJobStatus } from "../lib/jobStatus";
 
 
 
@@ -632,9 +633,7 @@ export class TripsRepository {
         if (
           totalDeliveries > 0 &&
           realProgress >= totalDeliveries &&
-          ["pending", "active", "delayed", "awaiting_completion"].includes(
-            status,
-          )
+          isOpenJobStatus(status)
         ) {
           updates.status = "awaiting_completion";
         } else if (status === "awaiting_completion" && realProgress < totalDeliveries) {

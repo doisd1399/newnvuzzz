@@ -11,7 +11,8 @@ import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/uti
 import { getDriverLevelData } from "../../lib/levelUtils";
 import { getFilteredTrips } from "../../lib/metricsEngine";
 import { normalizeTrip } from "../../lib/tripNormalizer";
-import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
+import { resolveCompanySimulatorFilterValue, resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
+import { isOpenJobStatus } from "../../lib/jobStatus";
 import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import TripHistory from "../driver/TripHistory";
 import Reports from "./Reports";
@@ -299,7 +300,7 @@ export default function DriverProfileIsolated() {
   const validActiveJobs = jobs.filter(
     (j) =>
       j.driverId === driverId &&
-      ["pending", "active", "delayed"].includes(j.status) &&
+      isOpenJobStatus(j.status) &&
       contracts.some((c) => c.id === j.contractId),
   );
 
@@ -354,6 +355,43 @@ export default function DriverProfileIsolated() {
   const xpProgress = levelData.xpProgress;
 
   const normalizedAllTrips = useMemo(() => historicoTrips.map((t: any) => normalizeTrip(t)), [historicoTrips]);
+
+  const activeJobProgress = useMemo(() => {
+    const persistedProgress = Math.max(0, Number(activeJob?.progress) || 0);
+    if (!activeJob) return persistedProgress;
+
+    const assignedTime = activeJob.assignedAt
+      ? new Date(activeJob.assignedAt).getTime()
+      : activeJob.createdAt
+        ? new Date(activeJob.createdAt).getTime()
+        : 0;
+    const completedTime = activeJob.completedAt
+      ? new Date(activeJob.completedAt).getTime()
+      : Number.POSITIVE_INFINITY;
+
+    const liveProgress = normalizedAllTrips.filter((trip: any) => {
+      if (!trip.isValid) return false;
+      if (trip.jobId && trip.jobId === activeJob.id) return true;
+
+      const tripContractId = trip.contractId || trip.contratoId;
+      const tripDriverId =
+        trip.driverId || trip.motoristaId || trip.motorista_id || trip.userId;
+      if (tripContractId !== activeJob.contractId) return false;
+      if (tripDriverId !== driverId) return false;
+
+      const tripTime = trip.metricDate.getTime();
+      return tripTime >= assignedTime && tripTime <= completedTime;
+    }).length;
+
+    return Math.max(persistedProgress, liveProgress);
+  }, [activeJob, driverId, normalizedAllTrips]);
+
+  const resolvedSimulatorLabel =
+    resolveSimulatorDisplayLabel(
+      resolvedCompany as any,
+      simulators as any[],
+      allCompanies as any[],
+    ) || resolvedCompany?.simulatorName || "G. Truck";
   
   const filteredDriverTrips = useMemo(() => {
     return getFilteredTrips(normalizedAllTrips, undefined, undefined, undefined, undefined, companies, driverId);
@@ -441,7 +479,7 @@ export default function DriverProfileIsolated() {
                     className="text-slate-500 dark:text-slate-400 shrink-0"
                   />
                   <span className="text-[9px] sm:text-[10px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                    {resolvedCompany?.simulatorName || "G. Truck"}
+                    {resolvedSimulatorLabel}
                   </span>
                 </div>
               </div>
@@ -568,7 +606,7 @@ export default function DriverProfileIsolated() {
                     <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
                       <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
-                          {activeJob.progress}/{activeContract.totalDeliveries}
+                          {activeJobProgress}/{activeContract.totalDeliveries}
                         </span>
                         <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
                           Entregas
@@ -581,7 +619,7 @@ export default function DriverProfileIsolated() {
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
                           {Math.max(
                             0,
-                            activeContract.totalDeliveries - activeJob.progress,
+                            activeContract.totalDeliveries - activeJobProgress,
                           )}
                         </span>
                         <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
@@ -595,7 +633,7 @@ export default function DriverProfileIsolated() {
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
                           {activeContract.totalDeliveries > 0
                             ? Math.round(
-                                (activeJob.progress /
+                                (activeJobProgress /
                                   activeContract.totalDeliveries) *
                                   100,
                               )
@@ -614,7 +652,7 @@ export default function DriverProfileIsolated() {
                         percent={
                           activeContract.totalDeliveries > 0
                             ? Math.round(
-                                (activeJob.progress /
+                                (activeJobProgress /
                                   activeContract.totalDeliveries) *
                                   100,
                               )
@@ -642,9 +680,9 @@ export default function DriverProfileIsolated() {
                           Prazo limite
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none">
-                          {activeJob.deadlineDate
+                          {activeJob.dueAt || activeJob.deadlineDate
                             ? new Date(
-                                activeJob.deadlineDate,
+                                activeJob.dueAt || activeJob.deadlineDate,
                               ).toLocaleDateString("pt-BR")
                             : "Não definido"}
                         </span>
@@ -666,9 +704,10 @@ export default function DriverProfileIsolated() {
                         </span>
                         <span className="text-[10px] sm:text-[11px] font-bold text-slate-800 dark:text-gray-200 whitespace-nowrap overflow-visible leading-none truncate">
                           {(() => {
-                            if (!activeJob.deadlineDate) return "Não definido";
+                            const deadline = activeJob.dueAt || activeJob.deadlineDate;
+                            if (!deadline) return "Não definido";
                             const diffMs =
-                              new Date(activeJob.deadlineDate).getTime() -
+                              new Date(deadline).getTime() -
                               new Date().getTime();
                             if (diffMs <= 0) return "Vencido";
                             const d = Math.floor(

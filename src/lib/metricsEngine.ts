@@ -25,41 +25,47 @@ const entityHasDriverRole = (record: EntityRecord): boolean => {
 };
 
 export function getTodayRange(referenceDate = new Date()) {
-  const start = new Date(referenceDate);
-  start.setHours(0, 0, 0, 0);
+  const start = new Date(
+    Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth(),
+      referenceDate.getUTCDate(),
+    ),
+  );
 
-  const end = new Date(start);
-  end.setHours(23, 59, 59, 999);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
 
   return { start, end };
 }
 
 export function getWeeklyRange(referenceDate = new Date()) {
-  const start = new Date(referenceDate);
-  start.setDate(start.getDate() - start.getDay());
-  start.setHours(0, 0, 0, 0);
+  const start = getTodayRange(referenceDate).start;
+  start.setUTCDate(start.getUTCDate() - start.getUTCDay());
 
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  end.setHours(23, 59, 59, 999);
+  const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
 
   return { start, end };
 }
 
 export function getMonthlyRange(referenceDate = new Date()) {
-  const start = new Date(referenceDate);
-  start.setDate(1);
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
-  end.setHours(23, 59, 59, 999);
+  const start = new Date(
+    Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1),
+  );
+  const nextMonth = new Date(
+    Date.UTC(
+      referenceDate.getUTCFullYear(),
+      referenceDate.getUTCMonth() + 1,
+      1,
+    ),
+  );
+  const end = new Date(nextMonth.getTime() - 1);
 
   return { start, end };
 }
 
 export function normalizeDate(date: string | Date | number) {
   if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
-    return new Date(date.trim() + 'T00:00:00');
+    return new Date(date.trim() + 'T00:00:00.000Z');
   }
   return new Date(date);
 }
@@ -76,16 +82,17 @@ export function getTripSimulatorId(
   simulators: Record<string, unknown>[] = [],
 ) {
   const tripRecord = trip as Record<string, unknown>;
-  const hasTripSimulatorSnapshot = hasSimulatorIdentity(tripRecord);
-
-  // A simulator snapshot stored on the trip is authoritative. Legacy names are
-  // converted to the same canonical ID by the centralized resolver.
-  if (hasTripSimulatorSnapshot) {
-    return resolveSimulatorId(tripRecord, simulators, companies);
-  }
-
   const company = getTripCompany(tripRecord, companies);
-  return resolveSimulatorId(company, simulators, companies);
+
+  // Ranking scope follows the company's current canonical simulator. A trip
+  // snapshot is only a compatibility fallback when the company is unavailable
+  // or has no simulator identity.
+  if (company && hasSimulatorIdentity(company)) {
+    return resolveSimulatorId(company, simulators, companies);
+  }
+  return hasSimulatorIdentity(tripRecord)
+    ? resolveSimulatorId(tripRecord, simulators, companies)
+    : "";
 }
 
 function createTripSimulatorMatcher(
@@ -116,27 +123,25 @@ function createTripSimulatorMatcher(
 
   return (trip: NormalizedTrip) => {
     const tripRecord = trip as Record<string, unknown>;
-    if (hasSimulatorIdentity(tripRecord)) {
-      return (
-        resolveSimulatorId(tripRecord, simulators, companies) ===
-        canonicalTargetId
-      );
-    }
-
     const companyId = getCanonicalTripCompanyId(tripRecord);
-    if (!companyId) return false;
 
-    let resolvedCompanySimulatorId = companySimulatorIds.get(companyId);
-    if (resolvedCompanySimulatorId === undefined) {
-      resolvedCompanySimulatorId = resolveSimulatorId(
-        companiesById.get(companyId),
-        simulators,
-        companies,
-      );
-      companySimulatorIds.set(companyId, resolvedCompanySimulatorId);
+    if (companyId) {
+      let resolvedCompanySimulatorId = companySimulatorIds.get(companyId);
+      if (resolvedCompanySimulatorId === undefined) {
+        const company = companiesById.get(companyId);
+        resolvedCompanySimulatorId = company
+          ? resolveSimulatorId(company, simulators, companies)
+          : "";
+        companySimulatorIds.set(companyId, resolvedCompanySimulatorId);
+      }
+      if (resolvedCompanySimulatorId) {
+        return resolvedCompanySimulatorId === canonicalTargetId;
+      }
     }
 
-    return resolvedCompanySimulatorId === canonicalTargetId;
+    return hasSimulatorIdentity(tripRecord)
+      ? resolveSimulatorId(tripRecord, simulators, companies) === canonicalTargetId
+      : false;
   };
 }
 
@@ -414,7 +419,12 @@ export function groupMetricsByCompany(
 
   return Object.values(stats).sort((a, b) => {
     if (b.val !== a.val) return b.val - a.val;
-    return b.trips - a.trips;
+    if (b.trips !== a.trips) return b.trips - a.trips;
+    const nameOrder = a.name.localeCompare(b.name, "pt-BR", {
+      sensitivity: "base",
+      numeric: true,
+    });
+    return nameOrder || a.id.localeCompare(b.id);
   });
 }
 
@@ -503,7 +513,12 @@ export function groupMetricsByDriver(
 
   return Object.values(stats).sort((a, b) => {
     if (b.val !== a.val) return b.val - a.val;
-    return b.trips - a.trips;
+    if (b.trips !== a.trips) return b.trips - a.trips;
+    const nameOrder = a.name.localeCompare(b.name, "pt-BR", {
+      sensitivity: "base",
+      numeric: true,
+    });
+    return nameOrder || a.id.localeCompare(b.id);
   });
 }
 
@@ -511,21 +526,23 @@ export function groupMetricsByDriver(
 export function getStartOfDay(date: Date | string | number): Date {
   let d: Date;
   if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
-    d = new Date(date.trim() + 'T00:00:00');
+    d = new Date(date.trim() + 'T00:00:00.000Z');
   } else {
     d = new Date(date);
   }
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
 export function getEndOfDay(date: Date | string | number): Date {
   let d: Date;
   if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
-    d = new Date(date.trim() + 'T00:00:00');
+    d = new Date(date.trim() + 'T00:00:00.000Z');
   } else {
     d = new Date(date);
   }
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+  return new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) - 1,
+  );
 }
 
 export function getCustomRange(start: Date | string, end: Date | string) {

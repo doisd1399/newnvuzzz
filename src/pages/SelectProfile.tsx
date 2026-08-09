@@ -1,26 +1,26 @@
 import React, { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useSessionStore } from "../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../context/AppContext";
 import { useCompanyStore } from "../context/CompanyContext";
 import { resolveProfilePhoto } from "../lib/resolveProfilePhoto";
-import { resolveRecruitmentPhoto } from "../lib/recruitmentPhoto";
 import {
   ChevronRight,
   ShieldCheck,
   Building2,
   ChevronDown,
   Check,
-  User,
   Truck,
   Briefcase,
-  Edit,
+  ClipboardClock,
+  ArrowLeft,
 } from "lucide-react";
-import { auth } from "../lib/firebase";
-import { ProfileModal } from "../components/ProfileModal";
 import { StableImage } from "../components/common/StableImage";
-import { preloadFleetPanel, preloadRoute } from "../lib/routePreload";
+import { preloadRoute } from "../lib/routePreload";
 import { prepareAndCommitNavigation } from "../lib/navigationTransition";
 import { resolveMembershipRoles } from "../lib/membershipRoles";
+import { resolveSimulatorDisplayLabel } from "../lib/simulatorOptions";
+import { useCurrentUserPendingApplications } from "../hooks/useCurrentUserPendingApplications";
+import { PendingApplicationsCarousel } from "../components/recruitment/PendingApplicationsCarousel";
 
 const ProfileSelectionTransition = () => (
   <div
@@ -40,6 +40,108 @@ const ProfileSelectionTransition = () => (
   </div>
 );
 
+interface PendingApplicationsAccessProps {
+  applications: Parameters<typeof PendingApplicationsCarousel>[0]["applications"];
+  currentUser: Parameters<typeof PendingApplicationsCarousel>[0]["currentUser"];
+  companies: Parameters<typeof PendingApplicationsCarousel>[0]["companies"];
+}
+
+/**
+ * The pending page uses a native <dialog>. While closed the browser keeps it
+ * out of layout/paint, avoiding the permanent full-screen transparent
+ * compositing layer that previously existed above SelectProfile. showModal()
+ * is synchronous and does not trigger navigation, Firestore or parent renders.
+ */
+const PendingApplicationsAccess = React.memo(function PendingApplicationsAccess({
+  applications,
+  currentUser,
+  companies,
+}: PendingApplicationsAccessProps) {
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  if (applications.length === 0) return null;
+
+  const openPanel = (event?: React.SyntheticEvent) => {
+    event?.preventDefault();
+    const dialog = dialogRef.current;
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
+  };
+
+  const closePanel = (event?: React.SyntheticEvent) => {
+    event?.preventDefault();
+    const dialog = dialogRef.current;
+    if (!dialog?.open) return;
+    dialog.close();
+  };
+
+  const handleOpenKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    openPanel(event);
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onPointerDown={openPanel}
+        onKeyDown={handleOpenKeyDown}
+        className="absolute -top-3 right-0 z-20 w-11 h-11 inline-flex items-center justify-center text-amber-600 dark:text-amber-300 hover:text-amber-700 dark:hover:text-amber-200 bg-white dark:bg-[#18181b] border border-amber-200 dark:border-amber-500/30 rounded-full shadow-sm touch-manipulation select-none"
+        title="Inscrições e cadastros pendentes"
+        aria-label={`Abrir ${applications.length} solicitação${applications.length > 1 ? "ões" : ""} pendente${applications.length > 1 ? "s" : ""}`}
+      >
+        <ClipboardClock size={16} />
+        <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-amber-500 text-white text-[9px] font-bold flex items-center justify-center border-2 border-slate-50 dark:border-[#09090b]">
+          {applications.length > 9 ? "9+" : applications.length}
+        </span>
+      </button>
+
+      <dialog
+        ref={dialogRef}
+        data-nvu-pending-dialog
+        aria-label="Inscrições e cadastros pendentes"
+        className="fixed inset-0 m-0 h-[100dvh] max-h-none w-screen max-w-none border-0 p-0 overflow-y-auto overscroll-contain bg-slate-50 dark:bg-[#09090b] text-slate-900 dark:text-white"
+      >
+        <div className="min-h-full flex items-center justify-center p-4 sm:p-6 font-sans">
+          <div className="w-full max-w-md">
+            <div className="relative text-center mb-6">
+              <button
+                type="button"
+                onPointerDown={closePanel}
+                className="absolute left-0 -top-2 w-11 h-11 inline-flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-[#a1a1aa] dark:hover:text-white bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] rounded-full shadow-sm touch-manipulation"
+                aria-label="Voltar para seleção de perfil"
+              >
+                <ArrowLeft size={17} />
+              </button>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+                Pendências
+              </h1>
+              <p className="text-sm text-slate-500 dark:text-[#a1a1aa] mt-1">
+                Inscrições e cadastros aguardando avaliação
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#18181b] rounded-3xl border border-slate-100 dark:border-[#2A2F3A] shadow-xl dark:shadow-none p-5 sm:p-6">
+              <div className="w-12 h-12 bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-300 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-amber-100 dark:border-amber-500/20">
+                <ClipboardClock size={24} />
+              </div>
+              <PendingApplicationsCarousel
+                applications={applications}
+                currentUser={currentUser}
+                companies={companies}
+                deferImages
+              />
+              <p className="mt-5 text-center text-[11px] sm:text-xs text-slate-400 dark:text-[#a1a1aa] leading-relaxed px-1">
+                Você será notificado(a) quando houver uma resposta, se as notificações estiverem ativas.
+              </p>
+            </div>
+          </div>
+        </div>
+      </dialog>
+    </>
+  );
+});
+
 export default function SelectProfile() {
   const {
     currentUser,
@@ -47,26 +149,25 @@ export default function SelectProfile() {
     authInitialized,
     membershipsLoaded,
     sessionReady,
+    sessionRecovering,
     activeRole,
     logOutApp,
     setSeniorCompanyId,
     setIsSeniorAuthenticated,
   } = useSessionStore();
+  const { simulators } = useOperationalStore();
   const {
     companies,
     allCompanies,
-    companyCatalogLoaded,
-    loadCompanyCatalog,
+    companiesLoading,
     activeCompanyId,
     memberships,
-    recruitmentApplications,
   } = useCompanyStore();
   const navigate = useNavigate();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
     null,
   );
   const [isSelectorOpen, setIsSelectorOpen] = useState(false);
-  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const switchingRoleRef = useRef(false);
 
@@ -85,10 +186,11 @@ export default function SelectProfile() {
           const comp = companies.find((c) => c.id === membership.companyId);
           if (companies.length > 0 && !comp) return; // Ghost company
           const cName = comp ? comp.companyName : "Carregando...";
-          let simName = comp?.simulatorName || "";
-          if (simName.length > 0 && simName.length <= 4) {
-            simName = simName.charAt(0).toUpperCase() + simName.slice(1).toLowerCase();
-          }
+          const simName = comp
+            ? resolveSimulatorDisplayLabel(comp as any, simulators as any[], companies as any[]) ||
+              comp.simulatorName ||
+              ""
+            : "";
           const displayName = simName ? `${cName} - ${simName}` : cName;
           const roles = new Set(resolveMembershipRoles(membership, currentUser));
           const isOwner = Boolean(
@@ -106,125 +208,26 @@ export default function SelectProfile() {
       });
     }
     return list;
-  }, [memberships, companies, currentUser?.id]);
+  }, [memberships, companies, currentUser?.id, simulators]);
 
-  const latestPendingApplication = useMemo(() => {
-    if (!currentUser?.id && !currentUser?.email) return null;
+  const {
+    applications: pendingApplications,
+    loading: pendingApplicationsLoading,
+  } = useCurrentUserPendingApplications(currentUser?.id, currentUser?.email);
 
-    const pendingApplications = recruitmentApplications.filter((application) => {
-      if (application.status !== "pending") return false;
-      if (application.isCurrent === false) return false;
-      if (application.type === "company_registration") return false;
+  const pendingApplicationCompanies = useMemo(() => {
+    const merged = new Map<string, (typeof allCompanies)[number]>();
+    [...allCompanies, ...companies].forEach((company) => merged.set(company.id, company));
+    return Array.from(merged.values());
+  }, [allCompanies, companies]);
 
-      const matchesUserId =
-        currentUser?.id && application.userId === currentUser.id;
-      const matchesEmail =
-        currentUser?.email &&
-        application.email?.toLowerCase() === currentUser.email.toLowerCase();
-
-      return Boolean(matchesUserId || matchesEmail);
-    });
-
-    if (pendingApplications.length === 0) return null;
-
-    return [...pendingApplications].sort((a, b) => {
-      const timeA = new Date(a.createdAt || 0).getTime();
-      const timeB = new Date(b.createdAt || 0).getTime();
-      return timeB - timeA;
-    })[0];
-  }, [currentUser?.email, currentUser?.id, recruitmentApplications]);
-
-  useEffect(() => {
-    if (
-      availableCompanies.length === 0 &&
-      latestPendingApplication?.companyId &&
-      (!companyCatalogLoaded ||
-        !allCompanies.some(
-          (company) => company.id === latestPendingApplication.companyId,
-        ))
-    ) {
-      void loadCompanyCatalog();
-    }
-  }, [
-    allCompanies,
-    availableCompanies.length,
-    companyCatalogLoaded,
-    latestPendingApplication?.companyId,
-    loadCompanyCatalog,
-  ]);
-
-  const pendingApplicationCompany = useMemo(() => {
-    if (!latestPendingApplication?.companyId) return null;
-    return (
-      allCompanies.find((company) => company.id === latestPendingApplication.companyId) ||
-      companies.find((company) => company.id === latestPendingApplication.companyId) ||
-      null
-    );
-  }, [allCompanies, companies, latestPendingApplication?.companyId]);
-
-  const pendingApplicationUserName = useMemo(() => {
-    return (
-      currentUser?.name?.trim() ||
-      latestPendingApplication?.fullName?.trim() ||
-      currentUser?.email?.split("@")[0] ||
-      "Usuário"
-    );
-  }, [currentUser?.email, currentUser?.name, latestPendingApplication?.fullName]);
-
-  const pendingApplicationUserPhoto = useMemo(
-    () =>
-      resolveRecruitmentPhoto(latestPendingApplication, currentUser) ||
-      resolveProfilePhoto(currentUser) ||
-      null,
-    [currentUser, latestPendingApplication],
-  );
-
-  const pendingApplicationCompanyName = useMemo(() => {
-    return (
-      pendingApplicationCompany?.companyName?.trim() ||
-      pendingApplicationCompany?.fleetName?.trim() ||
-      "Empresa em análise"
-    );
-  }, [pendingApplicationCompany]);
-
-  const pendingApplicationCompanyLogo = useMemo(() => {
-    return (
-      pendingApplicationCompany?.logoUrl ||
-      pendingApplicationCompany?.logoURL ||
-      pendingApplicationCompany?.companyLogoURL ||
-      null
-    );
-  }, [pendingApplicationCompany]);
-
-  const pendingApplicationDateTime = useMemo(() => {
-    const rawValue = latestPendingApplication?.createdAt;
-    if (!rawValue) return "Data indisponível";
-
-    const parsedDate = new Date(rawValue);
-    if (Number.isNaN(parsedDate.getTime())) return "Data indisponível";
-
-    return new Intl.DateTimeFormat("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(parsedDate);
-  }, [latestPendingApplication?.createdAt]);
-
-  useEffect(() => {
-    if (!membershipsLoaded || availableCompanies.length === 0) return;
-
-    const availableRoles = new Set(
-      availableCompanies.flatMap((company) => company.roles || []),
-    );
-    if (availableRoles.has("admin")) {
-      void preloadRoute("/admin/fleet");
-      void preloadFleetPanel("company");
-    }
-    if (availableRoles.has("driver")) void preloadRoute("/driver/profile");
-    void preloadRoute("/ranking");
-  }, [availableCompanies, membershipsLoaded]);
+  // The access icon becomes interactive only after the small identity/company
+  // snapshots that feed its already-mounted content have settled. This avoids
+  // presenting a tappable control while an initial Firestore callback is still
+  // scheduled to invalidate the same screen. Once visible, opening the panel is
+  // a synchronous DOM-only operation.
+  const pendingAccessReady =
+    !pendingApplicationsLoading && !companiesLoading && !sessionRecovering;
 
   // Handle default company selection
   useEffect(() => {
@@ -291,7 +294,12 @@ export default function SelectProfile() {
 
   // Auto enter if exactly 1 profile available globally
   useEffect(() => {
-    if (totalProfilesCount === 1 && availableCompanies.length === 1) {
+    if (
+      !pendingApplicationsLoading &&
+      pendingApplications.length === 0 &&
+      totalProfilesCount === 1 &&
+      availableCompanies.length === 1
+    ) {
       const comp = availableCompanies[0];
       if (comp && comp.roles && comp.roles.length === 1) {
         const role = comp.roles[0] as "admin" | "driver";
@@ -312,9 +320,26 @@ export default function SelectProfile() {
     activeRole,
     activeCompanyId,
     navigate,
+    pendingApplications.length,
+    pendingApplicationsLoading,
   ]);
 
   if (!sessionReady || !currentUser || !membershipsLoaded) {
+    return <ProfileSelectionTransition />;
+  }
+
+  const trackedRecruitmentStatus = String(
+    (currentUser as any).currentRecruitmentStatus || "",
+  ).trim();
+  const trackedRecruitmentApplicationId = String(
+    (currentUser as any).currentRecruitmentApplicationId || "",
+  ).trim();
+  if (
+    availableCompanies.length === 0 &&
+    trackedRecruitmentStatus === "pending" &&
+    trackedRecruitmentApplicationId &&
+    pendingApplicationsLoading
+  ) {
     return <ProfileSelectionTransition />;
   }
 
@@ -330,94 +355,24 @@ export default function SelectProfile() {
             Sem vínculos
           </h2>
           <p className="text-sm text-slate-500 dark:text-[#a1a1aa] mb-6 leading-relaxed px-1">
-            {latestPendingApplication
-              ? "Você ainda não possui vínculos ativos. Acompanhe sua última inscrição."
+            {pendingApplications.length > 0
+              ? pendingApplications.length > 1
+                ? "Você ainda não possui vínculos ativos. Deslize para acompanhar suas inscrições e cadastros pendentes."
+                : "Você ainda não possui vínculos ativos. Acompanhe sua solicitação pendente."
               : "Sua conta não possui vínculos ativos com nenhuma empresa no momento."}
           </p>
-          {latestPendingApplication && (
-            <div className="mb-6 rounded-2xl border border-slate-200 dark:border-[#2A2F3A] bg-slate-50/80 dark:bg-[#111318] p-3.5 sm:p-4 text-left">
-              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-3 mb-4">
-                <div>
-                  <p className="text-[10px] sm:text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-[#71717a]">
-                    Última inscrição
-                  </p>
-                  <p className="text-xs text-slate-500 dark:text-[#a1a1aa] mt-0.5">
-                    {pendingApplicationDateTime}
-                  </p>
-                </div>
-                <span className="inline-flex w-fit items-center rounded-full bg-amber-50 dark:bg-amber-500/10 px-2 py-1 text-[10px] sm:text-[11px] font-semibold text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20 whitespace-nowrap">
-                  Em avaliação
-                </span>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
-                  <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
-                    {pendingApplicationUserPhoto ? (
-                      <StableImage
-                        src={pendingApplicationUserPhoto}
-                        alt={pendingApplicationUserName}
-                        wrapperClassName="w-full h-full"
-                        className="object-cover"
-                        fallback={
-                          <User
-                            size={16}
-                            className="text-slate-400 dark:text-[#a1a1aa]"
-                          />
-                        }
-                      />
-                    ) : (
-                      <User size={16} className="text-slate-400 dark:text-[#a1a1aa]" />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
-                      Motorista
-                    </p>
-                    <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                      {pendingApplicationUserName}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 rounded-xl bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] px-3 py-2">
-                  <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#27272a] flex items-center justify-center shrink-0">
-                    {pendingApplicationCompanyLogo ? (
-                      <StableImage
-                        src={pendingApplicationCompanyLogo}
-                        alt={pendingApplicationCompanyName}
-                        wrapperClassName="w-full h-full"
-                        className="object-cover"
-                        fallback={
-                          <Building2
-                            size={16}
-                            className="text-slate-400 dark:text-[#a1a1aa]"
-                          />
-                        }
-                      />
-                    ) : (
-                      <Building2
-                        size={16}
-                        className="text-slate-400 dark:text-[#a1a1aa]"
-                      />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-[#71717a] mb-0.5">
-                      Empresa
-                    </p>
-                    <p className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-                      {pendingApplicationCompanyName}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          {latestPendingApplication && (
-            <p className="text-[11px] sm:text-xs text-slate-400 dark:text-[#a1a1aa] leading-relaxed mb-5 px-1">
-              Você será notificado(a) assim que houver resposta (se as notificações estiverem ativas).
-            </p>
+          {pendingApplications.length > 0 && (
+            <>
+              <PendingApplicationsCarousel
+                applications={pendingApplications}
+                currentUser={currentUser}
+                companies={pendingApplicationCompanies}
+                className="mb-5"
+              />
+              <p className="text-[11px] sm:text-xs text-slate-400 dark:text-[#a1a1aa] leading-relaxed mb-5 px-1">
+                Você será notificado(a) assim que houver resposta (se as notificações estiverem ativas).
+              </p>
+            </>
           )}
           <div className="flex flex-col sm:grid sm:grid-cols-2 gap-3">
             {showLogoutConfirm ? (
@@ -467,13 +422,13 @@ export default function SelectProfile() {
       <div className="w-full max-w-[420px] flex flex-col relative z-10">
         {/* Header Section */}
         <div className="text-center mb-8 relative">
-          <button
-            onClick={() => setIsEditProfileOpen(true)}
-            className="absolute -top-2 right-0 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors bg-white dark:bg-[#18181b] border border-slate-200 dark:border-[#2A2F3A] rounded-full shadow-sm"
-            title="Editar Perfil"
-          >
-            <Edit size={16} />
-          </button>
+          {pendingAccessReady && (
+            <PendingApplicationsAccess
+              applications={pendingApplications}
+              currentUser={currentUser}
+              companies={pendingApplicationCompanies}
+            />
+          )}
           <p className="text-slate-500 dark:text-[#a1a1aa] text-[13px] font-medium mb-1.5 opacity-80 uppercase tracking-wider">
             Bem-vindo(a) de volta
           </p>
@@ -657,10 +612,6 @@ export default function SelectProfile() {
           </button>
         </div>
       </div>
-      <ProfileModal
-        isOpen={isEditProfileOpen}
-        onClose={() => setIsEditProfileOpen(false)}
-      />
     </div>
   );
 }

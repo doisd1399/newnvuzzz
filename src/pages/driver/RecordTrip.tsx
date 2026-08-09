@@ -33,18 +33,24 @@ import { TripsRepository } from "../../repositories/TripsRepository";
 import { OperationalSuspensionNotice } from "../../components/OperationalSuspensionNotice";
 import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
+import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
+import { isRunningJobStatus, isTripRecordableJobStatus } from "../../lib/jobStatus";
 import { parseTripValue } from "../../lib/tripNormalizer";
 import { extractGtoTripValue } from "../../services/gtoOcrService";
+import { extractScsTripData } from "../../services/scsTripOcrService";
+import { extractToe3TripData } from "../../services/toe3TripOcrService";
 import {
   isFileAccessError,
   normalizeFileAccessError,
   snapshotSelectedFile,
 } from "../../lib/fileAccess";
 import {
+  formatTripDistanceInput,
   parseTripDistance,
   requiresTripDistance,
   resolveTripSimulatorCode,
 } from "../../lib/tripDistance";
+import { TRIP_RECEIPT_RETENTION_DAYS } from "../../lib/tripReceiptRetention";
 
 const generateImageHash = async (
   arrayBuffer: ArrayBuffer,
@@ -156,7 +162,7 @@ export default function RecordTrip() {
     (j) =>
       j.driverId === currentUser?.id &&
       j.companyId === activeCompanyId &&
-      (j.status === "active" || j.status === "completed" || j.status === "awaiting_completion") &&
+      (isRunningJobStatus(j.status) || j.status === "completed") &&
       contracts.some(
         (c) => c.companyId === activeCompanyId && c.id === j.contractId,
       ),
@@ -365,18 +371,26 @@ export default function RecordTrip() {
 
         const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
         const simulatorName =
-          currentCompany.simulatorName ||
+          resolveSimulatorDisplayLabel(currentCompany as any, simulators as any[], companies as any[]) ||
           simulators.find((simulator) => simulator.id === simulatorId)?.name ||
           resolvedSimulatorCode;
         const isGto = resolvedSimulatorCode === "GTO";
-        console.log("[NVU GTO OCR] context", {
+        const isScsOcrSimulator =
+          resolvedSimulatorCode === "ATS" || resolvedSimulatorCode === "ETS2";
+        const isToe3OcrSimulator = resolvedSimulatorCode === "TOE3";
+        console.log("[NVU OCR] context", {
           simulatorId,
           simulatorName,
           resolvedSimulatorCode,
           isGto,
+          isScsOcrSimulator,
+          isToe3OcrSimulator,
         });
 
-        // OCR is non-blocking, but it now reads the stable in-memory copy.
+        // OCR is non-blocking and always reads the stable in-memory copy.
+        // GTO keeps its existing value-only flow. ATS/ETS2 use the SCS parser
+        // for route, distance and earnings. TOE3 has its own mobile-result
+        // parser and fills only distance and earnings.
         if (isGto) {
           setIsReadingValue(true);
           void extractGtoTripValue(file)
@@ -392,6 +406,102 @@ export default function RecordTrip() {
               toast.warning(
                 "Não foi possível confirmar o valor automaticamente. Confira e preencha manualmente.",
               );
+            })
+            .finally(() => {
+              if (ocrRequestIdRef.current === requestId) {
+                setIsReadingValue(false);
+              }
+            });
+        } else if (isScsOcrSimulator) {
+          setIsReadingValue(true);
+          void extractScsTripData(file, resolvedSimulatorCode)
+            .then((detected) => {
+              if (ocrRequestIdRef.current !== requestId) return;
+
+              if (!detected) {
+                toast.warning(
+                  "Não foi possível ler o comprovante automaticamente. Confira os campos e preencha o que faltar.",
+                );
+                return;
+              }
+
+              const detectedFields: string[] = [];
+
+              if (!currentPredefinedRoute && detected.origin) {
+                setOrigem((current) => current.trim() || detected.origin || "");
+                detectedFields.push("origem");
+              }
+
+              if (!currentPredefinedRoute && detected.destination) {
+                setDestino((current) => current.trim() || detected.destination || "");
+                detectedFields.push("destino");
+              }
+
+              if (distanceRequired && detected.distanceKm) {
+                const formattedDistance = formatTripDistanceInput(detected.distanceKm);
+                setDistanciaPercorrida(
+                  (current) => current.trim() || formattedDistance,
+                );
+                detectedFields.push("distância");
+              }
+
+              if (detected.value) {
+                setValor((current) => current.trim() || detected.value || "");
+                detectedFields.push("valor");
+              }
+
+              if (detectedFields.length > 0) {
+                toast.success(
+                  `Leitura automática concluída: ${detectedFields.join(", ")}.`,
+                );
+              } else {
+                toast.warning(
+                  "A imagem foi analisada, mas nenhum dado pôde ser confirmado com segurança.",
+                );
+              }
+            })
+            .finally(() => {
+              if (ocrRequestIdRef.current === requestId) {
+                setIsReadingValue(false);
+              }
+            });
+        } else if (isToe3OcrSimulator) {
+          setIsReadingValue(true);
+          void extractToe3TripData(file)
+            .then((detected) => {
+              if (ocrRequestIdRef.current !== requestId) return;
+
+              if (!detected) {
+                toast.warning(
+                  "Não foi possível ler km e ganhos automaticamente. Confira os campos e preencha o que faltar.",
+                );
+                return;
+              }
+
+              const detectedFields: string[] = [];
+
+              if (distanceRequired && detected.distanceKm) {
+                const formattedDistance = formatTripDistanceInput(detected.distanceKm);
+                setDistanciaPercorrida(
+                  (current) => current.trim() || formattedDistance,
+                );
+                detectedFields.push("distância");
+              }
+
+              if (detected.value) {
+                setValor((current) => current.trim() || detected.value || "");
+                detectedFields.push("valor");
+              }
+
+              if (detectedFields.length > 0) {
+                toast.success(
+                  `Leitura automática concluída: ${detectedFields.join(", ")}.`,
+                );
+              } else {
+                toast.warning(
+                  "A imagem foi analisada, mas km e ganhos não puderam ser confirmados com segurança.",
+                );
+              }
             })
             .finally(() => {
               if (ocrRequestIdRef.current === requestId) {
@@ -429,6 +539,7 @@ export default function RecordTrip() {
           maxWidthOrHeight: 1920,
           // Keep the client output below the authenticated 2 MB Storage rule.
           maxOutputBytes: 1_800_000,
+          storageScope: "trip-receipt",
           onProgress: (progress) => {
             setUploadProgress(progress);
           },
@@ -500,7 +611,7 @@ export default function RecordTrip() {
       // 6. Backend validation check
       const jobDocRef = doc(db, "trabalhos", activeJob.id);
       const jobDocSnap = await getDoc(jobDocRef);
-      if (!jobDocSnap.exists() || jobDocSnap.data()?.status !== "active") {
+      if (!jobDocSnap.exists() || !isTripRecordableJobStatus(jobDocSnap.data()?.status)) {
         setIsUploading(false);
         toast.error("Operação não está ativa no servidor. Inicie a operação e tente novamente.");
         return;
@@ -510,7 +621,7 @@ export default function RecordTrip() {
 
       const simulatorId = resolveSimulatorId(currentCompany, simulators);
       const simulatorName =
-        currentCompany.simulatorName ||
+        resolveSimulatorDisplayLabel(currentCompany as any, simulators as any[], companies as any[]) ||
         simulators.find((simulator) => simulator.id === simulatorId)?.name ||
         resolvedSimulatorCode;
 
@@ -556,6 +667,8 @@ export default function RecordTrip() {
         deviceId: deviceId,
         uploadedAt: serverTimestamp(),
         uploadedBy: currentUser.id,
+        receiptRetentionDays: TRIP_RECEIPT_RETENTION_DAYS,
+        receiptRetentionPolicy: "storage-lifecycle-v1",
         contractId: activeContract?.id || "",
         jobId: activeJob?.id || "",
       };

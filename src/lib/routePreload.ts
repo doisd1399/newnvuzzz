@@ -11,6 +11,7 @@ const routeLoaders: Record<string, Loader[]> = {
   "/apply": [() => import("../pages/RecruitmentApply")],
   "/register-company": [() => import("../pages/RegisterCompany")],
   "/status": [() => import("../pages/ApplicationStatus")],
+  "/pending-applications": [],
   "/audit": [() => import("../pages/AuditPage")],
   "/admin": [
     () => import("../layouts/AdminLayout"),

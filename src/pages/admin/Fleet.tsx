@@ -7,7 +7,7 @@ import React, {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "../../lib/utils";
-import { useSessionStore } from "../../context/AppContext";
+import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { useCompanyStore } from "../../context/CompanyContext";
 import {
   ChevronLeft,
@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { StableImage } from "../../components/common/StableImage";
 import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import { preloadRoute } from "../../lib/routePreload";
+import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import OperationsTab from "./fleet/OperationsTab";
 
 const loadOperationsTab = () => import("./fleet/OperationsTab");
@@ -171,6 +172,7 @@ export default function Fleet() {
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUser } = useSessionStore();
+  const { simulators } = useOperationalStore();
   const {
     activeCompanyId,
     setActiveCompanyId,
@@ -303,6 +305,12 @@ export default function Fleet() {
   }, []);
 
   const activeCompany = companies.find((c) => c.id === activeCompanyId);
+  const getSimulatorLabel = (company: any) =>
+    resolveSimulatorDisplayLabel(
+      company,
+      simulators as any[],
+      companies as any[],
+    ) || company?.simulatorName || "";
 
   const pendingRecruitmentCount = React.useMemo(
     () =>
@@ -458,7 +466,7 @@ export default function Fleet() {
                         className="text-slate-500 dark:text-slate-400 shrink-0"
                       />
                       <span className="text-[9px] sm:text-[10px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                        {activeCompany.simulatorName || "G. Truck"}
+                        {getSimulatorLabel(activeCompany) || "G. Truck"}
                       </span>
                     </div>
                     <ChevronDown
@@ -512,7 +520,7 @@ export default function Fleet() {
                                 : "text-slate-600 dark:text-slate-300",
                             )}
                           >
-                            {c.simulatorName || "Global Truck"}
+                            {getSimulatorLabel(c) || "Global Truck"}
                           </span>
                           {isSelected && (
                             <Check

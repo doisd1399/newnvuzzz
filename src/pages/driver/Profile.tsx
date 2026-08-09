@@ -62,10 +62,11 @@ import { createPortal } from "react-dom";
 import { ProfileModal } from "../../components/ProfileModal";
 import { DriverPerformanceCard } from "../../components/DriverPerformanceCard";
 import { useDriverTrips } from "../../hooks/useDriverTrips";
-import { resolveCompanySimulatorFilterValue } from "../../lib/simulatorOptions";
+import { resolveCompanySimulatorFilterValue, resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import { preloadRoute } from "../../lib/routePreload";
 import { getCanonicalTripCompanyId } from "../../lib/tripIdentity";
+import { isOpenJobStatus, isTripRecordableJobStatus } from "../../lib/jobStatus";
 
 type DriverProfileTab = "dashboard" | "profile" | "operations";
 
@@ -258,9 +259,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         .filter(
           (job) =>
             job.driverId === currentUser.id &&
-            ["pending", "active", "awaiting_completion", "delayed"].includes(
-              job.status,
-            ),
+            isOpenJobStatus(job.status),
         )
         .sort((a, b) => {
           if (a.status === "active" && b.status !== "active") return -1;
@@ -333,19 +332,12 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
 
         if (periodFilter === "custom") {
           if (customStartDate) {
-            const start = new Date(customStartDate);
-            const localStart = new Date(
-              start.getTime() + start.getTimezoneOffset() * 60000,
-            );
-            if (jobDate < localStart) return false;
+            const start = new Date(`${customStartDate}T00:00:00.000Z`);
+            if (jobDate < start) return false;
           }
           if (customEndDate) {
-            const end = new Date(customEndDate);
-            const localEnd = new Date(
-              end.getTime() + end.getTimezoneOffset() * 60000,
-            );
-            localEnd.setHours(23, 59, 59, 999);
-            if (jobDate > localEnd) return false;
+            const end = new Date(`${customEndDate}T23:59:59.999Z`);
+            if (jobDate > end) return false;
           }
           return true;
         }
@@ -414,6 +406,36 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
     return getFilteredTrips(normalizedAllTrips, undefined, undefined, undefined, undefined, companies, currentUser.id);
   }, [normalizedAllTrips, currentUser.id, companies, needsProfileMetrics]);
 
+  const activeJobProgress = useMemo(() => {
+    const persistedProgress = Math.max(0, Number(activeJob?.progress) || 0);
+    if (!activeJob || !needsOperationsHistory) return persistedProgress;
+
+    const assignedTime = activeJob.assignedAt
+      ? new Date(activeJob.assignedAt).getTime()
+      : activeJob.createdAt
+        ? new Date(activeJob.createdAt).getTime()
+        : 0;
+    const completedTime = activeJob.completedAt
+      ? new Date(activeJob.completedAt).getTime()
+      : Number.POSITIVE_INFINITY;
+
+    const liveProgress = normalizedAllTrips.filter((trip: any) => {
+      if (!trip.isValid) return false;
+      if (trip.jobId && trip.jobId === activeJob.id) return true;
+
+      const tripContractId = trip.contractId || trip.contratoId;
+      const tripDriverId =
+        trip.driverId || trip.motoristaId || trip.motorista_id || trip.userId;
+      if (tripContractId !== activeJob.contractId) return false;
+      if (tripDriverId !== currentUser.id) return false;
+
+      const tripTime = trip.metricDate.getTime();
+      return tripTime >= assignedTime && tripTime <= completedTime;
+    }).length;
+
+    return Math.max(persistedProgress, liveProgress);
+  }, [activeJob, currentUser.id, needsOperationsHistory, normalizedAllTrips]);
+
   const totalGanhos = useMemo(
     () =>
       filteredDriverTrips.reduce(
@@ -431,6 +453,12 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         : null,
     [activeCompanyId, companies],
   );
+  const getSimulatorLabel = (company: any) =>
+    resolveSimulatorDisplayLabel(
+      company,
+      simulators as any[],
+      companies as any[],
+    ) || company?.simulatorName || "";
 
   const [globalRank, setGlobalRank] = useState<{
     position: number;
@@ -586,7 +614,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
           <div className="min-w-0 sm:flex-1 flex-[5.5]">
             <button
               onClick={() => {
-                if (!activeJob || activeJob.status !== "active") {
+                if (!activeJob || !isTripRecordableJobStatus(activeJob.status)) {
                   alert(
                     "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
                   );
@@ -596,12 +624,12 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
               }}
               className={cn(
                 "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
-                activeJob?.status === "active"
+                activeJob && isTripRecordableJobStatus(activeJob.status)
                   ? "bg-[#1f242d] hover:bg-[#2a303c] active:bg-[#151921] text-white dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-800"
                   : "bg-gray-400 dark:bg-gray-600 text-white cursor-not-allowed opacity-80",
               )}
             >
-              {activeJob?.status === "active" ? (
+              {activeJob && isTripRecordableJobStatus(activeJob.status) ? (
                 <Navigation
                   size={14}
                   className="shrink-0 sm:!w-[20px] sm:!h-[20px]"
@@ -762,7 +790,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                       className="text-slate-500 dark:text-slate-400 shrink-0"
                     />
                     <span className="text-[9px] sm:text-[10px] font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
-                      {currentActiveCompany?.simulatorName || "G. Truck"}
+                      {getSimulatorLabel(currentActiveCompany) || "G. Truck"}
                     </span>
                   </div>
                   <ChevronDown
@@ -808,7 +836,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                               : "text-slate-600 dark:text-slate-300",
                           )}
                         >
-                          {c.simulatorName || "Global Truck"}
+                          {getSimulatorLabel(c) || "Global Truck"}
                         </span>
                         {isSelected && (
                           <Check
@@ -1077,7 +1105,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                     <div className="border border-gray-100 dark:border-[#2A2F3A] bg-gray-50/50 dark:bg-[#1f242d] rounded-[8px] flex items-center shadow-sm dark:shadow-none mt-0.5">
                       <div className="flex-1 py-1.5 flex flex-col items-center justify-center text-center">
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
-                          {activeJob.progress}/{activeContract.totalDeliveries}
+                          {activeJobProgress}/{activeContract.totalDeliveries}
                         </span>
                         <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
                           Entregas
@@ -1090,7 +1118,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
                           {Math.max(
                             0,
-                            activeContract.totalDeliveries - activeJob.progress,
+                            activeContract.totalDeliveries - activeJobProgress,
                           )}
                         </span>
                         <span className="text-[7px] sm:text-[8px] text-gray-400 dark:text-gray-500 uppercase tracking-wider font-semibold">
@@ -1104,7 +1132,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                         <span className="text-[14px] sm:text-[16px] font-bold text-slate-800 dark:text-gray-100 leading-none tracking-tight mb-0.5">
                           {activeContract.totalDeliveries > 0
                             ? Math.round(
-                                (activeJob.progress /
+                                (activeJobProgress /
                                   activeContract.totalDeliveries) *
                                   100,
                               )
@@ -1123,7 +1151,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                         percent={
                           activeContract.totalDeliveries > 0
                             ? Math.round(
-                                (activeJob.progress /
+                                (activeJobProgress /
                                   activeContract.totalDeliveries) *
                                   100,
                               )

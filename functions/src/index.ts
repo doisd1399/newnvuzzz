@@ -504,14 +504,28 @@ export const repairApprovedMembership = functions.https.onCall(async (_data, con
   return { success: true, userId: uid, companyId, applicationId };
 });
 
-export { generateNvuNewsBackfill, generateNvuNewsScheduled, generateNvuNewsMonthlyScheduled } from "./nvuNewsBackfill";
+export {
+  generateNvuNewsBackfill,
+  generateNvuNewsScheduled,
+  generateNvuNewsMonthlyScheduled,
+  updateNvuNewsClassificationsOnRankingAggregateWrite,
+  updateNvuNewsClassificationsOnClosedTripWrite,
+  updateNvuNewsClassificationsOnCompanyWrite,
+  updateNvuNewsClassificationsOnSimulatorWrite,
+} from "./nvuNewsBackfill";
 export {
   publishCompanyApprovalNews,
   publishCompanyApprovalNewsOnCompanyCreate,
   publishCompanyApprovalNewsOnOwnerProfileWrite,
+  publishCompanyApprovalNewsOnSimulatorWrite,
   syncCompanyApprovalNews,
 } from "./companyApprovalNews";
-export { ensureRankingAggregates, updateRankingAggregatesOnTripWrite } from "./rankingAggregates";
+export {
+  ensureRankingAggregates,
+  updateRankingAggregatesOnTripWrite,
+  updateRankingAggregatesOnCompanyWrite,
+  updateRankingAggregatesOnSimulatorWrite,
+} from "./rankingAggregates";
 export {
   auditUserStorageImagesOnUpdate,
   auditCompanyStorageImagesOnUpdate,

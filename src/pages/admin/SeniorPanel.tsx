@@ -25,6 +25,7 @@ import {
   Gamepad2,
   Navigation,
   ShieldCheck,
+  RefreshCw,
 
   Filter,
   Search,
@@ -53,7 +54,6 @@ import {
   limit,
   startAfter,
   documentId,
-  getCountFromServer,
 } from "firebase/firestore";
 import { toast } from "sonner";
 import { syncSingleSimulatorMember, removeSimulatorMember } from "../../lib/syncSimulatorMembers";
@@ -66,6 +66,7 @@ import {
 } from "../../lib/registrationImages";
 import { hydrateRegistrationImages } from "../../lib/registrationImageStorage";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
+import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import { createNotification } from "../../services/notificationService";
 import { isAuthTeardownActive, onAuthTeardown } from "../../lib/authLifecycle";
 import { getFilteredTrips, getMonthlyRange } from "../../lib/metricsEngine";
@@ -85,6 +86,19 @@ const SENIOR_PASSWORD_SESSION_KEY = "seniorPanelPasswordUnlocked";
 const SENIOR_PASSWORD_UID_KEY = "seniorPanelPasswordUid";
 const SENIOR_COMPANY_PAGE_SIZE = 20;
 const FIRESTORE_IN_QUERY_CHUNK = 10;
+
+const isActiveCompanyRecord = (company: any): boolean => {
+  const status = String(
+    company?.status || company?.situacao || company?.state || "active",
+  ).trim().toLowerCase();
+  const isDeleted =
+    company?.deleted === true ||
+    company?.softDeleted === true ||
+    company?.excluida === true ||
+    company?.excluido === true ||
+    ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
+  return ["active", "approved", "ativo"].includes(status) && !isDeleted;
+};
 
 const mergeRecordsById = (current: any[], incoming: any[]) => {
   const records = new Map<string, any>();
@@ -388,13 +402,33 @@ export default function SeniorPanel() {
     // to those companies. Additional pages are fetched explicitly by the
     // administrator, avoiding full reads of frotas/companyMembers/users.
     void loadCompanyPage(null, true);
-    void getCountFromServer(collection(db, "frotas"))
-      .then((aggregate) => {
-        if (!stopped && !isAuthTeardownActive()) {
-          setCompaniesTotalCount(aggregate.data().count);
+    const syncApprovalNews = httpsCallable<
+      Record<string, never>,
+      { activeCompanies?: number }
+    >(functions, "syncCompanyApprovalNews");
+    void syncApprovalNews({})
+      .then((response) => {
+        const activeCount = Number(response.data.activeCompanies);
+        if (!Number.isFinite(activeCount)) {
+          throw new Error("A sincronização não retornou a contagem ativa.");
         }
+        if (!stopped && !isAuthTeardownActive()) setCompaniesTotalCount(activeCount);
       })
-      .catch(snapshotError("Falha ao contar empresas"));
+      .catch(async (error) => {
+        snapshotError("Falha ao sincronizar a contagem de empresas")(error);
+        try {
+          const snapshot = await getDocs(collection(db, "frotas"));
+          const activeCount = snapshot.docs.reduce(
+            (count, document) => count + (isActiveCompanyRecord(document.data()) ? 1 : 0),
+            0,
+          );
+          if (!stopped && !isAuthTeardownActive()) {
+            setCompaniesTotalCount(activeCount);
+          }
+        } catch (fallbackError) {
+          snapshotError("Falha ao contar empresas ativas")(fallbackError);
+        }
+      });
 
     // New company requests remain realtime because this is a small,
     // operational queue that administrators need to see while the panel is
@@ -716,6 +750,19 @@ export default function SeniorPanel() {
       );
       const canonicalSimulatorId =
         matchingSimulator?.id || resolveSimulatorId(normalizedRegistration, simulators);
+      const canonicalSimulatorDocument =
+        matchingSimulator ||
+        (Array.isArray(simulators) ? simulators : []).find(
+          (simulator: any) =>
+            String(simulator.id || "") === String(canonicalSimulatorId || ""),
+        );
+      const canonicalSimulatorName = String(
+        canonicalSimulatorDocument?.name ||
+          normalizedRegistration.simulatorName ||
+          normalizedRegistration.simulator ||
+          rawSimulatorValue ||
+          "Simulador não informado",
+      ).trim();
       const companyCreatedAt = new Date().toISOString();
       const registrationEmail = String(normalizedRegistration.email || "")
         .trim()
@@ -730,7 +777,7 @@ export default function SeniorPanel() {
         email: registrationEmail,
         ownerEmail: registrationEmail,
         simulatorId: canonicalSimulatorId,
-        simulatorName: normalizedRegistration.simulatorName || "Euro Truck Simulator 2",
+        simulatorName: canonicalSimulatorName,
         cnpj: normalizedRegistration.cnpj,
         whatsapp: normalizedRegistration.whatsapp || "",
         userId: "",
@@ -788,6 +835,11 @@ export default function SeniorPanel() {
               profilePhotoURL: approvedOwnerPhoto,
             }),
             status: "active",
+            applicationSubmitted: true,
+            currentRecruitmentApplicationId: reg.id,
+            currentRecruitmentStatus: "approved",
+            currentRecruitmentType: "company_registration",
+            currentRecruitmentSimulatorId: canonicalSimulatorId || "",
           },
           { merge: true },
         );
@@ -823,6 +875,11 @@ export default function SeniorPanel() {
               profilePhotoURL: approvedOwnerPhoto,
             }),
             status: "active",
+            applicationSubmitted: true,
+            currentRecruitmentApplicationId: reg.id,
+            currentRecruitmentStatus: "approved",
+            currentRecruitmentType: "company_registration",
+            currentRecruitmentSimulatorId: canonicalSimulatorId || "",
           });
 
           const newMemberRef = doc(collection(db, "companyMembers"));
@@ -850,6 +907,11 @@ export default function SeniorPanel() {
             // this explicit so the provisioning flow can create/send access
             // credentials instead of silently leaving an unreachable user.
             authProvisioningRequired: true,
+            applicationSubmitted: true,
+            currentRecruitmentApplicationId: reg.id,
+            currentRecruitmentStatus: "approved",
+            currentRecruitmentType: "company_registration",
+            currentRecruitmentSimulatorId: canonicalSimulatorId || "",
             createdAt: new Date().toISOString(),
           });
 
@@ -879,6 +941,11 @@ export default function SeniorPanel() {
           roles: ["admin", "driver"],
           profilePhotoURL: approvedOwnerPhoto || "",
           authProvisioningRequired: true,
+          applicationSubmitted: true,
+          currentRecruitmentApplicationId: reg.id,
+          currentRecruitmentStatus: "approved",
+          currentRecruitmentType: "company_registration",
+          currentRecruitmentSimulatorId: canonicalSimulatorId || "",
           createdAt: new Date().toISOString(),
         });
 
@@ -905,6 +972,7 @@ export default function SeniorPanel() {
         status: "approved",
         approvedCompanyId: newCompanyRef.id,
         approvedUserId: finalUserId,
+        userId: finalUserId,
         approvedAt: serverTimestamp(),
         approvedBy: actorId,
         companyLogoURL: approvedCompanyLogo || "",
@@ -1059,27 +1127,88 @@ export default function SeniorPanel() {
       setLoadingAction(true);
       const batch = writeBatch(db);
       const regRef = doc(db, "recruitment_applications", id);
-      
-      batch.update(regRef, { 
-        status: "rejected", 
-        rejectionReason: rejectionReason 
-      });
-      
       const reg = registrations.find((registration) => registration.id === id);
+
+      const registrationEmail = String(reg?.email || "").trim().toLowerCase();
+      const submittedUserId = String(reg?.userId || "").trim();
+      let rejectedUserId = "";
+
+      // Use the submitted UID only when it still belongs to the same e-mail.
+      // This prevents a stale UID from a shared device from receiving another
+      // company's rejection state.
+      if (submittedUserId) {
+        const submittedUserSnapshot = await getDoc(
+          doc(db, "users", submittedUserId),
+        );
+        const submittedUserEmail = String(
+          submittedUserSnapshot.data()?.email || "",
+        )
+          .trim()
+          .toLowerCase();
+
+        if (
+          submittedUserSnapshot.exists() &&
+          registrationEmail &&
+          submittedUserEmail === registrationEmail
+        ) {
+          rejectedUserId = submittedUserId;
+        }
+      }
+
+      // Company registration can be sent before authentication. If the owner
+      // has already logged in, bind the result to the account by e-mail so the
+      // next login reflects the rejection immediately.
+      if (!rejectedUserId && registrationEmail) {
+        const userSnapshot = await getDocs(
+          query(
+            collection(db, "users"),
+            where("email", "==", registrationEmail),
+            limit(1),
+          ),
+        );
+        if (!userSnapshot.empty) {
+          rejectedUserId = userSnapshot.docs[0].id;
+        }
+      }
+
+      batch.update(regRef, {
+        status: "rejected",
+        rejectionReason,
+        ...(rejectedUserId && { userId: rejectedUserId }),
+      });
+
+      if (rejectedUserId) {
+        batch.set(
+          doc(db, "users", rejectedUserId),
+          {
+            applicationSubmitted: true,
+            currentRecruitmentApplicationId: id,
+            currentRecruitmentStatus: "rejected",
+            currentRecruitmentType: "company_registration",
+            currentRecruitmentSimulatorId: String(reg?.simulatorId || ""),
+          },
+          { merge: true },
+        );
+      }
 
       await batch.commit();
       setRegistrations((current) =>
         current.map((registration) =>
           registration.id === id
-            ? { ...registration, status: "rejected", rejectionReason }
+            ? {
+                ...registration,
+                status: "rejected",
+                rejectionReason,
+                ...(rejectedUserId && { userId: rejectedUserId }),
+              }
             : registration,
         ),
       );
 
-      if (reg?.userId) {
+      if (rejectedUserId) {
         try {
           await createNotification({
-            userId: reg.userId,
+            userId: rejectedUserId,
             targetProfile: "corporate",
             type: "COMPANY_REJECTED",
             title: "Solicitação Recusada",
@@ -1265,18 +1394,14 @@ export default function SeniorPanel() {
 
   const pendingRequests = registrations.filter((r) => r.status === "pending");
   const rejectedRequests = registrations.filter((r) => r.status === "rejected");
-  const activeCompanies = companyStats.filter((company) => {
-    const status = String(company.status || company.situacao || company.state || "active").trim().toLowerCase();
-    const isDeleted = 
-      company.deleted === true || 
-      company.softDeleted === true || 
-      company.excluida === true || 
-      company.excluido === true ||
-      ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
-    
-    return (status === "active" || status === "approved" || status === "ativo") && !isDeleted;
-  });
+  const activeCompanies = companyStats.filter(isActiveCompanyRecord);
   const activeCompaniesCount = companiesTotalCount ?? activeCompanies.length;
+  const getSimulatorDisplayLabel = (company: any) =>
+    resolveSimulatorDisplayLabel(
+      company,
+      simulators as any[],
+      allCompanies as any[],
+    ) || company?.simulatorName || company?.simulatorId || "Não informado";
 
   const activeSimulatorOptions: Array<{ id: string; name: string }> = Array.from(
     new Map<string, { id: string; name: string }>([
@@ -1314,9 +1439,11 @@ export default function SeniorPanel() {
       !queryValue ||
       [company.companyName, company.ownerName, company.ownerEmail, company.simulatorName]
         .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(queryValue));
-    const companySimulator = String(
-      company.simulatorId || company.simulatorName || "",
-    ).trim();
+    const companySimulator = resolveSimulatorId(
+      company,
+      simulators as any[],
+      allCompanies as any[],
+    );
     const matchesSimulator =
       selectedSimulator === "all" || companySimulator === selectedSimulator;
     return matchesSearch && matchesSimulator;
@@ -1520,7 +1647,7 @@ export default function SeniorPanel() {
                   </h2>
                   <div className="flex items-center gap-4 mt-2 text-sm text-gray-500 dark:text-gray-400">
                     <span className="flex items-center gap-1.5">
-                      <Gamepad2 size={16} /> {selectedCompany.simulatorName}
+                      <Gamepad2 size={16} /> {getSimulatorDisplayLabel(selectedCompany)}
                     </span>
                     <span className="flex items-center gap-1.5">
                       <Users size={16} /> {selectedCompany.ownerName}
@@ -1806,7 +1933,7 @@ export default function SeniorPanel() {
                     <div className="min-w-0 flex-1">
                       <h3 className="font-bold text-[14px] sm:text-[19px] text-slate-950 dark:text-white leading-[1.15] truncate">{company.companyName}</h3>
                       <div className="mt-1.5 sm:mt-2 space-y-1 sm:space-y-2 text-[10.5px] sm:text-[13px] leading-tight text-slate-500 dark:text-slate-400">
-                        <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Gamepad2 size={13} className="shrink-0" /><span className="truncate">{company.simulatorName || company.simulatorId || "Não informado"}</span></p>
+                        <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Gamepad2 size={13} className="shrink-0" /><span className="truncate">{getSimulatorDisplayLabel(company)}</span></p>
                         <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><Users size={13} className="shrink-0" /><span className="truncate">{company.ownerName || "Proprietário não informado"}</span></p>
                         <p className="flex items-center gap-1.5 sm:gap-2 min-w-0"><FileText size={13} className="shrink-0" /><span className="truncate">{company.ownerEmail || "E-mail não informado"}</span></p>
     </div>
@@ -2311,6 +2438,7 @@ export default function SeniorPanel() {
         </div>,
         document.body
       )}
+
     </div>
   );
 }

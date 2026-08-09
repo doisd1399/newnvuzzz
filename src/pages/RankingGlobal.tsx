@@ -10,7 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { useOperationalStore, useRankingFilterStore, useSessionStore } from "../context/AppContext";
 import { useCompanyStore } from "../context/CompanyContext";
 import { useTripsRealtime } from "../hooks/useTripsRealtime";
-import { groupMetricsByCompany, getStartOfDay, getEndOfDay, getWeeklyRange, getMonthlyRange, getCustomRange, filterTripsBySimulator } from "../lib/metricsEngine";
+import { groupMetricsByCompany, filterTripsBySimulator } from "../lib/metricsEngine";
 import { preloadImages } from "../lib/imageCache";
 import { StableImage } from "../components/common/StableImage";
 import { cn } from "../lib/utils";
@@ -33,8 +33,16 @@ import {
   buildCompanyRankingFromAggregate,
   buildDriverRankingFromAggregate,
   buildRankingAggregatePeriodKey,
+  isRankingEligibleCompany,
   type RankingAggregatePeriodType,
 } from "../lib/rankingAggregates";
+import {
+  getRankingUtcCustomRange,
+  getRankingUtcEndOfDay,
+  getRankingUtcMonthlyRange,
+  getRankingUtcStartOfDay,
+  getRankingUtcWeeklyRange,
+} from "../lib/rankingPeriods";
 import { getRuntimePerformanceProfile } from "../lib/runtimePerformance";
 
 const freezeRankingSnapshot = (items: any[]) =>
@@ -167,6 +175,7 @@ export default function RankingGlobal() {
     companyCatalogLoaded,
     companyCatalogAttempted,
     loadCompanyCatalog,
+    allCompanyMembers,
   } = useCompanyStore();
   const {
     simulators,
@@ -194,13 +203,18 @@ export default function RankingGlobal() {
     return Array.from(map.values());
   }, [catalogCompanies, profileCompanies]);
 
+  const rankingCompanyPool = useMemo(
+    () => profileCompanyPool.filter((company) => isRankingEligibleCompany(company)),
+    [profileCompanyPool],
+  );
+
   const simulatorOptions = useMemo(
     () =>
       buildSimulatorSelectorOptions(
         simulators as Record<string, unknown>[],
-        profileCompanyPool,
+        rankingCompanyPool,
       ),
-    [profileCompanyPool, simulators],
+    [rankingCompanyPool, simulators],
   );
 
   const activeCompany = useMemo(
@@ -217,7 +231,7 @@ export default function RankingGlobal() {
     const companySimulator = resolveCompanySimulatorFilterValue(
       activeCompany,
       simulators as Record<string, unknown>[],
-      profileCompanyPool,
+      rankingCompanyPool,
     );
 
     return Array.from(
@@ -240,7 +254,7 @@ export default function RankingGlobal() {
           .filter(Boolean),
       ),
     );
-  }, [activeCompany, currentUser, profileCompanyPool, simulators]);
+  }, [activeCompany, currentUser, rankingCompanyPool, simulators]);
 
   const preferredProfileSimulator = useMemo(() => {
     for (const candidate of profileSimulatorCandidates) {
@@ -274,28 +288,29 @@ export default function RankingGlobal() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
 
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const referenceDate = useLiveCalendarReference();
+  const referenceDate = useLiveCalendarReference("utc");
 
   const rankingRange = useMemo(() => {
-    if (periodPreset === "semana") return getWeeklyRange(referenceDate);
-    if (periodPreset === "mes") return getMonthlyRange(referenceDate);
+    if (periodPreset === "semana") return getRankingUtcWeeklyRange(referenceDate);
+    if (periodPreset === "mes") return getRankingUtcMonthlyRange(referenceDate);
 
     if (startDateStr && endDateStr) {
-      return getCustomRange(startDateStr, endDateStr);
+      return getRankingUtcCustomRange(startDateStr, endDateStr);
     }
 
+    const fallback = getRankingUtcMonthlyRange(referenceDate);
     if (startDateStr || endDateStr) {
       return {
         start: startDateStr
-          ? getStartOfDay(startDateStr)
-          : getMonthlyRange(referenceDate).start,
+          ? getRankingUtcStartOfDay(startDateStr)
+          : fallback.start,
         end: endDateStr
-          ? getEndOfDay(endDateStr)
-          : getMonthlyRange(referenceDate).end,
+          ? getRankingUtcEndOfDay(endDateStr)
+          : fallback.end,
       };
     }
 
-    return getMonthlyRange(referenceDate);
+    return fallback;
   }, [endDateStr, periodPreset, referenceDate, startDateStr]);
 
   const aggregatePeriodType = useMemo<RankingAggregatePeriodType | undefined>(
@@ -312,12 +327,20 @@ export default function RankingGlobal() {
         : "",
     [aggregatePeriodType, referenceDate],
   );
+  // Open periods are mutable. Every operational surface reads the live
+  // historico_viagens dataset, so using a precomputed document here can show
+  // stale totals after a deletion, moderation action or missed backend
+  // trigger. Aggregates remain useful for closed periods, whose result is
+  // immutable; the current week/month always uses the same bounded live
+  // source as profiles, dashboards and Histórico de Viagens.
+  const isOpenRankingPeriod = rankingRange.end.getTime() >= Date.now();
   const aggregateEligible = Boolean(
     aggregatePeriodType &&
       aggregatePeriodKey &&
       simulator &&
       simulator !== ALL_SIMULATORS_VALUE &&
-      rankingType !== "interno",
+      rankingType !== "interno" &&
+      !isOpenRankingPeriod,
   );
   const rankingAggregateState = useRankingAggregate({
     simulatorId: simulator,
@@ -333,6 +356,7 @@ export default function RankingGlobal() {
     aggregatePeriodType && rankingType !== "interno",
   );
   const useTripFallback =
+    isOpenRankingPeriod ||
     !standardCollectiveRanking ||
     simulator === ALL_SIMULATORS_VALUE ||
     rankingAggregateState.status === "unavailable";
@@ -382,16 +406,35 @@ export default function RankingGlobal() {
       const id = String(company?.id || "").trim();
       if (id) byId.set(id, company);
     });
-    return Array.from(byId.values());
+    return Array.from(byId.values()).filter((company) =>
+      isRankingEligibleCompany(company),
+    );
   }, [aggregateCompanies, catalogCompanies, profileCompanies]);
 
+  const companyCatalogRetryRef = useRef(0);
   useEffect(() => {
-    if (
-      !effectiveTripFallback ||
-      companyCatalogLoaded ||
-      companyCatalogAttempted
-    ) return;
-    void loadCompanyCatalog();
+    if (!effectiveTripFallback || companyCatalogLoaded) {
+      companyCatalogRetryRef.current = 0;
+      return;
+    }
+
+    let cancelled = false;
+    const delay = companyCatalogAttempted
+      ? Math.min(12_000, 1_500 * 2 ** companyCatalogRetryRef.current)
+      : 0;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      companyCatalogRetryRef.current = Math.min(
+        companyCatalogRetryRef.current + 1,
+        3,
+      );
+      void loadCompanyCatalog(companyCatalogAttempted).catch(() => undefined);
+    }, delay);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [
     companyCatalogAttempted,
     companyCatalogLoaded,
@@ -408,6 +451,7 @@ export default function RankingGlobal() {
         rankingType === "interno" ? selectedCompanyId || activeCompanyId || "" : "",
         rankingRange.start.getTime(),
         rankingRange.end.getTime(),
+        isOpenRankingPeriod ? "live" : "closed",
       ].join("|"),
     [
       activeCompanyId,
@@ -417,6 +461,7 @@ export default function RankingGlobal() {
       rankingType,
       selectedCompanyId,
       simulator,
+      isOpenRankingPeriod,
     ],
   );
   const [visibleRankingSnapshot, setVisibleRankingSnapshot] = useState<{
@@ -512,6 +557,7 @@ export default function RankingGlobal() {
     trips,
     loading: tripsLoading,
     refreshing: tripsRefreshing,
+    error: tripsError,
   } = useTripsRealtime({
     startDate: rankingRange.start,
     endDate: rankingRange.end,
@@ -556,13 +602,42 @@ export default function RankingGlobal() {
   const preparedRankingTrips = useMemo(() => {
     if (deferredRankingInput?.consolidatedAggregate) return [];
     if (!deferredRankingInput?.simulator) return [];
+    const eligibleCompanyIds = new Set(
+      deferredRankingInput.companies
+        .map((company: any) => String(company?.id || "").trim())
+        .filter(Boolean),
+    );
     return filterTripsBySimulator(
       deferredRankingInput.trips,
       deferredRankingInput.simulator,
       deferredRankingInput.companies,
       deferredRankingInput.simulators,
-    );
+    ).filter((trip: any) => {
+      const companyId = String(
+        trip?.empresaId || trip?.companyId || trip?.company_id || "",
+      ).trim();
+      return Boolean(companyId) && eligibleCompanyIds.has(companyId);
+    });
   }, [deferredRankingInput]);
+
+  const activeInternalDriverIds = useMemo(() => {
+    if (rankingType !== "interno" || !selectedCompanyId) return [] as string[];
+    return Array.from(
+      new Set(
+        (allCompanyMembers || [])
+          .filter((member: any) => {
+            if (String(member?.companyId || "") !== selectedCompanyId) return false;
+            if (String(member?.status || "").toLowerCase() !== "active") return false;
+            const roles = Array.isArray(member?.roles)
+              ? member.roles.map((role: unknown) => String(role).toLowerCase())
+              : [];
+            return roles.includes("driver") || String(member?.role || "").toLowerCase() === "driver";
+          })
+          .map((member: any) => String(member?.userId || "").trim())
+          .filter(Boolean),
+      ),
+    ).sort();
+  }, [allCompanyMembers, rankingType, selectedCompanyId]);
 
   const rankingParticipantIds = useMemo(() => {
     if (!deferredRankingInput?.simulator) return [] as string[];
@@ -577,7 +652,11 @@ export default function RankingGlobal() {
       ).sort();
     }
 
-    const ids = new Set<string>();
+    const ids = new Set<string>(
+      deferredRankingInput.rankingType === "interno"
+        ? activeInternalDriverIds
+        : [],
+    );
     preparedRankingTrips.forEach((trip: any) => {
       if (!trip.isValid) return;
       const tripCompanyId = trip.empresaId || trip.companyId || trip.company_id;
@@ -592,12 +671,13 @@ export default function RankingGlobal() {
       if (driverId) ids.add(String(driverId));
     });
     return Array.from(ids).sort();
-  }, [deferredRankingInput, preparedRankingTrips]);
+  }, [activeInternalDriverIds, deferredRankingInput, preparedRankingTrips]);
 
   const {
     users,
     loading: usersLoading,
     refreshing: usersRefreshing,
+    error: usersError,
   } = useRankingUsersRealtime(
     rankingParticipantIds,
     Boolean(
@@ -627,20 +707,15 @@ export default function RankingGlobal() {
   // Initialize with current month for fallback
   useEffect(() => {
     if (!startDateStr && !endDateStr) {
-      const firstDay = new Date(
-        referenceDate.getFullYear(),
-        referenceDate.getMonth(),
-        1,
+      const { start: firstDay, end: lastDay } =
+        getRankingUtcMonthlyRange(referenceDate);
+      const pad = (n: number) => n.toString().padStart(2, "0");
+      setStartDateStr(
+        `${firstDay.getUTCFullYear()}-${pad(firstDay.getUTCMonth() + 1)}-${pad(firstDay.getUTCDate())}`,
       );
-      const lastDay = new Date(
-        referenceDate.getFullYear(),
-        referenceDate.getMonth() + 1,
-        0,
+      setEndDateStr(
+        `${lastDay.getUTCFullYear()}-${pad(lastDay.getUTCMonth() + 1)}-${pad(lastDay.getUTCDate())}`,
       );
-      
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      setStartDateStr(`${firstDay.getFullYear()}-${pad(firstDay.getMonth() + 1)}-${pad(firstDay.getDate())}`);
-      setEndDateStr(`${lastDay.getFullYear()}-${pad(lastDay.getMonth() + 1)}-${pad(lastDay.getDate())}`);
     }
   }, [
     endDateStr,
@@ -753,6 +828,7 @@ export default function RankingGlobal() {
         return buildCompanyRankingFromAggregate(
           deferredRankingInput.consolidatedAggregate,
           deferredRankingInput.companies,
+          deferredRankingInput.simulators,
         );
       }
       if (deferredRankingInput.rankingType === "global") {
@@ -760,6 +836,8 @@ export default function RankingGlobal() {
           deferredRankingInput.consolidatedAggregate,
           users,
           deferredRankingInput.companies,
+          deferredRankingInput.simulators,
+          allCompanyMembers as Record<string, unknown>[],
         );
       }
     }
@@ -775,7 +853,7 @@ export default function RankingGlobal() {
       );
     }
 
-    return buildDriverRankingPageData({
+    const driverRanking = buildDriverRankingPageData({
       trips: preparedRankingTrips,
       startDate: deferredRankingInput.startDate,
       endDate: deferredRankingInput.endDate,
@@ -787,13 +865,65 @@ export default function RankingGlobal() {
         deferredRankingInput.rankingType === "interno"
           ? deferredRankingInput.selectedCompanyId
           : undefined,
-      // `preparedRankingTrips` already applies this exact simulator identity.
-      simulatorId: undefined,
+      // Reapply the canonical identifier inside the shared engine so active
+      // membership/company attribution follows the same simulator boundary.
+      simulatorId: deferredRankingInput.simulator,
       companies: deferredRankingInput.companies,
       simulators: deferredRankingInput.simulators,
       users,
+      companyMembers: allCompanyMembers as Record<string, unknown>[],
     });
-  }, [deferredRankingInput, preparedRankingTrips, users]);
+
+    if (deferredRankingInput.rankingType !== "interno") return driverRanking;
+
+    const usersById = new Map(
+      users.map((user: any) => [String(user?.id || ""), user] as const),
+    );
+    const existingIds = new Set(driverRanking.map((item) => item.id));
+    const selectedCompany = deferredRankingInput.companies.find(
+      (company: any) => String(company?.id || "") === deferredRankingInput.selectedCompanyId,
+    );
+    const companyName = String(
+      selectedCompany?.companyName || selectedCompany?.name || "",
+    );
+    const zeroActivityDrivers = activeInternalDriverIds
+      .filter((id) => !existingIds.has(id))
+      .map((id) => {
+        const user = usersById.get(id) as any;
+        const fullName = String(user?.name || "Motorista Desconhecido").trim();
+        return {
+          id,
+          name: fullName.split(/\s+/).slice(0, 2).join(" "),
+          logo: String(
+            user?.profilePhotoURL ||
+              user?.photoURL ||
+              user?.photoUrl ||
+              user?.avatar ||
+              "",
+          ),
+          trips: 0,
+          val: 0,
+          companyId: deferredRankingInput.selectedCompanyId,
+          companyName,
+        };
+      });
+
+    return [...driverRanking, ...zeroActivityDrivers].sort((a, b) => {
+      if (b.val !== a.val) return b.val - a.val;
+      if (b.trips !== a.trips) return b.trips - a.trips;
+      const nameOrder = a.name.localeCompare(b.name, "pt-BR", {
+        sensitivity: "base",
+        numeric: true,
+      });
+      return nameOrder || a.id.localeCompare(b.id);
+    });
+  }, [
+    activeInternalDriverIds,
+    allCompanyMembers,
+    deferredRankingInput,
+    preparedRankingTrips,
+    users,
+  ]);
 
   const internalSelectionReady =
     rankingType !== "interno" ||
@@ -939,6 +1069,12 @@ export default function RankingGlobal() {
     };
   }, [rankingData, rankingImageConfig, rankingReady]);
 
+  const rankingLoadError =
+    aggregateCompaniesError ||
+    rankingAggregateState.error ||
+    tripsError ||
+    usersError;
+
   const formatCurrency = (val: number) => BRL_FORMATTER.format(val);
 
   const getInitials = (name: string) => {
@@ -1053,6 +1189,12 @@ export default function RankingGlobal() {
             Período: {periodPreset === "semana" ? "Semana Atual" : periodPreset === "mes" ? "Mês Atual" : (startDateStr || endDateStr) ? `${startDateStr ? formatDateBR(startDateStr) : "Início"} até ${endDateStr ? formatDateBR(endDateStr) : "Hoje"}` : "Sem filtro de data"}
           </p>
         </div>
+
+        {rankingLoadError && (
+          <div className="rounded-xl border border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
+            Não foi possível atualizar todos os dados agora. O último resultado válido permanece visível e uma nova tentativa será feita automaticamente.
+          </div>
+        )}
 
         {/* Tipo de Ranking */}
         <div className="space-y-1.5">

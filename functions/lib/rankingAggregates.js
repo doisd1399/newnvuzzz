@@ -1,18 +1,19 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ensureRankingAggregates = exports.updateRankingAggregatesOnTripWrite = void 0;
+exports.ensureRankingAggregates = exports.updateRankingAggregatesOnSimulatorWrite = exports.updateRankingAggregatesOnCompanyWrite = exports.updateRankingAggregatesOnTripWrite = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const db = admin.firestore();
-const TIME_ZONE = "America/Sao_Paulo";
 const AGGREGATES_COLLECTION = "ranking_aggregates";
 const CONTROLS_COLLECTION = "ranking_aggregate_controls";
-const SCHEMA_VERSION = 1;
+// v4 keeps closed-period aggregates isolated from documents created before
+// live/open periods became authoritative across every app surface.
+const SCHEMA_VERSION = 4;
 const PAGE_SIZE = 500;
 const WRITE_BATCH_SIZE = 350;
 const LOCK_TTL_MS = 10 * 60 * 1000;
-const RECONCILE_AFTER_MS = 24 * 60 * 60 * 1000;
-const RANKING_CHECKPOINT_VERSION = 1;
+const RECONCILE_AFTER_MS = 60 * 60 * 1000;
+const RANKING_CHECKPOINT_VERSION = 4;
 const FAILED_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const DATE_FIELDS = [
     "completedAt",
@@ -21,16 +22,6 @@ const DATE_FIELDS = [
     "dataLancamento",
     "createdAt",
 ];
-const simulatorFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-});
 function firstNonEmpty(...values) {
     for (const value of values) {
         if (value === null || value === undefined)
@@ -53,7 +44,6 @@ function canonicalSimulatorAliasKey(value) {
     const normalized = normalizeText(value);
     const aliases = {
         gto: "gto",
-        grandtrucksimulator: "gto",
         globaltruckonline: "gto",
         wtds: "wtds",
         worldtruckdrivingsimulator: "wtds",
@@ -70,6 +60,24 @@ function canonicalSimulatorAliasKey(value) {
     };
     return aliases[normalized] || normalized;
 }
+function isUnsupportedSimulatorAlias(value) {
+    return normalizeText(value) === "grandtrucksimulator";
+}
+function hasUnsupportedSimulatorIdentity(data) {
+    if (!data)
+        return false;
+    return [
+        data.simulatorName,
+        data.simuladorNome,
+        data.simulator,
+        data.simulador,
+        data.name,
+        data.nome,
+        data.label,
+        data.title,
+        data.displayName,
+    ].some(isUnsupportedSimulatorAlias);
+}
 function safeDocumentId(value) {
     return value.replace(/[^a-zA-Z0-9%_.~-]/g, "_").slice(0, 1400);
 }
@@ -82,35 +90,6 @@ function pad(value) {
 function formatUtcDateKey(date) {
     return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
-function readZonedParts(date) {
-    const values = {};
-    simulatorFormatter.formatToParts(date).forEach((part) => {
-        if (part.type !== "literal")
-            values[part.type] = part.value;
-    });
-    return {
-        year: Number(values.year),
-        month: Number(values.month),
-        day: Number(values.day),
-        hour: Number(values.hour),
-        minute: Number(values.minute),
-        second: Number(values.second),
-    };
-}
-/** Converts a wall-clock time in America/Sao_Paulo to a UTC Date. */
-function zonedDateTimeToUtc(year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) {
-    let utcMs = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
-    const desiredAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-        const parts = readZonedParts(new Date(utcMs));
-        const actualAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, millisecond);
-        const adjustment = desiredAsUtc - actualAsUtc;
-        utcMs += adjustment;
-        if (adjustment === 0)
-            break;
-    }
-    return new Date(utcMs);
-}
 function periodFromKey(periodType, periodKey) {
     if (periodType === "mes") {
         const match = /^mes_(\d{4})-(\d{2})$/.exec(periodKey);
@@ -120,10 +99,8 @@ function periodFromKey(periodType, periodKey) {
         const month = Number(match[2]);
         if (month < 1 || month > 12)
             return null;
-        const start = zonedDateTimeToUtc(year, month, 1);
-        const nextMonth = month === 12
-            ? zonedDateTimeToUtc(year + 1, 1, 1)
-            : zonedDateTimeToUtc(year, month + 1, 1);
+        const start = new Date(Date.UTC(year, month - 1, 1));
+        const nextMonth = new Date(Date.UTC(year, month, 1));
         return {
             type: periodType,
             key: periodKey,
@@ -137,30 +114,25 @@ function periodFromKey(periodType, periodKey) {
     const year = Number(match[1]);
     const month = Number(match[2]);
     const day = Number(match[3]);
-    const calendarDate = new Date(Date.UTC(year, month - 1, day));
-    if (calendarDate.getUTCFullYear() !== year ||
-        calendarDate.getUTCMonth() + 1 !== month ||
-        calendarDate.getUTCDate() !== day ||
-        calendarDate.getUTCDay() !== 0) {
+    const start = new Date(Date.UTC(year, month - 1, day));
+    if (start.getUTCFullYear() !== year ||
+        start.getUTCMonth() + 1 !== month ||
+        start.getUTCDate() !== day ||
+        start.getUTCDay() !== 0) {
         return null;
     }
-    const start = zonedDateTimeToUtc(year, month, day);
-    const nextSundayCalendar = new Date(calendarDate);
-    nextSundayCalendar.setUTCDate(nextSundayCalendar.getUTCDate() + 7);
-    const nextStart = zonedDateTimeToUtc(nextSundayCalendar.getUTCFullYear(), nextSundayCalendar.getUTCMonth() + 1, nextSundayCalendar.getUTCDate());
     return {
         type: periodType,
         key: periodKey,
         start,
-        end: new Date(nextStart.getTime() - 1),
+        end: new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000 - 1),
     };
 }
 function periodsForDate(date) {
-    const parts = readZonedParts(date);
-    const monthKey = `mes_${parts.year}-${pad(parts.month)}`;
-    const calendarDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-    calendarDate.setUTCDate(calendarDate.getUTCDate() - calendarDate.getUTCDay());
-    const weekKey = `semana_${formatUtcDateKey(calendarDate)}`;
+    const monthKey = `mes_${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}`;
+    const weekStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    weekStart.setUTCDate(weekStart.getUTCDate() - weekStart.getUTCDay());
+    const weekKey = `semana_${formatUtcDateKey(weekStart)}`;
     const month = periodFromKey("mes", monthKey);
     const week = periodFromKey("semana", weekKey);
     return [week, month].filter((period) => Boolean(period));
@@ -170,8 +142,9 @@ function parseDate(value) {
         return null;
     if (value instanceof Date)
         return Number.isNaN(value.getTime()) ? null : value;
-    if (value instanceof admin.firestore.Timestamp)
+    if (value instanceof admin.firestore.Timestamp) {
         return value.toDate();
+    }
     const timestampLike = value;
     if (typeof (timestampLike === null || timestampLike === void 0 ? void 0 : timestampLike.toDate) === "function") {
         const date = timestampLike.toDate();
@@ -261,9 +234,25 @@ async function loadSimulatorCatalog() {
         return simulatorCatalogCache;
     }
     const snapshot = await db.collection("simulators").get();
-    const descriptors = snapshot.docs.map((document) => {
+    const descriptors = [];
+    snapshot.docs.forEach((document) => {
         const data = document.data();
         const id = document.id;
+        const semanticAliases = [
+            data.name,
+            data.nome,
+            data.label,
+            data.title,
+            data.displayName,
+            data.code,
+            data.slug,
+            data.key,
+        ];
+        // "Grand Truck Simulator" is not an official NVU simulator. Reject an
+        // accidental catalog document before its opaque Firestore ID can make it
+        // look valid or merge it into GTO. GTO means only Global Truck Online.
+        if (semanticAliases.some(isUnsupportedSimulatorAlias))
+            return;
         const name = firstNonEmpty(data.name, data.nome, data.label, data.title, id);
         const aliases = Array.from(new Set([
             id,
@@ -273,8 +262,8 @@ async function loadSimulatorCatalog() {
             firstNonEmpty(data.key),
             firstNonEmpty(data.simulatorId),
             firstNonEmpty(data.simuladorId),
-        ].filter(Boolean)));
-        return { id, name, aliases };
+        ].filter((value) => Boolean(value) && !isUnsupportedSimulatorAlias(value))));
+        descriptors.push({ id, name, aliases });
     });
     const byAlias = new Map();
     const ids = new Set();
@@ -296,11 +285,19 @@ async function loadSimulatorCatalog() {
     return simulatorCatalogCache;
 }
 function resolveSimulatorFromRecords(trip, company, catalog) {
+    if (hasUnsupportedSimulatorIdentity(company))
+        return "";
+    if (!company && hasUnsupportedSimulatorIdentity(trip))
+        return "";
+    // The current company catalog is authoritative. Trip snapshots remain a
+    // fallback only for legacy records whose company document has no simulator.
     const candidates = [
-        ...simulatorCandidates(trip),
         ...(company ? simulatorCandidates(company) : []),
+        ...simulatorCandidates(trip),
     ];
     for (const candidate of candidates) {
+        if (isUnsupportedSimulatorAlias(candidate))
+            continue;
         if (catalog.ids.has(candidate))
             return candidate;
         const exact = catalog.byAlias.get(candidate);
@@ -322,14 +319,14 @@ async function contributionFromData(data) {
     const driverId = driverIdOf(data);
     if (!date || !companyId || !driverId)
         return null;
-    const catalog = await loadSimulatorCatalog();
-    let company;
-    let simulatorId = resolveSimulatorFromRecords(data, undefined, catalog);
-    if (!simulatorId) {
-        const companySnapshot = await db.collection("frotas").doc(companyId).get();
-        company = companySnapshot.exists ? companySnapshot.data() : undefined;
-        simulatorId = resolveSimulatorFromRecords(data, company, catalog);
-    }
+    const [catalog, companySnapshot] = await Promise.all([
+        loadSimulatorCatalog(),
+        db.collection("frotas").doc(companyId).get(),
+    ]);
+    const company = companySnapshot.exists ? companySnapshot.data() : undefined;
+    if (!isEligibleCompany(company))
+        return null;
+    const simulatorId = resolveSimulatorFromRecords(data, company, catalog);
     if (!simulatorId)
         return null;
     return {
@@ -522,6 +519,69 @@ exports.updateRankingAggregatesOnTripWrite = functions.firestore
         addContributionDelta(deltas, after, 1);
     await applyAggregateDeltas(deltas);
 });
+/**
+ * Company status and simulator changes alter the eligible ranking universe.
+ * Rebuild only the current UTC week/month, and only when that competitive
+ * identity changed. Logo/name edits remain client-resolved and cost no scan.
+ */
+exports.updateRankingAggregatesOnCompanyWrite = functions
+    .runWith({ timeoutSeconds: 540, memory: "1GB" })
+    .firestore.document("frotas/{companyId}")
+    .onWrite(async (change) => {
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.exists ? change.after.data() : undefined;
+    const beforeEligible = isEligibleCompany(before);
+    const afterEligible = isEligibleCompany(after);
+    const catalog = await loadSimulatorCatalog();
+    const beforeSimulator = beforeEligible
+        ? resolveSimulatorFromRecords({}, before, catalog)
+        : "";
+    const afterSimulator = afterEligible
+        ? resolveSimulatorFromRecords({}, after, catalog)
+        : "";
+    if (beforeEligible === afterEligible &&
+        beforeSimulator === afterSimulator) {
+        return;
+    }
+    for (const period of periodsForDate(new Date())) {
+        await rebuildPeriod(period);
+    }
+});
+/**
+ * Simulator names and aliases are part of the canonical competitive key.
+ * Catalog edits are rare, so rebuilding only the current UTC week/month is a
+ * bounded way to prevent an old alias map from keeping companies in the wrong
+ * simulator after an administrative correction.
+ */
+exports.updateRankingAggregatesOnSimulatorWrite = functions
+    .runWith({ timeoutSeconds: 540, memory: "1GB" })
+    .firestore.document("simulators/{simulatorId}")
+    .onWrite(async (change) => {
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.exists ? change.after.data() : undefined;
+    const signature = (data) => [
+        data === null || data === void 0 ? void 0 : data.name,
+        data === null || data === void 0 ? void 0 : data.nome,
+        data === null || data === void 0 ? void 0 : data.label,
+        data === null || data === void 0 ? void 0 : data.title,
+        data === null || data === void 0 ? void 0 : data.displayName,
+        data === null || data === void 0 ? void 0 : data.code,
+        data === null || data === void 0 ? void 0 : data.slug,
+        data === null || data === void 0 ? void 0 : data.key,
+        data === null || data === void 0 ? void 0 : data.simulatorId,
+        data === null || data === void 0 ? void 0 : data.simuladorId,
+        data === null || data === void 0 ? void 0 : data.active,
+        data === null || data === void 0 ? void 0 : data.status,
+    ]
+        .map((value) => String(value !== null && value !== void 0 ? value : "").trim())
+        .join("|");
+    if (signature(before) === signature(after))
+        return;
+    simulatorCatalogCache = null;
+    for (const period of periodsForDate(new Date())) {
+        await rebuildPeriod(period);
+    }
+});
 async function fetchTripsByDateField(field, period) {
     const documents = [];
     let cursor = null;
@@ -561,12 +621,15 @@ async function fetchPeriodTrips(period) {
 function isEligibleCompany(data) {
     if (!data)
         return false;
-    const status = normalizeText(data.status || data.situacao || data.state);
-    return !(data.deleted === true ||
+    if (hasUnsupportedSimulatorIdentity(data))
+        return false;
+    const status = normalizeText(data.status || data.situacao || data.state || "active");
+    const deleted = data.deleted === true ||
         data.softDeleted === true ||
         data.excluida === true ||
         data.excluido === true ||
-        ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status));
+        ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
+    return !deleted && ["active", "approved", "ativo"].includes(status);
 }
 function emptyAggregate() {
     return { companies: {}, drivers: {}, sourceTripCount: 0 };
@@ -629,7 +692,16 @@ async function rebuildPeriod(period, onCheckpoint) {
         };
         aggregates.set(simulatorId, aggregate);
     });
-    tripDocuments.forEach((document) => {
+    tripDocuments
+        .sort((left, right) => {
+        var _a, _b;
+        const leftTime = ((_a = tripMetricDate(left.data())) === null || _a === void 0 ? void 0 : _a.getTime()) || 0;
+        const rightTime = ((_b = tripMetricDate(right.data())) === null || _b === void 0 ? void 0 : _b.getTime()) || 0;
+        if (leftTime !== rightTime)
+            return leftTime - rightTime;
+        return left.id.localeCompare(right.id);
+    })
+        .forEach((document) => {
         var _a, _b, _c;
         const data = document.data();
         if (!isValidCompletedTrip(data))
@@ -676,6 +748,7 @@ async function rebuildPeriod(period, onCheckpoint) {
             periodKey: period.key,
             periodStart: admin.firestore.Timestamp.fromDate(period.start),
             periodEnd: admin.firestore.Timestamp.fromDate(period.end),
+            periodTimeZone: "UTC",
             complete: true,
             sourceTripCount: aggregate.sourceTripCount,
             companies: aggregate.companies,
@@ -765,7 +838,7 @@ exports.ensureRankingAggregates = functions
             return { success: true, status: "ready", periodKey: period.key };
         }
     }
-    const controlRef = db.collection(CONTROLS_COLLECTION).doc(period.key);
+    const controlRef = db.collection(CONTROLS_COLLECTION).doc(`v${SCHEMA_VERSION}__${period.key}`);
     const runId = safeDocumentId(`${period.key}_${((_a = context.auth) === null || _a === void 0 ? void 0 : _a.uid) || "unknown"}_${Date.now()}_${Math.random()}`);
     const lockAcquired = await db.runTransaction(async (transaction) => {
         var _a;
@@ -789,6 +862,7 @@ exports.ensureRankingAggregates = functions
             periodKey: period.key,
             periodStart: admin.firestore.Timestamp.fromDate(period.start),
             periodEnd: admin.firestore.Timestamp.fromDate(period.end),
+            periodTimeZone: "UTC",
             status: "running",
             checkpointStage: "collecting",
             checkpointPhase: "lock_acquired",

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useOperationalStore } from "../../../context/AppContext";
 import { Card, CardContent } from "../../../components/ui/Card";
 import { Button } from "../../../components/ui/Button";
+import { isOpenJobStatus } from "../../../lib/jobStatus";
 import { Container, Plus, X, Pencil, Trash2, Users } from "lucide-react";
 
 function TrailersTab() {
@@ -52,7 +53,7 @@ function TrailersTab() {
     // Conta quantos motoristas únicos estão usando este reboque em trabalhos pendings ou ativos
     const activeJobs = jobs.filter(
       (j) =>
-        j.trailerId === trailerId && ["pending", "active"].includes(j.status),
+        j.trailerId === trailerId && isOpenJobStatus(j.status),
     );
     const uniqueDrivers = new Set(activeJobs.map((j) => j.driverId));
     return uniqueDrivers.size;

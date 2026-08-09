@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
+export type LiveCalendarMode = "local" | "utc";
+
 /**
- * Keeps date-based performance periods aligned with the device calendar.
- * It refreshes on local midnight and whenever the app/tab returns to focus,
- * without polling continuously or forcing ranking recalculations every second.
+ * Keeps date-based periods aligned with their canonical calendar boundary.
+ * Ranking consumers use UTC so every device advances to the next day, week
+ * and month at the same instant. Other screens may keep the local default.
  */
-export function useLiveCalendarReference() {
+export function useLiveCalendarReference(mode: LiveCalendarMode = "local") {
   const [referenceDate, setReferenceDate] = useState(() => new Date());
 
   useEffect(() => {
@@ -15,9 +17,23 @@ export function useLiveCalendarReference() {
     const scheduleMidnightRefresh = () => {
       if (midnightTimer) clearTimeout(midnightTimer);
       const now = new Date();
-      const nextMidnight = new Date(now);
-      nextMidnight.setDate(nextMidnight.getDate() + 1);
-      nextMidnight.setHours(0, 0, 1, 0);
+      const nextMidnight =
+        mode === "utc"
+          ? new Date(
+              Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate() + 1,
+                0,
+                0,
+                1,
+              ),
+            )
+          : new Date(now);
+      if (mode === "local") {
+        nextMidnight.setDate(nextMidnight.getDate() + 1);
+        nextMidnight.setHours(0, 0, 1, 0);
+      }
       midnightTimer = setTimeout(() => {
         refresh();
         scheduleMidnightRefresh();
@@ -37,7 +53,7 @@ export function useLiveCalendarReference() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
+  }, [mode]);
 
   return referenceDate;
 }

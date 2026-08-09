@@ -1,14 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateNvuNewsMonthlyScheduled = exports.generateNvuNewsScheduled = exports.generateNvuNewsBackfill = void 0;
+exports.generateNvuNewsMonthlyScheduled = exports.generateNvuNewsScheduled = exports.generateNvuNewsBackfill = exports.updateNvuNewsClassificationsOnSimulatorWrite = exports.updateNvuNewsClassificationsOnCompanyWrite = exports.updateNvuNewsClassificationsOnClosedTripWrite = exports.updateNvuNewsClassificationsOnRankingAggregateWrite = void 0;
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const node_crypto_1 = require("node:crypto");
 const companyApprovalNews_1 = require("./companyApprovalNews");
 const db = admin.firestore();
-const NEWS_TIME_ZONE = "America/Sao_Paulo";
-const AUTOMATION_VERSION = "nvu_news_individual_v4";
-const HISTORY_VERSION = "nvu_news_recent_history_individual_v7";
+const NEWS_TIME_ZONE = "UTC";
+const AUTOMATION_VERSION = "nvu_news_individual_v6_utc_consistent";
+const HISTORY_VERSION = "nvu_news_recent_history_individual_v9_utc_consistent";
+const RANKING_AGGREGATE_SCHEMA_VERSION = 4;
 const CONTROL_DOCUMENT_ID = AUTOMATION_VERSION;
 const CLASSIFICATIONS_COLLECTION = "nvu_classificacoes";
 const COMMUNICATIONS_COLLECTION = "nvu_comunicados";
@@ -20,7 +21,7 @@ const PUBLICATION_DELAY_MINUTES = 30;
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000;
 const HISTORY_LOOKBACK_DAYS = 70;
 const FAILED_RETRY_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const HISTORY_CHECKPOINT_VERSION = 3;
+const HISTORY_CHECKPOINT_VERSION = 5;
 function firstNonEmpty(...values) {
     for (const value of values) {
         if (value === null || value === undefined)
@@ -57,31 +58,117 @@ function normalizeSimulatorKey(value) {
         return "ats";
     if (normalized === "toe3" || normalized.includes("truckersofeurope3"))
         return "toe3";
+    if (normalized === "wtds" || normalized.includes("worldtruckdrivingsimulator"))
+        return "wtds";
+    if (normalized === "wbds" || normalized.includes("worldbusdrivingsimulator"))
+        return "wbds";
+    if (normalized === "pbs" || normalized.includes("protonbussimulator"))
+        return "pbs";
     return normalized;
 }
-function preferredSimulatorName(id, name) {
-    const nameKey = normalizeSimulatorKey(name);
-    const idKey = normalizeSimulatorKey(id);
-    const key = ["gto", "ets2", "ats", "toe3"].includes(nameKey) ? nameKey : idKey;
-    if (key === "gto")
-        return "GTO";
-    if (key === "ets2")
-        return "Euro Truck Simulator 2";
-    if (key === "ats")
-        return "American Truck Simulator";
-    if (key === "toe3")
-        return "Truckers of Europe 3";
-    return firstNonEmpty(name, id, "Não informado");
+function isUnsupportedSimulatorAlias(value) {
+    return normalizeText(value).replace(/[^a-z0-9]/g, "") === "grandtrucksimulator";
+}
+function hasUnsupportedSimulatorIdentity(data) {
+    if (!data)
+        return false;
+    return [
+        data.simulatorName,
+        data.simuladorNome,
+        data.simulator,
+        data.simulador,
+        data.name,
+        data.nome,
+        data.label,
+        data.title,
+        data.displayName,
+    ].some(isUnsupportedSimulatorAlias);
+}
+function simulatorCandidates(data) {
+    if (!data)
+        return [];
+    return [
+        data.simulatorId,
+        data.simuladorId,
+        data.simulatorKey,
+        data.simuladorKey,
+        data.simulatorName,
+        data.simuladorNome,
+        data.simulator,
+        data.simulador,
+    ]
+        .map((value) => firstNonEmpty(value))
+        .filter(Boolean);
+}
+let simulatorCatalogCache = null;
+async function loadSimulatorCatalog() {
+    if (simulatorCatalogCache && simulatorCatalogCache.expiresAt > Date.now()) {
+        return simulatorCatalogCache.value;
+    }
+    const snapshot = await db.collection("simulators").get();
+    const descriptors = [];
+    const byAlias = new Map();
+    const byId = new Map();
+    const ids = new Set();
+    snapshot.docs.forEach((document) => {
+        const data = document.data();
+        if (hasUnsupportedSimulatorIdentity(data))
+            return;
+        const id = document.id;
+        const name = firstNonEmpty(data.name, data.nome, data.label, data.title, data.displayName, id);
+        const rawAliases = [
+            id,
+            name,
+            data.code,
+            data.slug,
+            data.key,
+            data.simulatorId,
+            data.simuladorId,
+            ...(Array.isArray(data.aliases) ? data.aliases : []),
+        ]
+            .map((value) => firstNonEmpty(value))
+            .filter((value) => value && !isUnsupportedSimulatorAlias(value));
+        const aliasSet = new Set();
+        rawAliases.forEach((value) => {
+            [
+                value,
+                normalizeText(value).replace(/[^a-z0-9]/g, ""),
+                normalizeSimulatorKey(value),
+            ].filter(Boolean).forEach((alias) => aliasSet.add(alias));
+        });
+        const aliases = Array.from(aliasSet);
+        const semanticKey = normalizeSimulatorKey(firstNonEmpty(data.code, data.slug, data.key, name, id));
+        const descriptor = {
+            id,
+            name,
+            key: semanticKey === "nao-informado" ? normalizeSimulatorKey(id) : semanticKey,
+            aliases,
+        };
+        descriptors.push(descriptor);
+        byId.set(id, descriptor);
+        ids.add(id);
+        aliases.forEach((alias) => {
+            byAlias.set(alias, id);
+            byAlias.set(normalizeText(alias).replace(/[^a-z0-9]/g, ""), id);
+            byAlias.set(normalizeSimulatorKey(alias), id);
+        });
+    });
+    const value = { descriptors, byAlias, byId, ids };
+    simulatorCatalogCache = { expiresAt: Date.now() + 5 * 60 * 1000, value };
+    return value;
 }
 function isEligibleCompany(company) {
     if (!company || Object.keys(company).length === 0)
         return false;
-    const status = normalizeText(company.status || company.situacao || company.state);
-    return !(company.deleted === true ||
+    if (hasUnsupportedSimulatorIdentity(company))
+        return false;
+    const status = normalizeText(company.status || company.situacao || company.state || "active");
+    const deleted = company.deleted === true ||
         company.softDeleted === true ||
         company.excluida === true ||
         company.excluido === true ||
-        ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status));
+        ["deleted", "excluida", "excluido", "removed", "removida", "removido"].includes(status);
+    return !deleted && ["active", "approved", "ativo"].includes(status);
 }
 function parseTripValue(value) {
     if (typeof value === "number")
@@ -228,8 +315,9 @@ function periodForDate(date, type, now) {
     let label;
     if (type === "semana") {
         const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
-        const mondayOffset = (weekday + 6) % 7;
-        start = zonedDate(parts.year, parts.month, parts.day - mondayOffset);
+        // The platform-wide canonical week is Sunday through Saturday in UTC,
+        // matching Ranking, dashboards, profiles and Histórico de Viagens.
+        start = zonedDate(parts.year, parts.month, parts.day - weekday);
         const startParts = zonedParts(start);
         end = new Date(zonedDate(startParts.year, startParts.month, startParts.day + 7).getTime() - 1);
         label = `${formatDatePt(start)} a ${formatDatePt(end)}`;
@@ -251,18 +339,31 @@ function periodForDate(date, type, now) {
         label,
     };
 }
-function simulatorOf(trip, company) {
-    const id = firstNonEmpty(trip.simulatorId, company === null || company === void 0 ? void 0 : company.simulatorId, company === null || company === void 0 ? void 0 : company.simuladorId);
-    const name = preferredSimulatorName(id, firstNonEmpty(trip.simulatorName, company === null || company === void 0 ? void 0 : company.simulatorName, company === null || company === void 0 ? void 0 : company.simuladorNome, company === null || company === void 0 ? void 0 : company.simulator, id));
-    const nameKey = normalizeSimulatorKey(name);
-    const idKey = normalizeSimulatorKey(id);
-    return {
-        key: ["gto", "ets2", "ats", "toe3"].includes(nameKey)
-            ? nameKey
-            : firstNonEmpty(idKey === "nao-informado" ? "" : idKey, nameKey),
-        id,
-        name,
-    };
+function simulatorOf(trip, company, catalog) {
+    if (hasUnsupportedSimulatorIdentity(company))
+        return null;
+    // The current company catalog is authoritative. Trip snapshots are used
+    // only as a compatibility fallback for old records whose company document
+    // does not contain a usable simulator identity.
+    const candidates = [
+        ...simulatorCandidates(company),
+        trip.simulatorId,
+        trip.simulatorName,
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+        if (isUnsupportedSimulatorAlias(candidate))
+            continue;
+        const direct = catalog.byId.get(candidate);
+        if (direct)
+            return direct;
+        const rawKey = normalizeText(candidate).replace(/[^a-z0-9]/g, "");
+        const resolvedId = catalog.byAlias.get(candidate) ||
+            catalog.byAlias.get(rawKey) ||
+            catalog.byAlias.get(normalizeSimulatorKey(candidate));
+        if (resolvedId)
+            return catalog.byId.get(resolvedId) || null;
+    }
+    return null;
 }
 async function loadDocumentsByIds(collectionName, ids, cache) {
     const missing = Array.from(new Set(ids.filter(Boolean))).filter((id) => !cache.has(id));
@@ -293,14 +394,20 @@ function addAggregate(map, key, trip, entity, simulator) {
         current.driverName = trip.driverName;
     if (!current.companyName && trip.companyName)
         current.companyName = trip.companyName;
-    if (trip.date.getTime() > current.reachedAt.getTime())
+    if (trip.date.getTime() >= current.reachedAt.getTime()) {
         current.reachedAt = trip.date;
+        if (entity === "motorista") {
+            current.companyId = trip.companyId;
+            if (trip.companyName)
+                current.companyName = trip.companyName;
+        }
+    }
     map.set(key, current);
 }
 function compareRanking(left, right) {
     return right.earnings - left.earnings ||
         right.trips - left.trips ||
-        left.reachedAt.getTime() - right.reachedAt.getTime() ||
+        firstNonEmpty(left.driverName, left.companyName).localeCompare(firstNonEmpty(right.driverName, right.companyName), "pt-BR", { sensitivity: "base", numeric: true }) ||
         left.id.localeCompare(right.id);
 }
 function buildSearchTokens(...values) {
@@ -338,6 +445,7 @@ function driverPhotoOf(user) {
 async function aggregateTrips(rangeStart, rangeEnd, periodTypes) {
     const groups = new Map();
     const companyCache = new Map();
+    const simulatorCatalog = await loadSimulatorCatalog();
     const now = new Date();
     const seenTripIds = new Set();
     let sourceTrips = 0;
@@ -359,8 +467,8 @@ async function aggregateTrips(rangeStart, rangeEnd, periodTypes) {
             // reaparecer em classificações antigas ou futuras.
             if (!isEligibleCompany(company))
                 return;
-            const simulator = simulatorOf(trip, company);
-            if (!simulator.key || simulator.key === "nao-informado")
+            const simulator = simulatorOf(trip, company, simulatorCatalog);
+            if (!simulator || !simulator.key || simulator.key === "nao-informado")
                 return;
             periodTypes.forEach((periodType) => {
                 const period = periodForDate(trip.date, periodType, now);
@@ -546,6 +654,203 @@ async function buildGeneratedDocuments(groups, companies, source) {
     });
     return generated.sort((left, right) => String(left.id).localeCompare(String(right.id)));
 }
+function periodIdentity(period) {
+    return `${period.type}:${dateKey(period.start)}`;
+}
+function uniquePeriods(periods) {
+    const byIdentity = new Map();
+    periods.forEach((period) => byIdentity.set(periodIdentity(period), period));
+    return Array.from(byIdentity.values()).sort((left, right) => left.start.getTime() - right.start.getTime() ||
+        left.type.localeCompare(right.type));
+}
+function closedPeriodsInRange(rangeStart, rangeEnd, periodTypes, now = new Date()) {
+    const periods = [];
+    const startParts = zonedParts(rangeStart);
+    const endParts = zonedParts(rangeEnd);
+    const cursor = zonedDate(startParts.year, startParts.month, startParts.day);
+    const lastDay = zonedDate(endParts.year, endParts.month, endParts.day);
+    while (cursor.getTime() <= lastDay.getTime()) {
+        periodTypes.forEach((type) => {
+            const period = periodForDate(cursor, type, now);
+            if (period)
+                periods.push(period);
+        });
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return uniquePeriods(periods);
+}
+async function deleteUnexpectedSystemClassifications(periods, expectedIds, simulatorScope) {
+    let removed = 0;
+    for (const period of uniquePeriods(periods)) {
+        const snapshot = await db.collection(CLASSIFICATIONS_COLLECTION)
+            .where("periodoInicioKey", "==", dateKey(period.start))
+            .get();
+        const stale = snapshot.docs.filter((document) => {
+            const data = document.data() || {};
+            const periodType = firstNonEmpty(data.periodoTipo, data.periodicidade);
+            const matchesSimulator = !simulatorScope ||
+                firstNonEmpty(data.simuladorId) === simulatorScope.id ||
+                normalizeSimulatorKey(data.simuladorKey || data.simulador) === simulatorScope.key;
+            return data.createdBySystem === true &&
+                data.tipo === "classificacao" &&
+                periodType === period.type &&
+                matchesSimulator &&
+                !expectedIds.has(document.id);
+        });
+        for (let offset = 0; offset < stale.length; offset += WRITE_BATCH_SIZE) {
+            const batch = db.batch();
+            stale.slice(offset, offset + WRITE_BATCH_SIZE).forEach((document) => {
+                batch.delete(document.ref);
+            });
+            await batch.commit();
+            removed += Math.min(WRITE_BATCH_SIZE, stale.length - offset);
+        }
+    }
+    return removed;
+}
+async function reconcileClosedPeriods(periods, source) {
+    const canonicalPeriods = uniquePeriods(periods).filter((period) => period.publicationAt.getTime() <= Date.now());
+    if (canonicalPeriods.length === 0) {
+        return {
+            created: 0,
+            updated: 0,
+            ignored: 0,
+            removed: 0,
+            sourceTrips: 0,
+            generated: 0,
+        };
+    }
+    const rangeStart = new Date(Math.min(...canonicalPeriods.map((period) => period.start.getTime())));
+    const rangeEnd = new Date(Math.max(...canonicalPeriods.map((period) => period.end.getTime())));
+    const periodTypes = Array.from(new Set(canonicalPeriods.map((period) => period.type)));
+    const expectedPeriodIds = new Set(canonicalPeriods.map(periodIdentity));
+    const aggregated = await aggregateTrips(rangeStart, rangeEnd, periodTypes);
+    const selectedGroups = new Map(Array.from(aggregated.groups.entries()).filter(([, group]) => expectedPeriodIds.has(periodIdentity(group.period))));
+    const generated = await buildGeneratedDocuments(selectedGroups, aggregated.companies, source);
+    const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+    const removed = await deleteUnexpectedSystemClassifications(canonicalPeriods, new Set(generated.map((document) => document.id)));
+    return Object.assign(Object.assign({}, writeResult), { removed, sourceTrips: aggregated.sourceTrips, generated: generated.length });
+}
+function periodFromRankingAggregate(data) {
+    const type = firstNonEmpty(data.periodType);
+    if (!["semana", "mes"].includes(type))
+        return null;
+    const start = parseDate(data.periodStart);
+    const end = parseDate(data.periodEnd);
+    if (!start || !end || end.getTime() < start.getTime())
+        return null;
+    const publicationAt = new Date(end.getTime() + 1 + PUBLICATION_DELAY_MINUTES * 60 * 1000);
+    return {
+        key: firstNonEmpty(data.periodKey, `${type}_${dateKey(start)}`),
+        type,
+        start,
+        end,
+        publicationAt,
+        label: type === "mes"
+            ? formatMonthPt(start)
+            : `${formatDatePt(start)} a ${formatDatePt(end)}`,
+    };
+}
+async function reconcileFromRankingAggregate(data) {
+    if (Number(data.schemaVersion) !== RANKING_AGGREGATE_SCHEMA_VERSION ||
+        data.complete !== true)
+        return;
+    const period = periodFromRankingAggregate(data);
+    if (!period || period.publicationAt.getTime() > Date.now())
+        return;
+    const simulatorId = firstNonEmpty(data.simulatorId);
+    const catalog = await loadSimulatorCatalog();
+    const simulator = catalog.byId.get(simulatorId);
+    if (!simulator)
+        return;
+    const group = {
+        period,
+        simulator,
+        companies: new Map(),
+        drivers: new Map(),
+    };
+    const companyStats = data.companies && typeof data.companies === "object"
+        ? data.companies
+        : {};
+    const driverStats = data.drivers && typeof data.drivers === "object"
+        ? data.drivers
+        : {};
+    Object.entries(companyStats).forEach(([companyId, raw]) => {
+        const trips = Math.max(0, Math.trunc(Number(raw === null || raw === void 0 ? void 0 : raw.trips) || 0));
+        const earnings = Math.max(0, Number(raw === null || raw === void 0 ? void 0 : raw.val) || 0);
+        group.companies.set(companyId, {
+            id: companyId,
+            driverId: "",
+            companyId,
+            driverName: "",
+            companyName: firstNonEmpty(raw === null || raw === void 0 ? void 0 : raw.name),
+            trips,
+            earnings,
+            reachedAt: period.end,
+            simulator,
+        });
+    });
+    Object.entries(driverStats).forEach(([driverId, raw]) => {
+        const companyId = firstNonEmpty(raw === null || raw === void 0 ? void 0 : raw.companyId);
+        if (!companyId)
+            return;
+        const trips = Math.max(0, Math.trunc(Number(raw === null || raw === void 0 ? void 0 : raw.trips) || 0));
+        const earnings = Math.max(0, Number(raw === null || raw === void 0 ? void 0 : raw.val) || 0);
+        group.drivers.set(driverId, {
+            id: driverId,
+            driverId,
+            companyId,
+            driverName: firstNonEmpty(raw === null || raw === void 0 ? void 0 : raw.name),
+            companyName: "",
+            trips,
+            earnings,
+            reachedAt: period.end,
+            simulator,
+        });
+    });
+    const companies = new Map();
+    await loadDocumentsByIds("frotas", Array.from(new Set([
+        ...group.companies.keys(),
+        ...Array.from(group.drivers.values()).map((entry) => entry.companyId),
+    ])), companies);
+    const generated = await buildGeneratedDocuments(new Map([[`${periodIdentity(period)}:${simulator.key}`, group]]), companies, "automatico");
+    await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+    await deleteUnexpectedSystemClassifications([period], new Set(generated.map((document) => document.id)), simulator);
+}
+function closedPeriodsForTripData(data) {
+    if (!data)
+        return [];
+    const date = tripMetricDate(data);
+    if (!date)
+        return [];
+    const now = new Date();
+    return ["semana", "mes"]
+        .map((type) => periodForDate(date, type, now))
+        .filter((period) => Boolean(period));
+}
+function companyClassificationSignature(data) {
+    if (!data)
+        return "missing";
+    return [
+        data.status,
+        data.situacao,
+        data.state,
+        data.deleted,
+        data.softDeleted,
+        data.excluida,
+        data.excluido,
+        data.simulatorId,
+        data.simuladorId,
+        data.simulatorName,
+        data.simuladorNome,
+        data.companyName,
+        data.fleetName,
+        data.name,
+        data.logoUrl,
+        data.logoURL,
+        data.companyLogoURL,
+    ].map((value) => String(value !== null && value !== void 0 ? value : "").trim()).join("|");
+}
 async function commitDocuments(collectionName, documents) {
     let created = 0;
     let updated = 0;
@@ -578,7 +883,7 @@ async function commitDocuments(collectionName, documents) {
     }
     return { created, updated, ignored };
 }
-async function deleteLegacyCombinedClassifications() {
+async function deleteLegacyCombinedClassifications(recentRangeStart) {
     let removed = 0;
     let cursor = null;
     do {
@@ -594,7 +899,21 @@ async function deleteLegacyCombinedClassifications() {
         cursor = snapshot.docs[snapshot.docs.length - 1];
         const legacyDocs = snapshot.docs.filter((document) => {
             const data = document.data() || {};
-            return data.tipo === "classificacao" && !["empresa", "motorista"].includes(data.entidade);
+            if (data.tipo !== "classificacao")
+                return false;
+            const isLegacyCombined = !["empresa", "motorista"].includes(data.entidade);
+            if (isLegacyCombined)
+                return true;
+            // UTC changed the canonical weekly/monthly boundaries and therefore the
+            // deterministic document ids. Remove only recent system-generated
+            // documents from older automation versions so the replacement history
+            // cannot coexist as a duplicate. Older archived history is preserved.
+            if (!recentRangeStart || data.createdBySystem !== true)
+                return false;
+            if (String(data.schemaVersion || "") === AUTOMATION_VERSION)
+                return false;
+            const referenceDate = parseDate(data.dataReferencia || data.periodoFim || data.sortAt || data.createdAt);
+            return Boolean(referenceDate && referenceDate.getTime() >= recentRangeStart.getTime());
         });
         if (legacyDocs.length > 0) {
             const batch = db.batch();
@@ -808,14 +1127,14 @@ async function generateFullHistory() {
             });
         }
         if (!historyStageAtLeast(stage, "classifications_written")) {
-            const aggregated = await aggregateTrips(rangeStart, rangeEnd, ["semana", "mes"]);
-            const generated = await buildGeneratedDocuments(aggregated.groups, aggregated.companies, "historico");
-            const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
-            sourceTrips = aggregated.sourceTrips;
-            generatedHistoryCount = generated.length;
-            created = writeResult.created;
-            updated = writeResult.updated;
-            ignored = writeResult.ignored;
+            const periods = closedPeriodsInRange(rangeStart, rangeEnd, ["semana", "mes"]);
+            const reconciliation = await reconcileClosedPeriods(periods, "historico");
+            sourceTrips = reconciliation.sourceTrips;
+            generatedHistoryCount = reconciliation.generated;
+            created = reconciliation.created;
+            updated = reconciliation.updated;
+            ignored = reconciliation.ignored;
+            removedLegacyClassifications += reconciliation.removed;
             stage = "classifications_written";
             await saveHistoryCheckpoint(controlRef, runId, stage, {
                 historyRangeStart: admin.firestore.Timestamp.fromDate(rangeStart),
@@ -825,6 +1144,7 @@ async function generateFullHistory() {
                 createdCount: created,
                 updatedCount: updated,
                 ignoredCount: ignored,
+                removedLegacyClassifications,
             });
         }
         if (!historyStageAtLeast(stage, "company_approvals_written")) {
@@ -846,7 +1166,7 @@ async function generateFullHistory() {
             });
         }
         if (!historyStageAtLeast(stage, "legacy_classifications_removed")) {
-            removedLegacyClassifications = await deleteLegacyCombinedClassifications();
+            removedLegacyClassifications += await deleteLegacyCombinedClassifications(rangeStart);
             stage = "legacy_classifications_removed";
             await saveHistoryCheckpoint(controlRef, runId, stage, {
                 removedLegacyClassifications,
@@ -877,7 +1197,7 @@ async function generateFullHistory() {
             historyCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
             publicationPolicy: {
                 timeZone: NEWS_TIME_ZONE,
-                weekly: "segunda-feira às 00:35, após o encerramento de domingo",
+                weekly: "domingo às 00:35 UTC, após o encerramento de sábado",
                 monthly: "primeiro dia do mês às 00:40",
                 history: "migração única limitada aos últimos 70 dias, retomada por checkpoints persistentes",
                 pagination: "o aplicativo lê somente 10 publicações por vez",
@@ -922,24 +1242,77 @@ async function generateRecent(periodTypes, sourceLabel) {
     var _a;
     const now = new Date();
     const rangeStart = subtractDays(now, periodTypes.includes("mes") ? 70 : 16);
-    const aggregated = await aggregateTrips(rangeStart, now, periodTypes);
     const controlSnapshot = await db.collection("system_settings").doc(CONTROL_DOCUMENT_ID).get();
     const automationStartedAt = parseDate((_a = controlSnapshot.data()) === null || _a === void 0 ? void 0 : _a.automationStartedAt) || new Date(0);
-    const futureGroups = new Map(Array.from(aggregated.groups.entries()).filter(([, group]) => group.period.publicationAt.getTime() > automationStartedAt.getTime()));
-    const generated = await buildGeneratedDocuments(futureGroups, aggregated.companies, "automatico");
-    const writeResult = await commitDocuments(CLASSIFICATIONS_COLLECTION, generated);
+    const periods = closedPeriodsInRange(rangeStart, now, periodTypes, now).filter((period) => period.publicationAt.getTime() > automationStartedAt.getTime());
+    const reconciliation = await reconcileClosedPeriods(periods, "automatico");
     await db.collection("system_settings").doc(CONTROL_DOCUMENT_ID).set({
         version: AUTOMATION_VERSION,
         lastAutomaticSource: sourceLabel,
         lastAutomaticRunAt: admin.firestore.FieldValue.serverTimestamp(),
-        lastAutomaticSourceTrips: aggregated.sourceTrips,
-        lastAutomaticGenerated: generated.length,
-        lastAutomaticCreated: writeResult.created,
-        lastAutomaticUpdated: writeResult.updated,
-        lastAutomaticIgnored: writeResult.ignored,
+        lastAutomaticSourceTrips: reconciliation.sourceTrips,
+        lastAutomaticGenerated: reconciliation.generated,
+        lastAutomaticCreated: reconciliation.created,
+        lastAutomaticUpdated: reconciliation.updated,
+        lastAutomaticIgnored: reconciliation.ignored,
+        lastAutomaticRemoved: reconciliation.removed,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
 }
+exports.updateNvuNewsClassificationsOnRankingAggregateWrite = functions
+    .runWith({ timeoutSeconds: 300, memory: "512MB" })
+    .firestore.document("ranking_aggregates/{aggregateId}")
+    .onWrite(async (change) => {
+    if (!change.after.exists)
+        return;
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.data();
+    if (!after)
+        return;
+    const beforeRevision = Number((before === null || before === void 0 ? void 0 : before.revision) || 0);
+    const afterRevision = Number(after.revision || 0);
+    if (before &&
+        beforeRevision === afterRevision &&
+        Number(before.schemaVersion) === Number(after.schemaVersion) &&
+        before.complete === after.complete) {
+        return;
+    }
+    await reconcileFromRankingAggregate(after);
+});
+exports.updateNvuNewsClassificationsOnClosedTripWrite = functions
+    .runWith({ timeoutSeconds: 540, memory: "1GB" })
+    .firestore.document("historico_viagens/{tripId}")
+    .onWrite(async (change) => {
+    const periods = uniquePeriods([
+        ...closedPeriodsForTripData(change.before.exists ? change.before.data() : undefined),
+        ...closedPeriodsForTripData(change.after.exists ? change.after.data() : undefined),
+    ]);
+    if (periods.length === 0)
+        return;
+    await reconcileClosedPeriods(periods, "automatico");
+});
+exports.updateNvuNewsClassificationsOnCompanyWrite = functions
+    .runWith({ timeoutSeconds: 540, memory: "1GB" })
+    .firestore.document("frotas/{companyId}")
+    .onWrite(async (change) => {
+    const before = change.before.exists ? change.before.data() : undefined;
+    const after = change.after.exists ? change.after.data() : undefined;
+    if (companyClassificationSignature(before) === companyClassificationSignature(after)) {
+        return;
+    }
+    const now = new Date();
+    const periods = closedPeriodsInRange(subtractDays(now, HISTORY_LOOKBACK_DAYS), now, ["semana", "mes"], now);
+    await reconcileClosedPeriods(periods, "automatico");
+});
+exports.updateNvuNewsClassificationsOnSimulatorWrite = functions
+    .runWith({ timeoutSeconds: 540, memory: "1GB" })
+    .firestore.document("simulators/{simulatorId}")
+    .onWrite(async () => {
+    simulatorCatalogCache = null;
+    const now = new Date();
+    const periods = closedPeriodsInRange(subtractDays(now, HISTORY_LOOKBACK_DAYS), now, ["semana", "mes"], now);
+    await reconcileClosedPeriods(periods, "automatico");
+});
 exports.generateNvuNewsBackfill = functions
     .runWith({ timeoutSeconds: 540, memory: "1GB" })
     .https.onCall(async (_data, context) => {
@@ -955,7 +1328,7 @@ exports.generateNvuNewsBackfill = functions
 });
 exports.generateNvuNewsScheduled = functions
     .runWith({ timeoutSeconds: 300, memory: "512MB" })
-    .pubsub.schedule("35 0 * * 1")
+    .pubsub.schedule("35 0 * * 0")
     .timeZone(NEWS_TIME_ZONE)
     .onRun(async () => {
     await generateRecent(["semana"], "weekly_scheduler");

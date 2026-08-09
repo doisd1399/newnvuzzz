@@ -55,10 +55,10 @@ function resolveRange(input: TripHistoryFilterInput): {
 
   if (input.periodPreset === "data") {
     const startDate = input.customStartDate
-      ? new Date(`${input.customStartDate}T00:00:00`)
+      ? new Date(`${input.customStartDate}T00:00:00.000Z`)
       : undefined;
     const endDate = input.customEndDate
-      ? new Date(`${input.customEndDate}T23:59:59.999`)
+      ? new Date(`${input.customEndDate}T23:59:59.999Z`)
       : undefined;
     return { startDate, endDate };
   }

@@ -341,8 +341,27 @@ function CompanyTab({
       const companyData = { ...formData, logoUrl };
 
       if (isEditing && activeCompany && !isAddingNew) {
-        await updateCompany(activeCompany.id, companyData);
-        setFormData(companyData);
+        // Company identity is immutable from the company profile editor.
+        // Keep name/simulator out of the update payload even though they remain
+        // in local state for display and for the company-creation flow.
+        const editableCompanyData = { ...companyData };
+        delete editableCompanyData.companyName;
+        delete editableCompanyData.simulatorId;
+        delete editableCompanyData.simulatorName;
+        await updateCompany(activeCompany.id, editableCompanyData);
+        setFormData({
+          ...companyData,
+          companyName: activeCompany.companyName,
+          simulatorId:
+            activeCompanySimulatorOption?.canonicalId ||
+            activeCompany.simulatorId ||
+            activeCompanySimulatorOption?.value ||
+            "",
+          simulatorName:
+            activeCompanySimulatorOption?.label ||
+            activeCompany.simulatorName ||
+            "",
+        });
         setPendingLogoFile(null);
         setLogoPreviewUrl(null);
         setIsEditing(false);
@@ -500,40 +519,44 @@ function CompanyTab({
           className="space-y-4"
         >
           <div className="space-y-4">
-            <div>
-              <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
-                Nome da Empresa
-              </label>
-              <input
-                name="companyName"
-                value={formData.companyName}
-                onChange={handleChange}
-                className="w-full bg-slate-50 dark:bg-[#09090b] border border-slate-200 dark:border-[#2A2F3A] rounded-xl px-4 h-12 text-[15px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:text-white transition-all shadow-sm"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
-                Simulador Padrão
-              </label>
-              <SafeSelect
-                title="Selecionar simulador"
-                placeholder="Selecione um simulador"
-                value={selectedSimulatorValue}
-                options={safeSimulatorOptions}
-                onChange={(simulatorId) => {
-                  const option = simulatorOptions.find(
-                    (item) => (item.canonicalId || item.value) === simulatorId,
-                  );
-                  setFormData((current) => ({
-                    ...current,
-                    simulatorId,
-                    simulatorName: option?.label || "",
-                  }));
-                }}
-                emptyMessage="Nenhum simulador ativo disponível."
-              />
-            </div>
+            {isAddingNew && (
+              <>
+                <div>
+                  <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
+                    Nome da Empresa
+                  </label>
+                  <input
+                    name="companyName"
+                    value={formData.companyName}
+                    onChange={handleChange}
+                    className="w-full bg-slate-50 dark:bg-[#09090b] border border-slate-200 dark:border-[#2A2F3A] rounded-xl px-4 h-12 text-[15px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:text-white transition-all shadow-sm"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
+                    Simulador Padrão
+                  </label>
+                  <SafeSelect
+                    title="Selecionar simulador"
+                    placeholder="Selecione um simulador"
+                    value={selectedSimulatorValue}
+                    options={safeSimulatorOptions}
+                    onChange={(simulatorId) => {
+                      const option = simulatorOptions.find(
+                        (item) => (item.canonicalId || item.value) === simulatorId,
+                      );
+                      setFormData((current) => ({
+                        ...current,
+                        simulatorId,
+                        simulatorName: option?.label || "",
+                      }));
+                    }}
+                    emptyMessage="Nenhum simulador ativo disponível."
+                  />
+                </div>
+              </>
+            )}
             <div>
               <label className="block text-[14px] font-medium text-slate-700 dark:text-[#a1a1aa] mb-1.5 ml-1">
                 Proprietário (Responsável)

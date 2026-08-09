@@ -7,10 +7,12 @@ const NEWS_COLLECTION = "nvu_classificacoes";
 const REGISTRATIONS_COLLECTION = "recruitment_applications";
 const COMPANIES_COLLECTION = "frotas";
 const USERS_COLLECTION = "users";
+const SIMULATORS_COLLECTION = "simulators";
 const NEWS_TIME_ZONE = "America/Sao_Paulo";
-const SCHEMA_VERSION = "nvu_company_approval_v4";
-const SYNC_CONTROL_DOCUMENT_ID = "nvu_company_approval_news_v4";
+const SCHEMA_VERSION = "nvu_company_approval_v6";
+const SYNC_CONTROL_DOCUMENT_ID = "nvu_company_approval_news_v6";
 const SYNC_LOCK_TIMEOUT_MS = 15 * 60 * 1000;
+const SYNC_REUSE_WINDOW_MS = 30 * 60 * 1000;
 const WRITE_BATCH_SIZE = 350;
 const APPROVAL_POST_TITLE = "Nova empresa no ecossistema NVU";
 
@@ -19,6 +21,10 @@ type ApprovalWriteResult = {
   updated: number;
   ignored: number;
   removed: number;
+  activeCompanies?: number;
+  expectedPosts?: number;
+  publishedPosts?: number;
+  consistent?: boolean;
 };
 
 type GeneratedApprovalPost = {
@@ -31,6 +37,23 @@ type RegistrationRecord = {
   id: string;
   data: FirebaseFirestore.DocumentData;
 };
+
+type SimulatorDescriptor = {
+  id: string;
+  name: string;
+  key: string;
+  aliases: string[];
+};
+
+type SimulatorCatalog = {
+  byExact: Map<string, SimulatorDescriptor>;
+  byNormalized: Map<string, SimulatorDescriptor>;
+};
+
+let simulatorCatalogCache: {
+  expiresAt: number;
+  value: SimulatorCatalog;
+} | null = null;
 
 function emptyResult(): ApprovalWriteResult {
   return { created: 0, updated: 0, ignored: 0, removed: 0 };
@@ -56,22 +79,160 @@ function normalizeText(value: unknown): string {
     .trim();
 }
 
+function knownSimulatorKey(value: string): string {
+  if (!value) return "";
+  if (
+    value === "gto" ||
+    value.includes("globaltruckonline")
+  ) return "gto";
+  if (value === "ets2" || value.includes("eurotrucksimulator2")) return "ets2";
+  if (value === "ats" || value.includes("americantrucksimulator")) return "ats";
+  if (value === "toe3" || value.includes("truckersofeurope3")) return "toe3";
+  if (value === "wtds" || value.includes("worldtruckdrivingsimulator")) return "wtds";
+  if (value === "wbds" || value.includes("worldbusdrivingsimulator")) return "wbds";
+  if (value === "pbs" || value.includes("protonbussimulator")) return "pbs";
+  return "";
+}
+
 function simulatorKey(...values: unknown[]): string {
   const normalizedValues = values
     .map((value) => normalizeText(value).replace(/\s/g, ""))
     .filter(Boolean);
 
   for (const normalized of normalizedValues) {
-    if (["gto", "globaltruckonline", "grandtrucksimulator"].includes(normalized)) return "gto";
-    if (["ets2", "eurotrucksimulator2"].includes(normalized)) return "ets2";
-    if (["ats", "americantrucksimulator"].includes(normalized)) return "ats";
-    if (["toe3", "truckersofeurope3"].includes(normalized)) return "toe3";
-    if (["wtds", "worldtruckdrivingsimulator"].includes(normalized)) return "wtds";
-    if (["wbds", "worldbusdrivingsimulator"].includes(normalized)) return "wbds";
-    if (["pbs", "protonbussimulator"].includes(normalized)) return "pbs";
+    const known = knownSimulatorKey(normalized);
+    if (known) return known;
   }
 
   return normalizedValues[0] || "";
+}
+
+function simulatorCandidates(
+  registration: FirebaseFirestore.DocumentData,
+  company: FirebaseFirestore.DocumentData,
+): string[] {
+  return [
+    company.simulatorId,
+    company.simuladorId,
+    company.simulatorKey,
+    company.simuladorKey,
+    registration.simulatorId,
+    registration.simuladorId,
+    registration.simulatorKey,
+    registration.simuladorKey,
+    company.simulatorName,
+    company.simuladorNome,
+    company.simulator,
+    company.simulador,
+    registration.simulatorName,
+    registration.simuladorNome,
+    registration.simulator,
+    registration.simulador,
+  ]
+    .map((value) => firstNonEmpty(value))
+    .filter(Boolean);
+}
+
+async function loadSimulatorCatalog(): Promise<SimulatorCatalog> {
+  if (simulatorCatalogCache && simulatorCatalogCache.expiresAt > Date.now()) {
+    return simulatorCatalogCache.value;
+  }
+
+  const snapshot = await db.collection(SIMULATORS_COLLECTION).get();
+  const descriptors = snapshot.docs.map((document) => {
+    const data = document.data() || {};
+    const id = document.id;
+    const name = firstNonEmpty(
+      data.name,
+      data.nome,
+      data.label,
+      data.title,
+      data.displayName,
+      id,
+    );
+    const rawAliases = Array.from(new Set([
+      id,
+      name,
+      firstNonEmpty(data.code),
+      firstNonEmpty(data.slug),
+      firstNonEmpty(data.key),
+      firstNonEmpty(data.simulatorId),
+      firstNonEmpty(data.simuladorId),
+    ].filter(Boolean)));
+    const key = simulatorKey(...rawAliases) || normalizeText(name).replace(/\s/g, "");
+    const aliases = Array.from(new Set([
+      ...rawAliases,
+      key,
+      ...rawAliases.map((alias) => normalizeText(alias).replace(/\s/g, "")),
+    ].filter(Boolean)));
+    return { id, name, key, aliases };
+  });
+
+  const byExact = new Map<string, SimulatorDescriptor>();
+  const byNormalized = new Map<string, SimulatorDescriptor>();
+  descriptors.forEach((descriptor) => {
+    descriptor.aliases.forEach((alias) => {
+      byExact.set(alias, descriptor);
+      const normalized = normalizeText(alias).replace(/\s/g, "");
+      if (normalized) byNormalized.set(normalized, descriptor);
+    });
+  });
+
+  const value = { byExact, byNormalized };
+  simulatorCatalogCache = {
+    expiresAt: Date.now() + 5 * 60 * 1000,
+    value,
+  };
+  return value;
+}
+
+function resolveSimulatorDescriptor(
+  registration: FirebaseFirestore.DocumentData,
+  company: FirebaseFirestore.DocumentData,
+  catalog: SimulatorCatalog,
+): SimulatorDescriptor {
+  const candidates = simulatorCandidates(registration, company);
+
+  // IDs from the simulator catalog are authoritative. This prevents an old,
+  // incorrect display name (for example the former ETS2 fallback) from moving
+  // an ATS company post into the wrong feed.
+  for (const candidate of candidates) {
+    const exact = catalog.byExact.get(candidate);
+    if (exact) return exact;
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeText(candidate).replace(/\s/g, "");
+    const matched = normalized ? catalog.byNormalized.get(normalized) : undefined;
+    if (matched) return matched;
+  }
+
+  const key = simulatorKey(...candidates) || "all";
+  const id = firstNonEmpty(
+    company.simulatorId,
+    company.simuladorId,
+    registration.simulatorId,
+    registration.simuladorId,
+    key,
+  );
+  const name = firstNonEmpty(
+    company.simulatorName,
+    company.simuladorNome,
+    company.simulator,
+    registration.simulatorName,
+    registration.simuladorNome,
+    registration.simulator,
+    key === "all" ? "Simulador não informado" : key.toUpperCase(),
+  );
+  return {
+    id,
+    name,
+    key,
+    aliases: Array.from(new Set([
+      ...candidates,
+      key,
+      ...candidates.map((candidate) => normalizeText(candidate).replace(/\s/g, "")),
+    ].filter(Boolean))),
+  };
 }
 
 function isDeletedCompany(company: FirebaseFirestore.DocumentData): boolean {
@@ -247,6 +408,7 @@ function buildApprovalPost(
   company: FirebaseFirestore.DocumentData,
   origin: "automatico" | "historico",
   ownerProfile: FirebaseFirestore.DocumentData = {},
+  resolvedSimulator?: SimulatorDescriptor,
 ): GeneratedApprovalPost | null {
   const resolvedCompanyId = firstNonEmpty(
     companyId,
@@ -266,12 +428,14 @@ function buildApprovalPost(
   const ownerName = ownerNameOf(registration, company, ownerProfile);
   const ownerId = ownerIdOf(registration, company);
   const simulatorId = firstNonEmpty(
+    resolvedSimulator?.id,
     company.simulatorId,
     company.simuladorId,
     registration.simulatorId,
     registration.simuladorId,
   );
   const simulatorName = firstNonEmpty(
+    resolvedSimulator?.name,
     company.simulatorName,
     company.simuladorNome,
     company.simulator,
@@ -279,10 +443,19 @@ function buildApprovalPost(
     registration.simuladorNome,
     registration.simulator,
     simulatorId,
-    "Simulador NVU",
+    "Simulador não informado",
   );
-  const resolvedSimulatorKey = simulatorKey(simulatorId, simulatorName);
-  if (!resolvedSimulatorKey) return null;
+  const resolvedSimulatorKey = firstNonEmpty(
+    resolvedSimulator?.key,
+    simulatorKey(simulatorId, simulatorName),
+    "all",
+  );
+  const resolvedSimulatorAliases = Array.from(new Set([
+    ...(resolvedSimulator?.aliases || []),
+    simulatorId,
+    simulatorName,
+    resolvedSimulatorKey,
+  ].filter(Boolean)));
 
   const approvalDate = approvalDateOf(registration, company);
   const approvalTimestamp = admin.firestore.Timestamp.fromDate(approvalDate);
@@ -323,6 +496,7 @@ function buildApprovalPost(
     simuladorId: simulatorId,
     simulador: simulatorName,
     simuladorKey: resolvedSimulatorKey,
+    simuladorAliases: resolvedSimulatorAliases,
     dataAprovacaoLabel: dateLabel,
     sourceRegistrationId,
     origem: origin,
@@ -376,7 +550,13 @@ async function commitApprovalPosts(
 
     chunk.forEach((post, postIndex) => {
       const existing = existingSnapshots[postIndex];
-      if (existing?.exists && existing.data()?.contentHash === post.contentHash) {
+      const existingData = existing?.data() || {};
+      if (
+        existing?.exists &&
+        existingData.contentHash === post.contentHash &&
+        existingData.schemaVersion === SCHEMA_VERSION &&
+        normalizeText(existingData.status || "publicado") === "publicado"
+      ) {
         result.ignored += 1;
         return;
       }
@@ -419,19 +599,70 @@ async function deleteDocumentRefs(
 async function readApprovalNewsDocuments(): Promise<
   FirebaseFirestore.QueryDocumentSnapshot[]
 > {
-  const [byType, byCategory, byTitle] = await Promise.all([
+  const [byType, byLegacyType, byLegacyTipo, byCategory, byLegacyCategory, byTitle] = await Promise.all([
     db.collection(NEWS_COLLECTION).where("tipo", "==", "empresa_aprovada").get(),
+    db.collection(NEWS_COLLECTION).where("type", "==", "company_approval").get(),
+    db.collection(NEWS_COLLECTION).where("tipo", "==", "company_approval").get(),
     db.collection(NEWS_COLLECTION).where("categoria", "==", "nova_empresa").get(),
+    db.collection(NEWS_COLLECTION).where("categoria", "==", "company_approval").get(),
     db.collection(NEWS_COLLECTION).where("titulo", "==", APPROVAL_POST_TITLE).get(),
   ]);
   return Array.from(
     new Map(
-      [...byType.docs, ...byCategory.docs, ...byTitle.docs].map((document) => [
+      [
+        ...byType.docs,
+        ...byLegacyType.docs,
+        ...byLegacyTipo.docs,
+        ...byCategory.docs,
+        ...byLegacyCategory.docs,
+        ...byTitle.docs,
+      ].map((document) => [
         document.ref.path,
         document,
       ]),
     ).values(),
   );
+}
+
+function approvalCompanyId(data: FirebaseFirestore.DocumentData): string {
+  return firstNonEmpty(
+    data.empresaId,
+    data.companyId,
+    data.empresa?.id,
+    data.company?.id,
+  );
+}
+
+async function auditApprovalPostConsistency(
+  desiredIds: Set<string>,
+  activeCompanyIds: Set<string>,
+): Promise<{ publishedPosts: number; consistent: boolean }> {
+  const documents = await readApprovalNewsDocuments();
+  const published = documents.filter((document) => {
+    const data = document.data();
+    const status = normalizeText(data.status || "publicado");
+    return status === "publicado";
+  });
+  const companyIds = published.map((document) => approvalCompanyId(document.data()));
+  const uniqueCompanyIds = new Set(companyIds.filter(Boolean));
+  const canonicalIds = new Set(published.map((document) => document.id));
+  const allCanonical = published.every((document) => desiredIds.has(document.id));
+  const allCompaniesActive = companyIds.every(
+    (companyId) => Boolean(companyId) && activeCompanyIds.has(companyId),
+  );
+  const exactlyOnePerCompany =
+    published.length === uniqueCompanyIds.size &&
+    uniqueCompanyIds.size === activeCompanyIds.size;
+  const everyDesiredPostExists = Array.from(desiredIds).every((id) => canonicalIds.has(id));
+
+  return {
+    publishedPosts: published.length,
+    consistent:
+      allCanonical &&
+      allCompaniesActive &&
+      exactlyOnePerCompany &&
+      everyDesiredPostExists,
+  };
 }
 
 async function reconcileApprovalPosts(
@@ -444,7 +675,7 @@ async function reconcileApprovalPosts(
   const staleRefs = existingApprovalPosts
     .filter((document) => {
       const data = document.data();
-      const companyId = firstNonEmpty(data.empresaId, data.empresa?.id);
+      const companyId = approvalCompanyId(data);
       return !desiredIds.has(document.id) ||
         !companyId ||
         !activeCompanyIds.has(companyId);
@@ -575,9 +806,10 @@ function syntheticRegistrationForCompany(
 }
 
 export async function syncCompanyApprovalNewsHistory(): Promise<ApprovalWriteResult> {
-  const [registrations, companiesSnapshot] = await Promise.all([
+  const [registrations, companiesSnapshot, simulatorCatalog] = await Promise.all([
     readApprovedCompanyRegistrations(),
     db.collection(COMPANIES_COLLECTION).get(),
+    loadSimulatorCatalog(),
   ]);
 
   const registrationsById = new Map<string, RegistrationRecord>();
@@ -622,6 +854,11 @@ export async function syncCompanyApprovalNewsHistory(): Promise<ApprovalWriteRes
     const ownerProfile =
       ownerProfiles.get(ownerIdOf(registration.data, company)) ||
       await loadOwnerProfile(registration.data, company);
+    const resolvedSimulator = resolveSimulatorDescriptor(
+      registration.data,
+      company,
+      simulatorCatalog,
+    );
     const post = buildApprovalPost(
       registration.id,
       registration.data,
@@ -629,6 +866,7 @@ export async function syncCompanyApprovalNewsHistory(): Promise<ApprovalWriteRes
       company,
       "historico",
       ownerProfile,
+      resolvedSimulator,
     );
     if (post) generated.push(post);
   }
@@ -639,10 +877,45 @@ export async function syncCompanyApprovalNewsHistory(): Promise<ApprovalWriteRes
     return leftDate - rightDate || left.id.localeCompare(right.id);
   });
 
-  return reconcileApprovalPosts(generated, activeCompanyIds);
+  const result = await reconcileApprovalPosts(generated, activeCompanyIds);
+  const consistency = await auditApprovalPostConsistency(
+    new Set(generated.map((post) => post.id)),
+    activeCompanyIds,
+  );
+  result.activeCompanies = activeCompanyIds.size;
+  result.expectedPosts = activeCompanyIds.size;
+  result.publishedPosts = consistency.publishedPosts;
+  result.consistent = consistency.consistent;
+  if (!result.consistent) {
+    console.error("[NVU NEWS] Inconsistência na reconciliação de empresas aprovadas.", {
+      activeCompanies: activeCompanyIds.size,
+      generatedPosts: generated.length,
+      publishedPosts: consistency.publishedPosts,
+    });
+  }
+  return result;
 }
 
-async function syncCompanyApprovalNewsHistoryOnce(): Promise<ApprovalWriteResult> {
+function storedSyncResult(data: FirebaseFirestore.DocumentData): ApprovalWriteResult {
+  const activeCompanies = Number(data.activeCompanies);
+  const expectedPosts = Number(data.expectedPosts);
+  const publishedPosts = Number(data.publishedPosts);
+  return {
+    created: Number(data.created || 0),
+    updated: Number(data.updated || 0),
+    ignored: Number(data.ignored || 0),
+    removed: Number(data.removed || 0),
+    ...(Number.isFinite(activeCompanies) ? { activeCompanies } : {}),
+    ...(Number.isFinite(expectedPosts) ? { expectedPosts } : {}),
+    ...(Number.isFinite(publishedPosts) ? { publishedPosts } : {}),
+    consistent: data.consistent !== false,
+  };
+}
+
+async function syncCompanyApprovalNewsHistoryOnce(options?: {
+  force?: boolean;
+  expectedActiveCompanies?: number;
+}): Promise<ApprovalWriteResult> {
   const controlRef = db.collection("system_settings").doc(SYNC_CONTROL_DOCUMENT_ID);
   const runId = createHash("sha256")
     .update(`${Date.now()}_${Math.random()}`)
@@ -653,12 +926,29 @@ async function syncCompanyApprovalNewsHistoryOnce(): Promise<ApprovalWriteResult
     const snapshot = await transaction.get(controlRef);
     const current = snapshot.data() || {};
     const lockAt = parseDate(current.lockAt);
+    const completedAt = parseDate(current.completedAt);
+    const expectedMatches =
+      options?.expectedActiveCompanies === undefined ||
+      Number(current.activeCompanies) === options.expectedActiveCompanies;
     if (
       current.status === "in_progress" &&
       lockAt &&
       Date.now() - lockAt.getTime() < SYNC_LOCK_TIMEOUT_MS
     ) {
-      return "in_progress" as const;
+      return { reuse: storedSyncResult(current) } as const;
+    }
+
+    if (
+      !options?.force &&
+      current.status === "completed" &&
+      current.schemaVersion === SCHEMA_VERSION &&
+      current.consistent !== false &&
+      current.needsRecount !== true &&
+      completedAt &&
+      expectedMatches &&
+      Date.now() - completedAt.getTime() < SYNC_REUSE_WINDOW_MS
+    ) {
+      return { reuse: storedSyncResult(current) } as const;
     }
 
     transaction.set(controlRef, {
@@ -672,7 +962,7 @@ async function syncCompanyApprovalNewsHistoryOnce(): Promise<ApprovalWriteResult
     return "run" as const;
   });
 
-  if (decision !== "run") return emptyResult();
+  if (typeof decision === "object" && "reuse" in decision) return decision.reuse;
 
   try {
     const result = await syncCompanyApprovalNewsHistory();
@@ -684,6 +974,11 @@ async function syncCompanyApprovalNewsHistoryOnce(): Promise<ApprovalWriteResult
       updated: result.updated,
       ignored: result.ignored,
       removed: result.removed,
+      activeCompanies: result.activeCompanies || 0,
+      expectedPosts: result.expectedPosts || 0,
+      publishedPosts: result.publishedPosts || 0,
+      consistent: result.consistent !== false,
+      needsRecount: admin.firestore.FieldValue.delete(),
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       lockAt: admin.firestore.FieldValue.delete(),
@@ -749,6 +1044,11 @@ async function deleteApprovalPostsForCompany(
     .where("empresaId", "==", companyId)
     .get();
   refs.push(...byCompany.docs.map((document) => document.ref));
+  const byLegacyCompany = await db
+    .collection(NEWS_COLLECTION)
+    .where("companyId", "==", companyId)
+    .get();
+  refs.push(...byLegacyCompany.docs.map((document) => document.ref));
 
   const sourceRegistrationId = firstNonEmpty(company?.sourceRegistrationId);
   if (sourceRegistrationId) {
@@ -769,6 +1069,38 @@ async function deleteApprovalPostsForCompany(
   );
 }
 
+async function updateActiveCompanySummary(
+  before: FirebaseFirestore.DocumentData | null,
+  after: FirebaseFirestore.DocumentData | null,
+): Promise<void> {
+  const wasActive = Boolean(before && isActiveCompany(before));
+  const isActive = Boolean(after && isActiveCompany(after));
+  if (wasActive === isActive) return;
+
+  const controlRef = db.collection("system_settings").doc(SYNC_CONTROL_DOCUMENT_ID);
+  await db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(controlRef);
+    const current = snapshot.data() || {};
+    const currentCount = Number(current.activeCompanies);
+    if (!Number.isFinite(currentCount)) {
+      transaction.set(controlRef, {
+        schemaVersion: SCHEMA_VERSION,
+        needsRecount: true,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return;
+    }
+    const nextCount = Math.max(0, currentCount + (isActive ? 1 : -1));
+    transaction.set(controlRef, {
+      schemaVersion: SCHEMA_VERSION,
+      activeCompanies: nextCount,
+      expectedPosts: nextCount,
+      needsRecount: true,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+}
+
 async function publishCompanyDocumentApproval(
   companyId: string,
   company: FirebaseFirestore.DocumentData,
@@ -782,7 +1114,15 @@ async function publishCompanyDocumentApproval(
   }
 
   const registration = await loadRegistrationForCompany(companyId, company);
-  const ownerProfile = await loadOwnerProfile(registration.data, company);
+  const [ownerProfile, simulatorCatalog] = await Promise.all([
+    loadOwnerProfile(registration.data, company),
+    loadSimulatorCatalog(),
+  ]);
+  const resolvedSimulator = resolveSimulatorDescriptor(
+    registration.data,
+    company,
+    simulatorCatalog,
+  );
   const post = buildApprovalPost(
     registration.id,
     registration.data,
@@ -790,19 +1130,24 @@ async function publishCompanyDocumentApproval(
     { ...company, id: companyId },
     origin,
     ownerProfile,
+    resolvedSimulator,
   );
   if (!post) return emptyResult();
 
   const result = await commitApprovalPosts([post]);
-  const duplicates = await db
-    .collection(NEWS_COLLECTION)
-    .where("empresaId", "==", companyId)
-    .get();
+  const [duplicates, legacyDuplicates] = await Promise.all([
+    db.collection(NEWS_COLLECTION).where("empresaId", "==", companyId).get(),
+    db.collection(NEWS_COLLECTION).where("companyId", "==", companyId).get(),
+  ]);
   result.removed = await deleteDocumentRefs(
-    duplicates.docs
+    [...duplicates.docs, ...legacyDuplicates.docs]
       .filter((document) => document.id !== post.id)
       .map((document) => document.ref),
   );
+  result.activeCompanies = 1;
+  result.expectedPosts = 1;
+  result.publishedPosts = 1;
+  result.consistent = true;
   return result;
 }
 
@@ -864,12 +1209,16 @@ export const publishCompanyApprovalNewsOnCompanyCreate = functions
   .onWrite(async (change, context) => {
     const companyId = context.params.companyId;
     const before = change.before.exists ? change.before.data() || {} : {};
+    const after = change.after.exists ? change.after.data() || {} : {};
+    await updateActiveCompanySummary(
+      change.before.exists ? before : null,
+      change.after.exists ? after : null,
+    );
     if (!change.after.exists) {
       await deleteApprovalPostsForCompany(companyId, before);
       return null;
     }
 
-    const after = change.after.data() || {};
     if (!isActiveCompany(after)) {
       await deleteApprovalPostsForCompany(companyId, after);
       return null;
@@ -943,6 +1292,30 @@ export const publishCompanyApprovalNewsOnOwnerProfileWrite = functions
     return null;
   });
 
+/**
+ * Reclassifies approval posts when a simulator label, alias or document ID is
+ * edited. This is especially important for legacy companies whose simulatorId
+ * is an opaque Firestore document ID and whose old simulatorName was incorrect.
+ */
+export const publishCompanyApprovalNewsOnSimulatorWrite = functions
+  .runWith({ timeoutSeconds: 300, memory: "512MB" })
+  .firestore.document(`${SIMULATORS_COLLECTION}/{simulatorId}`)
+  .onWrite(async () => {
+    simulatorCatalogCache = null;
+    await syncCompanyApprovalNewsHistoryOnce({ force: true });
+    return null;
+  });
+
+function canForceFullApprovalSync(context: {
+  auth?: { token: Record<string, unknown> } | null;
+}): boolean {
+  const token = context.auth?.token as Record<string, unknown> | undefined;
+  if (!token) return false;
+  if (token.admin === true || token.senior === true || token.isSenior === true) return true;
+  const roles = Array.isArray(token.roles) ? token.roles.map((role) => normalizeText(role)) : [];
+  return roles.includes("admin") || roles.includes("senior");
+}
+
 export const syncCompanyApprovalNews = functions
   .runWith({ timeoutSeconds: 300, memory: "512MB" })
   .https.onCall(async (data, context) => {
@@ -975,6 +1348,14 @@ export const syncCompanyApprovalNews = functions
       return { success: true, ...result };
     }
 
-    const result = await syncCompanyApprovalNewsHistoryOnce();
+    const requestedExpectedCount = Number(data?.expectedActiveCompanies);
+    const expectedActiveCompanies = Number.isFinite(requestedExpectedCount)
+      ? Math.max(0, Math.trunc(requestedExpectedCount))
+      : undefined;
+    const force = Boolean(data?.force) && canForceFullApprovalSync(context);
+    const result = await syncCompanyApprovalNewsHistoryOnce({
+      force,
+      expectedActiveCompanies,
+    });
     return { success: true, ...result };
   });

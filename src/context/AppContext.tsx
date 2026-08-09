@@ -34,8 +34,15 @@ import { generateCnpj } from "../lib/cnpj";
 import { preloadImages } from "../lib/imageCache";
 import { warmRankingUserProfiles } from "../lib/rankingPhotoWarmup";
 import { getRuntimePerformanceProfile } from "../lib/runtimePerformance";
+import {
+  NVU_FOREGROUND_ROUTE_EVENT,
+  canSuspendCompanyScopedRealtime,
+  getForegroundPathname,
+  isInteractionFirstRoute,
+} from "../lib/foregroundRoute";
 import { resolveMembershipRoles } from "../lib/membershipRoles";
 import { getOperationalSuspension } from "../lib/driverSuspension";
+import { isOpenJobStatus } from "../lib/jobStatus";
 import {
   resolveApprovedCompanyOwnerPhoto,
   resolvePersistedUserProfilePhoto,
@@ -94,6 +101,7 @@ export interface User {
   currentRecruitmentCompanyId?: string;
   currentRecruitmentSimulatorId?: string;
   currentRecruitmentStatus?: "pending" | "approved" | "rejected";
+  currentRecruitmentType?: "company_registration" | "driver_application";
   status: "active" | "pending" | "rejected";
   isOnline?: boolean;
   level?: number;
@@ -163,6 +171,7 @@ export interface RecruitmentSettings {
 export interface RecruitmentApplication {
   id: string;
   type?: "company_registration" | "driver_application";
+  registrationType?: "company_registration" | "driver_application";
   userId?: string;
   companyId: string;
   simulatorId?: string;
@@ -184,6 +193,12 @@ export interface RecruitmentApplication {
   accessRevokedAt?: string;
   accessRevokedReason?: string;
   createdAt: string;
+  companyName?: string;
+  ownerName?: string;
+  companyLogoURL?: string;
+  ownerPhotoUrl?: string;
+  simulatorName?: string;
+  rejectionReason?: string;
 }
 
 export interface Simulator {
@@ -255,7 +270,7 @@ export interface Job {
   driverId: string;
   vehicleId: string;
   trailerId?: string;
-  status: "pending" | "active" | "completed" | "cancelled" | "awaiting_completion";
+  status: "pending" | "active" | "completed" | "cancelled" | "awaiting_completion" | "delayed";
   progress: number; // Num of completed deliveries
   contractNameSnapshot?: string;
   completedRoutes?: { origin: string; destination: string }[]; // For simple mode deliveries
@@ -1067,18 +1082,12 @@ const readPersistedOperationalScopeSnapshot = (
 const compactOperationalSnapshot = (
   snapshot: OperationalScopeSnapshot,
 ): OperationalScopeSnapshot => {
-  const activeStatuses = new Set([
-    "active",
-    "awaiting_completion",
-    "pending",
-    "delayed",
-  ]);
   const sortByRecent = <T extends { createdAt?: string; assignedAt?: string }>(
     items: T[],
   ) =>
     [...items].sort((a, b) => {
-      const aActive = activeStatuses.has(String((a as any).status || ""));
-      const bActive = activeStatuses.has(String((b as any).status || ""));
+      const aActive = isOpenJobStatus((a as any).status);
+      const bActive = isOpenJobStatus((b as any).status);
       if (aActive !== bActive) return aActive ? -1 : 1;
       const aTime = new Date(a.assignedAt || a.createdAt || 0).getTime() || 0;
       const bTime = new Date(b.assignedAt || b.createdAt || 0).getTime() || 0;
@@ -1089,11 +1098,11 @@ const compactOperationalSnapshot = (
     ? (() => {
         const sortedJobs = sortByRecent(snapshot.jobs);
         const activeJobs = sortedJobs.filter((job) =>
-          activeStatuses.has(String(job.status || "")),
+          isOpenJobStatus(job.status),
         );
         const recentInactiveJobs = sortedJobs
           .filter(
-            (job) => !activeStatuses.has(String(job.status || "")),
+            (job) => !isOpenJobStatus(job.status),
           )
           .slice(0, 80);
         return [...activeJobs, ...recentInactiveJobs];
@@ -1148,6 +1157,11 @@ const compactOperationalSnapshot = (
     jobDemands: snapshot.jobDemands?.slice(0, 50),
     users: snapshot.users?.slice(0, 160),
   };
+};
+
+const cancelPendingOperationalScopePersistence = () => {
+  operationalScopePersistTimers.forEach((timer) => clearTimeout(timer));
+  operationalScopePersistTimers.clear();
 };
 
 const schedulePersistOperationalScopeSnapshot = (
@@ -1211,6 +1225,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   // same UID. This prevents a previous account from flashing inside public
   // registration screens while Auth is still restoring its session.
   const bootSession = useMemo(() => readBootSessionSnapshot(), []);
+  const [foregroundPathname, setForegroundPathname] = useState(() =>
+    getForegroundPathname(),
+  );
+  const interactionFirstRoute = isInteractionFirstRoute(foregroundPathname);
+  const suspendCompanyScopedRealtime = canSuspendCompanyScopedRealtime(
+    foregroundPathname,
+  );
+
+  useLayoutEffect(() => {
+    if (!interactionFirstRoute) return;
+    // Operational cache persistence uses JSON.stringify on potentially large
+    // arrays. A timer scheduled by the previous workspace could otherwise fire
+    // after SelectProfile is already visible and block the next touch.
+    cancelPendingOperationalScopePersistence();
+  }, [interactionFirstRoute]);
   const verifiedBootUid =
     auth.currentUser?.uid && auth.currentUser.uid === bootSession.uid
       ? auth.currentUser.uid
@@ -1285,6 +1314,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   const [sessionRecovering, setSessionRecovering] = useState(false);
   const [sessionRefreshEpoch, setSessionRefreshEpoch] = useState(0);
 
+  useEffect(() => {
+    const handleForegroundRoute = (event: Event) => {
+      const routeEvent = event as CustomEvent<string>;
+      const nextPathname = String(
+        routeEvent.detail || getForegroundPathname(),
+      ).trim();
+      if (!nextPathname) return;
+      setForegroundPathname((current) =>
+        current === nextPathname ? current : nextPathname,
+      );
+    };
+
+    window.addEventListener(NVU_FOREGROUND_ROUTE_EVENT, handleForegroundRoute);
+    return () =>
+      window.removeEventListener(
+        NVU_FOREGROUND_ROUTE_EVENT,
+        handleForegroundRoute,
+      );
+  }, []);
+
   const canProcessAuthenticatedCallback = (expectedUid?: string) =>
     !isLoggingOutRef.current &&
     !isAuthTeardownActive() &&
@@ -1324,6 +1373,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const refreshSession = (reason = "manual") => {
     if (isLoggingOutRef.current || isAuthTeardownActive() || !auth.currentUser) return;
+    // Android resume/online events used to rebuild the auth + user + membership
+    // listener graph while SelectProfile was already interactive. That work can
+    // deserialize Firestore snapshots and block the same main thread used by a
+    // tap. The live listeners already keep these lightweight screens current,
+    // so automatic recovery is deferred until an operational route.
+    if (reason !== "manual" && isInteractionFirstRoute(getForegroundPathname())) {
+      return;
+    }
     const now = Date.now();
     const minimumIntervalMs =
       reason === "manual"
@@ -1409,6 +1466,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const resolvedProfilePhoto = resolvePersistedUserProfilePhoto(data);
       if (
         !resolvedProfilePhoto &&
+        !isInteractionFirstRoute(getForegroundPathname()) &&
         !profilePhotoRepairAttemptedRef.current.has(firebaseUser.uid)
       ) {
         profilePhotoRepairAttemptedRef.current.add(firebaseUser.uid);
@@ -1625,7 +1683,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Atualização dinâmica do contexto do Push Capacitor
   useEffect(() => {
+    // Push registration may load a native plugin, install listeners and call the
+    // bridge. It is not needed on the interaction-first selector/status screens.
+    const currentForegroundPath = getForegroundPathname();
     if (
+      interactionFirstRoute ||
+      currentForegroundPath === "/login" ||
+      currentForegroundPath === "/" ||
       !authInitialized ||
       !currentUser?.id ||
       auth.currentUser?.uid !== currentUser.id
@@ -1649,6 +1713,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     activeCompanyId,
     activeRole,
     currentUser?.role,
+    interactionFirstRoute,
   ]);
 
   const [users, setUsers] = useState<User[]>([]);
@@ -1679,6 +1744,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     currentUser,
     memberships,
     activeCompanyId,
+    suspendedRealtime: suspendCompanyScopedRealtime,
   });
 
   useEffect(() => {
@@ -1717,6 +1783,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   // Firebase is the single source of truth.
   // No automatic creation, seed, or hardcoded simulators.
   useEffect(() => {
+    // The simulator catalog is not needed to open Pending Applications. Stop
+    // the listener before entering the selector so a network snapshot cannot
+    // normalize the catalog and invalidate OperationalContext during a tap.
+    // Existing simulator data remains in memory and the listener reconnects on
+    // routes that actually consume the catalog.
+    if (interactionFirstRoute || foregroundPathname === "/login") return;
+
     setSimulatorsLoading(true);
     setSimulatorsError(null);
 
@@ -1748,7 +1821,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     return () => unsub();
-  }, []);
+  }, [foregroundPathname, interactionFirstRoute]);
 
   // --- Real-time Firestore Subscriptions (Authenticated) ---
   useEffect(() => {
@@ -1775,7 +1848,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     const unsubscribeMemberships = onSnapshot(
       q,
-      { includeMetadataChanges: true },
       async (snap) => {
         if (!canProcessAuthenticatedCallback(currentUser.id)) return;
         const fetchedMemberships = snap.docs.map((membershipDocument) =>
@@ -2034,6 +2106,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       userId: currentUserId,
       targetCompanyId,
       isActive: isActiveUser,
+      suspended: suspendCompanyScopedRealtime,
     });
   const {
     driverRequests,
@@ -2046,6 +2119,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     activeRole,
     targetCompanyId,
     isActive: isActiveUser,
+    suspended: suspendCompanyScopedRealtime,
   });
 
 
@@ -2053,6 +2127,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   // photo work is bounded by runtime capability so mobile WebViews are not
   // interrupted by speculative decoding after each users/jobs snapshot.
   useEffect(() => {
+    if (interactionFirstRoute) return;
+
     const runtime = getRuntimePerformanceProfile();
     const memberIds = new Set(
       allCompanyMembers
@@ -2163,6 +2239,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
     };
   }, [
+    interactionFirstRoute,
     currentUser,
     activeCompanyId,
     companies,
@@ -2193,6 +2270,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       return;
     }
 
+    // Select Profile/Pendências/Status must remain a quiet foreground surface.
+    // Keep the last operational snapshot in memory, but do not attach the
+    // vehicles/contracts/jobs/users listeners while these screens are visible.
+    // The previous effect cleanup unsubscribes an existing operational scope
+    // before this branch runs, so Firestore snapshot mapping cannot block taps.
+    if (interactionFirstRoute) return;
+
     const uid = currentUserId;
     const previousPrivateScope = privateDataScopeRef.current;
     const sameCompanyScope =
@@ -2219,9 +2303,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         .filter(
           (job) =>
             job.driverId === uid &&
-            ["active", "awaiting_completion", "pending", "delayed"].includes(
-              job.status,
-            ),
+            isOpenJobStatus(job.status),
         )
         .sort((a, b) => {
           const priority = (status: string) =>
@@ -2315,12 +2397,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           ? cachedScope.jobs?.find(
               (job) =>
                 job.driverId === uid &&
-                [
-                  "active",
-                  "awaiting_completion",
-                  "pending",
-                  "delayed",
-                ].includes(job.status),
+                isOpenJobStatus(job.status),
             )
           : undefined;
       const cachedActiveContract = cachedActiveDriverJob
@@ -2679,9 +2756,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     activeCompanyId,
     activeRole,
     isActiveUser,
+    interactionFirstRoute,
   ]);
 
   useEffect(() => {
+    if (interactionFirstRoute) return;
     if (!activeCompanyId || allCompanyMembers.length === 0) return;
 
     const existingIds = users.map((u) => u.id);
@@ -2734,7 +2813,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     };
 
     fetchUsers();
-  }, [allCompanyMembers, activeCompanyId, users.map((u) => u.id).join(",")]);
+  }, [
+    interactionFirstRoute,
+    allCompanyMembers,
+    activeCompanyId,
+    users.map((u) => u.id).join(","),
+  ]);
 
   // Helper para getCurrentUserId (conforme requisitos)
   const getCurrentUserId = () => {
@@ -2858,9 +2942,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           );
           const previousRefs = new Map<string, any>();
           previousSnapshots.forEach((snapshot) =>
-            snapshot.docs.forEach((previousApplication) =>
-              previousRefs.set(previousApplication.id, previousApplication.ref),
-            ),
+            snapshot.docs.forEach((previousApplication) => {
+              const previousData = previousApplication.data() as Partial<RecruitmentApplication>;
+              const previousType = String(
+                previousData.type ||
+                  previousData.registrationType ||
+                  "driver_application",
+              );
+              // Driver submissions replace only older driver submissions.
+              // A simultaneous company registration is an independent flow
+              // and must remain pending/visible until the NVU evaluates it.
+              if (previousType !== "company_registration") {
+                previousRefs.set(previousApplication.id, previousApplication.ref);
+              }
+            }),
           );
           await Promise.all(
             Array.from(previousRefs.values()).map((previousRef) =>
@@ -2920,6 +3015,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
               currentRecruitmentCompanyId: data.companyId,
               currentRecruitmentSimulatorId: resolveSimulatorId(data, simulators) || data.simulatorId || "",
               currentRecruitmentStatus: "pending",
+              currentRecruitmentType: "driver_application",
               // A nova inscrição substitui qualquer aprovação antiga como
               // referência de acesso/identidade do fluxo.
               approvedIdentityApplicationId: deleteField(),
@@ -2940,6 +3036,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           userId: data.userId,
           companyId: data.companyId,
           simulatorId: data.simulatorId,
+          companyName: data.companyName,
+          companyLogoURL: data.companyLogoURL,
+          simulatorName: data.simulatorName,
           applicationPhotoURL: data.applicationPhotoURL,
           applicationPhotoTransport: data.applicationPhotoTransport,
           fullName: data.fullName,
@@ -3009,8 +3108,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         const currentApplicationId = String(
           submittedUserSnapshot.data()?.currentRecruitmentApplicationId || "",
         ).trim();
-        if (currentApplicationId && currentApplicationId !== applicationId) {
-          throw new Error("Esta inscrição foi substituída por uma inscrição mais recente e não pode liberar acesso.");
+        const currentRecruitmentType = String(
+          submittedUserSnapshot.data()?.currentRecruitmentType || "",
+        ).trim();
+        if (
+          currentRecruitmentType === "driver_application" &&
+          currentApplicationId &&
+          currentApplicationId !== applicationId
+        ) {
+          throw new Error("Esta inscrição foi substituída por uma inscrição de motorista mais recente e não pode liberar acesso.");
         }
       }
 
@@ -3076,6 +3182,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           currentRecruitmentCompanyId: app.companyId,
           currentRecruitmentSimulatorId: resolveSimulatorId(app, simulators),
           currentRecruitmentStatus: "approved",
+          currentRecruitmentType: "driver_application",
           companyId: app.companyId,
           role: currentUserData.role === "admin" ? "admin" : "driver",
           roles: canonicalRoles,
@@ -3216,6 +3323,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         if (userSnapshot.exists() && currentApplicationId === applicationId) {
           await updateDoc(userRef, {
             currentRecruitmentStatus: "rejected",
+            currentRecruitmentType: "driver_application",
             updatedAt: new Date().toISOString(),
           });
         }
@@ -3300,13 +3408,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   ) => {
     try {
       getCurrentUserId(); // valida se tá autenticado
-      await updateDoc(doc(db, "frotas", id), updates);
+
+      // Company name and simulator define the platform identity of an existing
+      // company. They are set during creation and are not editable through the
+      // regular owner/admin profile update flow.
+      const editableUpdates = { ...updates };
+      delete editableUpdates.companyName;
+      delete editableUpdates.simulatorId;
+      delete editableUpdates.simulatorName;
+
+      await updateDoc(doc(db, "frotas", id), editableUpdates);
       setCompanies((current) => {
         const target = current.find((company) => company.id === id);
         if (!target) return current;
         const next = mergeCompanyProfile(current, {
           ...target,
-          ...updates,
+          ...editableUpdates,
           id,
         } as CompanyProfile);
         companiesRef.current = next;
@@ -4722,7 +4839,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       const activeTrailerIds = new Set<string>();
 
       for (const job of companyJobs) {
-        if (!["pending", "active"].includes(job.status)) continue;
+        if (!isOpenJobStatus(job.status)) continue;
         if (job.vehicleId) activeVehicleIds.add(job.vehicleId);
         if (job.trailerId) activeTrailerIds.add(job.trailerId);
       }
@@ -4776,7 +4893,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
   // Resource reconciliation stays automatic, but runs after the current UI
   // work has settled so a Firestore snapshot cannot cause a navigation hitch.
   useEffect(() => {
-    if (!authInitialized || !activeCompanyId) return;
+    // Resource reconciliation scans cached operational arrays and may commit a
+    // Firestore batch. Never schedule it while an interaction-first screen is
+    // active; it resumes automatically after entering an operational profile.
+    if (interactionFirstRoute || !authInitialized || !activeCompanyId) return;
 
     let idleId: number | null = null;
     const idleApi = window as Window & {
@@ -4802,11 +4922,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       window.clearTimeout(syncTimer);
       if (idleId !== null) idleApi.cancelIdleCallback?.(idleId);
     };
-  }, [jobs, vehicles, trailers, activeCompanyId, authInitialized]);
+  }, [
+    jobs,
+    vehicles,
+    trailers,
+    activeCompanyId,
+    authInitialized,
+    interactionFirstRoute,
+  ]);
 
   // Reconcile immediately when connectivity returns because the previous
   // attempt may have been interrupted while offline.
   useEffect(() => {
+    if (interactionFirstRoute) return;
+
     const handleOnline = () => {
       console.log("[Auto-Sync] Conexão restabelecida. Rodando sincronização.");
       void syncCompanyData();
@@ -4814,7 +4943,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
-  }, [jobs, vehicles, trailers, activeCompanyId, authInitialized]);
+  }, [
+    jobs,
+    vehicles,
+    trailers,
+    activeCompanyId,
+    authInitialized,
+    interactionFirstRoute,
+  ]);
 
   const combinedUsers = useMemo(() => {
     const merged = [...users];
@@ -5118,7 +5254,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
           userId={currentUserId}
           activeRole={activeRole}
           activeCompanyId={targetCompanyId}
-          enabled={isActiveUser && Boolean(activeRole)}
+          enabled={
+            !interactionFirstRoute && isActiveUser && Boolean(activeRole)
+          }
         >
           <ActivityContext.Provider value={activityValue}>
             <RankingFilterContext.Provider value={rankingFilterValue}>

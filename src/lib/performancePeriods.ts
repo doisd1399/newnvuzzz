@@ -27,30 +27,43 @@ export interface ClassificationPeriod extends DateInterval {
   label: string;
 }
 
-const startOfLocalDay = (value: Date) => {
+const startOfUtcDay = (value: Date) =>
+  new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()),
+  );
+
+const endOfUtcDay = (value: Date) =>
+  new Date(startOfUtcDay(value).getTime() + 86_400_000 - 1);
+
+// react-day-picker returns a Date at local midnight. Convert the calendar
+// fields the user selected into the platform's canonical UTC day instead of
+// interpreting the device offset as part of the requested interval.
+const selectedCalendarDayStartUtc = (value: Date) =>
+  new Date(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()));
+
+const selectedCalendarDayEndUtc = (value: Date) =>
+  new Date(selectedCalendarDayStartUtc(value).getTime() + 86_400_000 - 1);
+
+const addUtcDays = (value: Date, amount: number) => {
   const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + amount);
   return date;
 };
 
-const endOfLocalDay = (value: Date) => {
-  const date = new Date(value);
-  date.setHours(23, 59, 59, 999);
-  return date;
-};
-
-const addLocalDays = (value: Date, amount: number) => {
-  const date = new Date(value);
-  date.setDate(date.getDate() + amount);
-  return date;
-};
-
-const addLocalMonths = (value: Date, amount: number) =>
-  new Date(value.getFullYear(), value.getMonth() + amount, 1);
+const addUtcMonths = (value: Date, amount: number) =>
+  new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() + amount, 1));
 
 const inclusiveCalendarDays = (start: Date, end: Date) => {
-  const startUtc = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
-  const endUtc = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  const startUtc = Date.UTC(
+    start.getUTCFullYear(),
+    start.getUTCMonth(),
+    start.getUTCDate(),
+  );
+  const endUtc = Date.UTC(
+    end.getUTCFullYear(),
+    end.getUTCMonth(),
+    end.getUTCDate(),
+  );
   return Math.max(1, Math.round((endUtc - startUtc) / 86_400_000) + 1);
 };
 
@@ -74,7 +87,10 @@ export function resolvePerformanceInterval(
     const rawEnd = new Date(customRange.to || customRange.from);
     const first = rawStart <= rawEnd ? rawStart : rawEnd;
     const last = rawStart <= rawEnd ? rawEnd : rawStart;
-    return { start: startOfLocalDay(first), end: endOfLocalDay(last) };
+    return {
+      start: selectedCalendarDayStartUtc(first),
+      end: selectedCalendarDayEndUtc(last),
+    };
   }
 
   const range = getWeeklyRange(referenceDate);
@@ -92,23 +108,23 @@ export function resolvePreviousPerformanceInterval(
   referenceDate = new Date(),
 ): DateInterval {
   if (preset === "Hoje") {
-    const range = getTodayRange(addLocalDays(referenceDate, -1));
+    const range = getTodayRange(addUtcDays(referenceDate, -1));
     return { start: range.start, end: range.end };
   }
 
   if (preset === "Semana atual") {
-    const range = getWeeklyRange(addLocalDays(referenceDate, -7));
+    const range = getWeeklyRange(addUtcDays(referenceDate, -7));
     return { start: range.start, end: range.end };
   }
 
   if (preset === "Mês atual") {
-    const range = getMonthlyRange(addLocalMonths(referenceDate, -1));
+    const range = getMonthlyRange(addUtcMonths(referenceDate, -1));
     return { start: range.start, end: range.end };
   }
 
   const days = inclusiveCalendarDays(current.start, current.end);
-  const previousEnd = endOfLocalDay(addLocalDays(current.start, -1));
-  const previousStart = startOfLocalDay(addLocalDays(previousEnd, -(days - 1)));
+  const previousEnd = endOfUtcDay(addUtcDays(current.start, -1));
+  const previousStart = startOfUtcDay(addUtcDays(previousEnd, -(days - 1)));
   return { start: previousStart, end: previousEnd };
 }
 
@@ -119,30 +135,32 @@ export function buildClassificationPeriods(
 ): ClassificationPeriod[] {
   return Array.from({ length: Math.max(1, count) }, (_, index) => {
     if (view === "Semanal") {
-      const range = getWeeklyRange(addLocalDays(referenceDate, index * -7));
+      const range = getWeeklyRange(addUtcDays(referenceDate, index * -7));
       return {
         id: index,
         start: range.start,
         end: range.end,
         label: `${range.start.toLocaleDateString("pt-BR", {
+          timeZone: "UTC",
           day: "2-digit",
           month: "2-digit",
         })} a ${range.end.toLocaleDateString("pt-BR", {
+          timeZone: "UTC",
           day: "2-digit",
           month: "2-digit",
         })}`,
       };
     }
 
-    const range = getMonthlyRange(addLocalMonths(referenceDate, -index));
+    const range = getMonthlyRange(addUtcMonths(referenceDate, -index));
     const formattedMonth = range.start
-      .toLocaleDateString("pt-BR", { month: "short" })
+      .toLocaleDateString("pt-BR", { timeZone: "UTC", month: "short" })
       .replace(".", "");
     return {
       id: index,
       start: range.start,
       end: range.end,
-      label: `${formattedMonth.charAt(0).toUpperCase() + formattedMonth.slice(1)} ${range.start.getFullYear()}`,
+      label: `${formattedMonth.charAt(0).toUpperCase() + formattedMonth.slice(1)} ${range.start.getUTCFullYear()}`,
     };
   });
 }

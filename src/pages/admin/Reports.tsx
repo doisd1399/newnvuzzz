@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { 
   Calendar, 
@@ -15,10 +15,56 @@ import {
 import { cn } from "../../lib/utils";
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
 import { useCompanyStore } from "../../context/CompanyContext";
-import { normalizeTrip, getFilteredTrips } from "../../lib/metricsEngine";
-import { startOfWeek, endOfWeek, startOfMonth, endOfMonth, format, getWeek } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import {
+  getFilteredTrips,
+  getMonthlyRange,
+  getWeeklyRange,
+  normalizeTrip,
+} from "../../lib/metricsEngine";
+import {
+  getCanonicalTripDriverId,
+  getCanonicalTripDriverName,
+} from "../../lib/tripIdentity";
 import { useTripHistory } from "../../hooks/useTripHistory";
+
+type ReportPeriod = "semanal" | "mensal";
+
+type ReportTrip = ReturnType<typeof normalizeTrip> & {
+  parsedDate: Date;
+  val: number;
+};
+
+type ReportHistoryItem = {
+  id: string;
+  title: string;
+  subTitle: string;
+  totalValue: number;
+  tripCount: number;
+  sortDate: Date;
+  avgTicket: number;
+  variation: number;
+  hasPrevious: boolean;
+};
+
+const formatUtcDate = (date: Date) =>
+  date.toLocaleDateString("pt-BR", {
+    timeZone: "UTC",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+const formatUtcMonth = (date: Date) => {
+  const value = date.toLocaleDateString("pt-BR", {
+    timeZone: "UTC",
+    month: "long",
+    year: "numeric",
+  });
+  return value.charAt(0).toUpperCase() + value.slice(1);
+};
+
+const utcDateKey = (date: Date) => date.toISOString().slice(0, 10);
+const utcMonthKey = (date: Date) => date.toISOString().slice(0, 7);
 
 export default function Reports({
   defaultDriverId,
@@ -31,164 +77,260 @@ export default function Reports({
 } = {}) {
   const navigate = useNavigate();
   const { activeRole, currentUser } = useSessionStore();
-  const { activeCompanyId } = useCompanyStore();
+  const { activeCompanyId, allCompanyMembers } = useCompanyStore();
   const { users = [] } = useOperationalStore();
-  const { historicoTrips = [] } = useTripHistory(activeCompanyId);
-  const [period, setPeriod] = useState<"semanal" | "mensal">("semanal");
-  const [mode, setMode] = useState<"empresa" | "funcionarios">("funcionarios"); // Default to funcionarios if we pass driverId
-  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(defaultDriverId || null);
+  const {
+    historicoTrips = [],
+    loading: tripsLoading,
+    error: tripsError,
+  } = useTripHistory(activeCompanyId);
 
-  
+  const isDriverView = activeRole === "driver" || Boolean(defaultDriverId);
+  const initialDriverId =
+    defaultDriverId || (activeRole === "driver" ? currentUser?.id || null : null);
+
+  const [period, setPeriod] = useState<ReportPeriod>("semanal");
+  const [mode, setMode] = useState<"empresa" | "funcionarios">(
+    isDriverView ? "funcionarios" : "empresa",
+  );
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(
+    initialDriverId,
+  );
   const [visibleItems, setVisibleItems] = useState(5);
 
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat("pt-BR", {
+  useEffect(() => {
+    if (!isDriverView) return;
+    setMode("funcionarios");
+    setSelectedDriverId(initialDriverId);
+  }, [initialDriverId, isDriverView]);
+
+  useEffect(() => {
+    if (isDriverView) return;
+    setMode("empresa");
+    setSelectedDriverId(null);
+    setVisibleItems(5);
+  }, [activeCompanyId, isDriverView]);
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat("pt-BR", {
       style: "currency",
       currency: "BRL",
     }).format(value);
-  };
 
-  const validTrips = useMemo(() => {
-    const normalizedTrips = historicoTrips.map(t => normalizeTrip(t as any));
-    const filtered = getFilteredTrips(normalizedTrips, undefined, undefined, activeCompanyId);
-    return filtered.map(t => ({ ...t, parsedDate: t.metricDate, val: t.normalizedValor, fieldUsed: 'metricDate' }));
-  }, [historicoTrips, activeCompanyId]);
+  const validTrips = useMemo<ReportTrip[]>(() => {
+    if (!activeCompanyId) return [];
 
-  const generateHistory = (trips: any[], currentPeriod: "semanal" | "mensal") => {
-    const groups: Record<string, {
-      id: string;
-      title: string;
-      subTitle: string;
-      totalValue: number;
-      tripCount: number;
-      sortDate: Date;
-    }> = {};
+    const normalizedTrips = historicoTrips.map((trip) =>
+      normalizeTrip(trip as any),
+    );
 
-    trips.forEach((trip: any) => {
+    return getFilteredTrips(
+      normalizedTrips,
+      undefined,
+      undefined,
+      activeCompanyId,
+    )
+      .filter(
+        (trip) =>
+          trip.metricDate instanceof Date &&
+          Number.isFinite(trip.metricDate.getTime()),
+      )
+      .map((trip) => ({
+        ...trip,
+        parsedDate: new Date(trip.metricDate),
+        val: trip.normalizedValor,
+      }));
+  }, [activeCompanyId, historicoTrips]);
+
+  const generateHistory = (
+    trips: ReportTrip[],
+    currentPeriod: ReportPeriod,
+  ): ReportHistoryItem[] => {
+    const groups = new Map<
+      string,
+      Omit<ReportHistoryItem, "avgTicket" | "variation" | "hasPrevious">
+    >();
+
+    trips.forEach((trip) => {
       const date = trip.parsedDate;
-      if (!date || isNaN(date.getTime())) return;
-      
-      let key = "";
-      let subTitle = "";
-      let sortDate = date;
+      if (!Number.isFinite(date.getTime())) return;
 
-      if (currentPeriod === "semanal") {
-        const start = startOfWeek(date, { weekStartsOn: 0 });
-        const end = endOfWeek(date, { weekStartsOn: 0 });
-        key = format(start, "yyyy-MM-dd");
-        subTitle = `${format(start, "dd/MM/yyyy")} até ${format(end, "dd/MM/yyyy")}`;
-        sortDate = start;
-      } else {
-        const start = startOfMonth(date);
-        key = format(start, "yyyy-MM");
-        const monthName = format(date, "MMMM yyyy", { locale: ptBR });
-        subTitle = monthName.charAt(0).toUpperCase() + monthName.slice(1);
-        sortDate = start;
+      const range =
+        currentPeriod === "semanal"
+          ? getWeeklyRange(date)
+          : getMonthlyRange(date);
+      const key =
+        currentPeriod === "semanal"
+          ? utcDateKey(range.start)
+          : utcMonthKey(range.start);
+      const subTitle =
+        currentPeriod === "semanal"
+          ? `${formatUtcDate(range.start)} até ${formatUtcDate(range.end)}`
+          : formatUtcMonth(range.start);
+      const currentRange =
+        currentPeriod === "semanal"
+          ? getWeeklyRange(new Date())
+          : getMonthlyRange(new Date());
+      const isCurrent = range.start.getTime() === currentRange.start.getTime();
+      const title =
+        currentPeriod === "semanal"
+          ? isCurrent
+            ? "Semana atual"
+            : `Semana de ${formatUtcDate(range.start)}`
+          : isCurrent
+            ? "Mês atual"
+            : formatUtcMonth(range.start);
+
+      const existing = groups.get(key);
+      if (existing) {
+        existing.tripCount += 1;
+        existing.totalValue += trip.val;
+        return;
       }
 
-      if (!groups[key]) {
-        groups[key] = { id: key, title: "", subTitle, totalValue: 0, tripCount: 0, sortDate };
-      }
-      
-      groups[key].tripCount += 1;
-      groups[key].totalValue += trip.val;
+      groups.set(key, {
+        id: key,
+        title,
+        subTitle,
+        totalValue: trip.val,
+        tripCount: 1,
+        sortDate: range.start,
+      });
     });
 
-    const sorted = Object.values(groups).sort((a, b) => a.sortDate.getTime() - b.sortDate.getTime());
-    
-    const withVariations = sorted.map((item, index) => {
-      const avgTicket = item.tripCount > 0 ? item.totalValue / item.tripCount : 0;
-      let variation = 0;
-      if (index > 0) {
-        const prev = sorted[index - 1].totalValue;
-        if (prev > 0) {
-          variation = ((item.totalValue - prev) / prev) * 100;
-        } else if (item.totalValue > 0) {
-          variation = 100;
+    const sorted = Array.from(groups.values()).sort(
+      (a, b) => a.sortDate.getTime() - b.sortDate.getTime(),
+    );
+    const totalsByPeriod = new Map(
+      sorted.map((item) => [item.id, item.totalValue] as const),
+    );
+
+    return sorted
+      .map((item) => {
+        const previousReference = new Date(item.sortDate);
+        if (currentPeriod === "semanal") {
+          previousReference.setUTCDate(previousReference.getUTCDate() - 7);
+        } else {
+          previousReference.setUTCMonth(previousReference.getUTCMonth() - 1);
         }
-      }
-      
-      const title = currentPeriod === "semanal" 
-        ? `Semana Operacional ${index + 1}` 
-        : `Mês Operacional ${index + 1}`;
+        const previousKey =
+          currentPeriod === "semanal"
+            ? utcDateKey(getWeeklyRange(previousReference).start)
+            : utcMonthKey(getMonthlyRange(previousReference).start);
+        const previousTotal = totalsByPeriod.get(previousKey);
+        const hasPrevious = previousTotal !== undefined;
+        let variation = 0;
 
-      return { ...item, title, avgTicket, variation, hasPrevious: index > 0 };
-    });
+        if (hasPrevious) {
+          if ((previousTotal || 0) > 0) {
+            variation =
+              ((item.totalValue - (previousTotal || 0)) /
+                (previousTotal || 1)) *
+              100;
+          } else if (item.totalValue > 0) {
+            variation = 100;
+          }
+        }
 
-    const reversed = withVariations.reverse();
-    
-    if (currentPeriod === "semanal") {
-      console.log(`[DIAGNÓSTICO 5] Quantidade de grupos semanais encontrados: ${reversed.length}`);
-      console.log(`[DIAGNÓSTICO 3] Lista dos períodos semanais gerados:`, reversed.map(r => r.title));
-    } else {
-      console.log(`[DIAGNÓSTICO 6] Quantidade de grupos mensais encontrados: ${reversed.length}`);
-      console.log(`[DIAGNÓSTICO 4] Lista dos períodos mensais gerados:`, reversed.map(r => r.title));
-    }
-    
-    return reversed;
+        return {
+          ...item,
+          avgTicket:
+            item.tripCount > 0 ? item.totalValue / item.tripCount : 0,
+          variation,
+          hasPrevious,
+        };
+      })
+      .reverse();
   };
-
-  const diagWeeklyHistory = useMemo(() => generateHistory(validTrips, "semanal"), [validTrips]);
-  const diagMonthlyHistory = useMemo(() => generateHistory(validTrips, "mensal"), [validTrips]);
-
-  const diagDateRange = useMemo(() => {
-    if (validTrips.length === 0) return null;
-    let minDate = validTrips[0].parsedDate;
-    let maxDate = validTrips[0].parsedDate;
-    validTrips.forEach((t: any) => {
-      if (t.parsedDate < minDate) minDate = t.parsedDate;
-      if (t.parsedDate > maxDate) maxDate = t.parsedDate;
-    });
-    return { minDate, maxDate };
-  }, [validTrips]);
-
-  const fieldCounts = useMemo(() => {
-    return validTrips.reduce((acc: any, trip: any) => {
-      acc[trip.fieldUsed] = (acc[trip.fieldUsed] || 0) + 1;
-      return acc;
-    }, {});
-  }, [validTrips]);
 
   const companyHistory = useMemo(() => {
     if (mode !== "empresa") return [];
     return generateHistory(validTrips, period);
-  }, [validTrips, mode, period]);
+  }, [mode, period, validTrips]);
 
   const driverHistory = useMemo(() => {
     if (mode !== "funcionarios" || !selectedDriverId) return [];
-    const driverTrips = validTrips.filter((t: any) => t.motoristaId === selectedDriverId);
-    return generateHistory(driverTrips, period);
-  }, [validTrips, mode, selectedDriverId, period]);
+    return generateHistory(
+      validTrips.filter(
+        (trip) => getCanonicalTripDriverId(trip) === selectedDriverId,
+      ),
+      period,
+    );
+  }, [mode, period, selectedDriverId, validTrips]);
 
   const activeDrivers = useMemo(() => {
-    const MapDrivers: Record<string, string> = {};
-    validTrips.forEach((trip: any) => {
-      if (trip.motoristaId) {
-        MapDrivers[trip.motoristaId] = trip.motoristaNome || "Motorista sem nome";
+    const namesById = new Map<string, string>();
+    const usersById = new Map(
+      users.map((user) => [String(user.id || ""), user] as const),
+    );
+
+    allCompanyMembers.forEach((member) => {
+      if (
+        member.companyId !== activeCompanyId ||
+        member.status !== "active" ||
+        !member.userId
+      ) {
+        return;
       }
+      const roles = Array.isArray(member.roles)
+        ? member.roles
+        : member.role
+          ? [member.role]
+          : [];
+      if (!roles.includes("driver")) return;
+
+      const user = usersById.get(member.userId);
+      namesById.set(
+        member.userId,
+        String(user?.name || user?.email || "Motorista sem nome"),
+      );
     });
 
-    const driversObj = Object.keys(MapDrivers).map(id => ({
-      id,
-      name: MapDrivers[id]
-    }));
+    validTrips.forEach((trip) => {
+      const driverId = getCanonicalTripDriverId(trip);
+      if (!driverId) return;
+      const user = usersById.get(driverId);
+      namesById.set(
+        driverId,
+        String(
+          user?.name ||
+            getCanonicalTripDriverName(trip) ||
+            namesById.get(driverId) ||
+            "Motorista sem nome",
+        ),
+      );
+    });
 
-    const sortedDrivers = driversObj.sort((a, b) => a.name.localeCompare(b.name));
-    
-    console.log(`[Relatórios] Quantidade de motoristas encontrados: ${sortedDrivers.length}`, sortedDrivers);
-    
-    if (sortedDrivers.length === 0) {
-      console.log(`[Relatórios] Nenhum motorista encontrado. Motivo: Nenhuma viagem válida (status concluída) com motoristaId foi encontrada no histórico da empresa ativa ${activeCompanyId}.`);
+    if (isDriverView && initialDriverId) {
+      const currentName =
+        currentUser?.name || currentUser?.email || "Motorista";
+      namesById.set(initialDriverId, String(currentName));
     }
 
-    return sortedDrivers;
-  }, [validTrips, activeCompanyId]);
+    return Array.from(namesById, ([id, name]) => ({ id, name })).sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, "pt-BR", {
+          sensitivity: "base",
+          numeric: true,
+        }) || a.id.localeCompare(b.id),
+    );
+  }, [
+    activeCompanyId,
+    allCompanyMembers,
+    currentUser?.email,
+    currentUser?.name,
+    initialDriverId,
+    isDriverView,
+    users,
+    validTrips,
+  ]);
 
   const handleLoadMore = () => {
     setVisibleItems((prev) => prev + 5);
   };
 
   const handleModeChange = (newMode: "empresa" | "funcionarios") => {
+    if (isDriverView) return;
     setMode(newMode);
     setSelectedDriverId(null);
     setVisibleItems(5);
@@ -199,9 +341,16 @@ export default function Reports({
     setVisibleItems(5);
   };
 
-  const renderHistoryList = (list: any[]) => {
-    console.log(`[DIAGNÓSTICO 11] Array enviado para renderização da lista (${period}):`, list.map(item => item.title));
-    console.log(`[DIAGNÓSTICO 7] Quantidade de cards efetivamente renderizados: ${Math.min(list.length, visibleItems)} de ${list.length}`);
+  const renderHistoryList = (list: ReportHistoryItem[]) => {
+    if (tripsLoading && list.length === 0) {
+      return (
+        <div className="bg-white dark:bg-[#1A1F26] border border-slate-200 dark:border-[#2A2F3A] rounded-[12px] shadow-sm px-4 py-8 flex items-center justify-center">
+          <span className="text-[14px] font-medium text-slate-500 dark:text-slate-400">
+            Atualizando resultados...
+          </span>
+        </div>
+      );
+    }
 
     if (list.length === 0) {
       return (
@@ -332,7 +481,7 @@ export default function Reports({
             </button>
           </div>
 
-          {!defaultDriverId && (
+          {!isDriverView && (
           <div className="grid grid-cols-2 gap-2.5">
             <button
               onClick={() => handleModeChange("empresa")}
@@ -361,6 +510,12 @@ export default function Reports({
           </div>
           )}
         </div>
+
+        {tripsError && (
+          <div className="rounded-[12px] border border-amber-200 bg-amber-50 px-3.5 py-3 text-[12px] font-medium text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+            Não foi possível atualizar os relatórios agora. O último resultado disponível foi mantido e uma nova tentativa será feita automaticamente.
+          </div>
+        )}
 
         {mode === "empresa" && (
           <div className="mt-5">
@@ -414,7 +569,7 @@ export default function Reports({
         {mode === "funcionarios" && selectedDriverId && (
           <div className="mt-5">
             <div className="flex items-center gap-3 mb-4 px-1">
-              {!defaultDriverId && (
+              {!isDriverView && (
                 <button 
                   onClick={() => setSelectedDriverId(null)}
                   className="w-8 h-8 rounded-full bg-slate-200 dark:bg-[#1A1F26] flex items-center justify-center text-slate-600 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-[#2A2F3A] transition-colors shrink-0"
@@ -444,112 +599,6 @@ export default function Reports({
           </div>
         </div>
         
-        {/* Painel de Diagnóstico */}
-        {false && (
-        <div className="mt-8 mb-8 p-4 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800/30 rounded-[12px]">
-          <h3 className="text-[16px] font-bold text-orange-800 dark:text-orange-400 mb-4 flex items-center gap-2">
-            <Info size={18} />
-            Diagnóstico dos Relatórios (Temporário)
-          </h3>
-          
-          <div className="space-y-4 text-[13px] text-slate-700 dark:text-slate-300">
-            <div className="grid grid-cols-2 gap-2">
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Documentos em historico_viagens:</span>
-                {historicoTrips.length}
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Viagens concluídas (após filtro):</span>
-                {validTrips.length}
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Semanas geradas:</span>
-                {diagWeeklyHistory.length}
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Meses gerados:</span>
-                {diagMonthlyHistory.length}
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Motoristas encontrados:</span>
-                {activeDrivers.length}
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-2 rounded">
-                <span className="font-semibold block mb-1">Cards renderizados na tela atual:</span>
-                {Math.min(period === "semanal" ? (mode === "empresa" ? companyHistory.length : driverHistory.length) : (mode === "empresa" ? companyHistory.length : driverHistory.length), visibleItems)}
-              </div>
-            </div>
-
-            <div className="bg-white/50 dark:bg-black/20 p-3 rounded space-y-2">
-              <div>
-                <span className="font-semibold">Primeiro período semanal gerado: </span>
-                {diagWeeklyHistory.length > 0 ? diagWeeklyHistory[diagWeeklyHistory.length - 1].title : 'Nenhum'}
-              </div>
-              <div>
-                <span className="font-semibold">Último período semanal gerado: </span>
-                {diagWeeklyHistory.length > 0 ? diagWeeklyHistory[0].title : 'Nenhum'}
-              </div>
-              <div>
-                <span className="font-semibold">Primeiro período mensal gerado: </span>
-                {diagMonthlyHistory.length > 0 ? diagMonthlyHistory[diagMonthlyHistory.length - 1].title : 'Nenhum'}
-              </div>
-              <div>
-                <span className="font-semibold">Último período mensal gerado: </span>
-                {diagMonthlyHistory.length > 0 ? diagMonthlyHistory[0].title : 'Nenhum'}
-              </div>
-            </div>
-
-            <div className="bg-white/50 dark:bg-black/20 p-3 rounded">
-              <span className="font-semibold block mb-2">Campos utilizados para agrupamento temporal (efetivo na bateria atual):</span>
-              <ul className="list-disc pl-4">
-                {Object.entries(fieldCounts).map(([field, count]) => (
-                  <li key={field}>{field}: <span className="font-bold">{count as number} viagens</span></li>
-                ))}
-              </ul>
-            </div>
-
-            <div className="bg-white/50 dark:bg-black/20 p-3 rounded space-y-2">
-              <span className="font-semibold block mb-1">Alcance temporal das viagens limitadas (min/max):</span>
-              {diagDateRange ? (
-                <>
-                  <div>
-                    <span className="font-medium">Primeira viagem: </span>
-                    {format(diagDateRange.minDate, "dd/MM/yyyy HH:mm", { locale: ptBR })}
-                  </div>
-                  <div>
-                    <span className="font-medium">Última viagem: </span>
-                    {format(diagDateRange.maxDate, "dd/MM/yyyy HH:mm", { locale: ptBR })}
-                  </div>
-                </>
-              ) : (
-                "Nenhuma viagem encontrada."
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="bg-white/50 dark:bg-black/20 p-3 rounded">
-                <span className="font-semibold block mb-2">Primeiros 20 períodos semanais gerados:</span>
-                <ul className="space-y-1">
-                  {diagWeeklyHistory.slice(0, 20).map(w => (
-                    <li key={w.id}>{w.title} - {w.tripCount} viagens ({formatCurrency(w.totalValue)})</li>
-                  ))}
-                  {diagWeeklyHistory.length === 0 && <li>Nenhuma semana.</li>}
-                </ul>
-              </div>
-              <div className="bg-white/50 dark:bg-black/20 p-3 rounded">
-                <span className="font-semibold block mb-2">Primeiros 20 períodos mensais gerados:</span>
-                <ul className="space-y-1">
-                  {diagMonthlyHistory.slice(0, 20).map(m => (
-                    <li key={m.id}>{m.title} - {m.tripCount} viagens ({formatCurrency(m.totalValue)})</li>
-                  ))}
-                  {diagMonthlyHistory.length === 0 && <li>Nenhum mês.</li>}
-                </ul>
-              </div>
-            </div>
-
-          </div>
-        </div>
-        )}
         
       </div>
     </div>

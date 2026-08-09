@@ -19,6 +19,7 @@ export interface UploadOptions {
   compressionMaxSizeMB?: number;
   maxWidthOrHeight?: number;
   maxOutputBytes?: number;
+  storageScope?: "default" | "trip-receipt";
 }
 
 export class UploadError extends Error {
@@ -112,6 +113,7 @@ export const uploadService = {
     compressionMaxSizeMB = 1,
     maxWidthOrHeight = 1920,
     maxOutputBytes = DEFAULT_UPLOAD_MAX_BYTES,
+    storageScope = "default",
   }: UploadOptions): Promise<string> {
     const sourceType = inferImageType(file);
     if (!supportedSourceTypes.has(sourceType)) {
@@ -200,7 +202,10 @@ export const uploadService = {
       /[^a-zA-Z0-9.\-_]/g,
       "",
     );
-    const path = `empresas/${cleanCompanyId || "Geral"}/${cleanFolder || "uploads"}/${cleanUserId || auth.currentUser.uid}/${timestamp}_${cleanFileName}`;
+    const path =
+      storageScope === "trip-receipt"
+        ? `trip-receipts/${cleanCompanyId || "Geral"}/${cleanUserId || auth.currentUser.uid}/${timestamp}_${cleanFileName}`
+        : `empresas/${cleanCompanyId || "Geral"}/${cleanFolder || "uploads"}/${cleanUserId || auth.currentUser.uid}/${timestamp}_${cleanFileName}`;
     const storageRef = ref(storage, path);
 
     const uploadTask = uploadBytesResumable(storageRef, finalFile, {

@@ -5,10 +5,13 @@ import { Card, CardContent } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { SafeSelect } from "../components/ui/SafeSelect";
 import { db, storage, auth } from "../lib/firebase";
-import { collection, addDoc } from "firebase/firestore";
+import { signInWithPopup, GoogleAuthProvider, signInWithCredential } from "firebase/auth";
+import { Capacitor } from "@capacitor/core";
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
+import { collection, addDoc, doc, setDoc } from "firebase/firestore";
 import { ref, uploadString, getDownloadURL } from "firebase/storage";
 import { toast } from "sonner";
-import { Upload, ImageIcon, X, ArrowLeft, CheckCircle2 } from "lucide-react";
+import { Upload, ImageIcon, ArrowLeft, LogIn } from "lucide-react";
 import { generateCnpj } from "../lib/cnpj";
 import {
   normalizeFileAccessError,
@@ -183,9 +186,15 @@ export default function RegisterCompany() {
     formIdentityUidRef.current = activeIdentityUid;
     setFormData((prev) => ({
       ...prev,
-      ownerName: activeIdentityUid ? verifiedCurrentUser?.name || "" : "",
-      email: activeIdentityUid ? verifiedCurrentUser?.email || "" : "",
-      whatsapp: activeIdentityUid ? verifiedCurrentUser?.whatsapp || "" : "",
+      ownerName: activeIdentityUid
+        ? verifiedCurrentUser?.name || auth.currentUser?.displayName || prev.ownerName
+        : "",
+      email: activeIdentityUid
+        ? verifiedCurrentUser?.email || auth.currentUser?.email || prev.email
+        : "",
+      whatsapp: activeIdentityUid
+        ? verifiedCurrentUser?.whatsapp || prev.whatsapp
+        : "",
       cnpj: prev.cnpj || generateCnpj(),
       ownerPhotoUrl: "",
     }));
@@ -231,7 +240,54 @@ export default function RegisterCompany() {
   };
 
   const [submitting, setSubmitting] = useState(false);
-  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [authenticating, setAuthenticating] = useState(false);
+
+  const handleGoogleAccess = async () => {
+    if (auth.currentUser?.uid || authenticating) return;
+
+    setAuthenticating(true);
+    try {
+      let resultUser;
+
+      if (Capacitor.isNativePlatform()) {
+        const result = await FirebaseAuthentication.signInWithGoogle();
+        const credential = GoogleAuthProvider.credential(result.credential?.idToken);
+        const userCredential = await signInWithCredential(auth, credential);
+        resultUser = userCredential.user;
+      } else {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: "select_account" });
+        const result = await signInWithPopup(auth, provider);
+        resultUser = result.user;
+      }
+
+      // Bind the company registration to the exact Google identity that will
+      // later receive the approval/rejection state. This mirrors the driver
+      // application flow and prevents a pending registration from becoming
+      // detached from its owner.
+      formIdentityUidRef.current = resultUser.uid;
+      setFormData((current) => ({
+        ...current,
+        ownerName: current.ownerName || resultUser.displayName || "",
+        email: resultUser.email || current.email,
+      }));
+    } catch (error: any) {
+      const errorText = `${error?.message || ""} ${error?.code || ""} ${error?.name || ""} ${error?.cause?.message || ""}`.toLowerCase();
+      const cancelled =
+        error?.code === "auth/popup-closed-by-user" ||
+        error?.code === "auth/cancelled-popup-request" ||
+        errorText.includes("12501") ||
+        errorText.includes("cancel") ||
+        errorText.includes("fechar");
+
+      if (!cancelled) {
+        console.error("[RegisterCompany] Falha no login Google:", error);
+        toast.error("Não foi possível acessar com Google. Tente novamente.");
+      }
+    } finally {
+      setAuthenticating(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -248,8 +304,11 @@ export default function RegisterCompany() {
       return;
     }
     const authenticatedUid = auth.currentUser?.uid || null;
+    if (!authenticatedUid) {
+      toast.error("Acesse com Google antes de enviar o cadastro da empresa.");
+      return;
+    }
     if (
-      authenticatedUid &&
       formIdentityUidRef.current &&
       formIdentityUidRef.current !== authenticatedUid
     ) {
@@ -267,11 +326,12 @@ export default function RegisterCompany() {
         persistRegistrationImage(ownerPhotoPreview, "owner"),
       ]);
 
-      await addDoc(collection(db, "recruitment_applications"), {
+      const normalizedEmail = String(auth.currentUser?.email || "")
+        .trim()
+        .toLowerCase();
+      const applicationRef = await addDoc(collection(db, "recruitment_applications"), {
         ...formData,
-        email: String(auth.currentUser?.email || formData.email)
-          .trim()
-          .toLowerCase(),
+        email: normalizedEmail,
         userId: authenticatedUid || "",
         type: "company_registration",
         registrationType: "company_registration",
@@ -286,7 +346,46 @@ export default function RegisterCompany() {
         status: "pending",
         createdAt: new Date().toISOString(),
       });
-      setIsSubmitted(true);
+
+      // Preserve the exact company-registration reference so the next Google
+      // login can open the same request instead of guessing by historical data.
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(
+            "nvu.pendingRecruitmentApplicationId",
+            applicationRef.id,
+          );
+        } catch {
+          // Restricted previews can block Web Storage; the login fallback by
+          // verified e-mail still recovers the pending company registration.
+        }
+      }
+
+      // Persist the canonical pointer before opening the status screen. The
+      // owner stays authenticated, exactly like the driver application flow.
+      try {
+        await setDoc(
+          doc(db, "users", authenticatedUid),
+          {
+            applicationSubmitted: true,
+            currentRecruitmentApplicationId: applicationRef.id,
+            currentRecruitmentStatus: "pending",
+            currentRecruitmentType: "company_registration",
+            currentRecruitmentSimulatorId: formData.simulatorId || "",
+          },
+          { merge: true },
+        );
+      } catch (pointerError) {
+        console.warn(
+          "[RegisterCompany] Cadastro salvo; falha apenas ao persistir o ponteiro de acompanhamento.",
+          pointerError,
+        );
+      }
+
+      navigate("/status", {
+        replace: true,
+        state: { applicationId: applicationRef.id },
+      });
     } catch (error: any) {
       toast.error("Erro ao enviar solicitação: " + error.message);
     } finally {
@@ -306,8 +405,7 @@ export default function RegisterCompany() {
     <div className="min-h-screen bg-slate-50 dark:bg-[#09090b] flex flex-col items-center p-4 sm:p-6 overflow-y-auto">
       <div className="w-full max-w-[440px] my-auto py-8">
         <div className="relative mb-6">
-          {!isSubmitted && (
-            <button
+          <button
               type="button"
               onClick={handleCancel}
               className="absolute left-0 top-1/2 -translate-y-1/2 p-2 w-10 h-10 text-slate-500 hover:text-slate-900 dark:text-[#a1a1aa] dark:hover:text-white transition-colors bg-white dark:bg-[#1A1F26] rounded-full border border-slate-200 dark:border-[#2A2F3A] shadow-sm flex items-center justify-center group"
@@ -318,7 +416,6 @@ export default function RegisterCompany() {
                 className="group-hover:-translate-x-0.5 transition-transform"
               />
             </button>
-          )}
           <div className="text-center">
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 dark:text-[#fafafa] tracking-tight mb-1">
               NVU
@@ -331,34 +428,28 @@ export default function RegisterCompany() {
 
         <Card className="rounded-[24px] border border-slate-200/60 dark:border-[#2A2F3A] shadow-xl shadow-slate-200/40 dark:shadow-none bg-white dark:bg-[#1A1F26] overflow-hidden">
           <CardContent className="p-5 sm:p-7">
-            {isSubmitted ? (
-              <div className="flex flex-col items-center text-center py-8">
-                <div className="w-16 h-16 sm:w-20 sm:h-20 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-2xl flex items-center justify-center mb-6">
-                  <CheckCircle2
-                    size={36}
-                    className="text-emerald-500 dark:text-emerald-400"
-                  />
+            {!auth.currentUser?.uid ? (
+              <div className="flex flex-col items-center text-center py-6 sm:py-8">
+                <div className="w-16 h-16 bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20 rounded-2xl flex items-center justify-center mb-5">
+                  <LogIn size={28} className="text-blue-600 dark:text-blue-400" />
                 </div>
-                <h2 className="text-[20px] font-bold text-slate-900 dark:text-[#fafafa] mb-3 tracking-tight">
-                  Cadastro Enviado
+                <h2 className="text-xl font-bold text-slate-900 dark:text-[#fafafa] mb-2">
+                  Identifique o proprietário
                 </h2>
-                <p className="text-slate-500 dark:text-[#a1a1aa] mb-8 text-[15px] leading-relaxed">
-                  Sua solicitação de cadastro foi enviada com sucesso e está
-                  aguardando aprovação.
-                  <br />
-                  <br />
-                  Você receberá um contato assim que sua empresa for aprovada.
+                <p className="text-sm text-slate-500 dark:text-[#a1a1aa] leading-relaxed mb-6 max-w-sm">
+                  Acesse com a conta Google do proprietário para enviar o cadastro e acompanhar a avaliação da empresa.
                 </p>
                 <Button
-                  onClick={handleCancel}
-                  variant="outline"
-                  className="w-full h-12 rounded-xl text-[15px] font-semibold text-slate-600 dark:text-[#f4f4f5] hover:text-slate-900 dark:hover:text-[#fafafa]"
+                  type="button"
+                  onClick={handleGoogleAccess}
+                  disabled={authenticating}
+                  className="w-full h-12 bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-500 text-white rounded-xl font-semibold"
                 >
-                  Voltar para o Login
+                  {authenticating ? "Abrindo Google..." : "Acessar com Google"}
                 </Button>
               </div>
             ) : (
-              <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="flex items-center gap-4 bg-slate-50/50 dark:bg-[#18181b] p-3.5 rounded-2xl border border-slate-200 dark:border-[#2A2F3A]/60 w-full mb-1">
                   <div className="relative group shrink-0">
                     {photoPreview ? (
@@ -514,13 +605,15 @@ export default function RegisterCompany() {
                     </label>
                     <input
                       required
+                      disabled
                       type="email"
                       inputMode="email"
                       value={formData.email}
                       onChange={(e) =>
                         setFormData({ ...formData, email: e.target.value })
                       }
-                      className="w-full bg-white dark:bg-[#09090b] border border-slate-200 dark:border-[#2A2F3A] rounded-xl px-4 h-12 text-[15px] outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:text-[#fafafa] transition-all shadow-sm"
+                      title="E-mail vinculado do Google"
+                      className="w-full bg-slate-50 dark:bg-[#09090b]/50 border border-slate-200 dark:border-[#2A2F3A] rounded-xl px-4 h-12 text-[15px] text-slate-500 dark:text-[#a1a1aa] cursor-not-allowed shadow-none"
                     />
                   </div>
                   <div>
