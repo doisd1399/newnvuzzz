@@ -837,7 +837,7 @@ export default function RankingGlobal() {
           users,
           deferredRankingInput.companies,
           deferredRankingInput.simulators,
-          allCompanyMembers as Record<string, unknown>[],
+          (allCompanyMembers as unknown) as Record<string, unknown>[],
         );
       }
     }
@@ -871,7 +871,7 @@ export default function RankingGlobal() {
       companies: deferredRankingInput.companies,
       simulators: deferredRankingInput.simulators,
       users,
-      companyMembers: allCompanyMembers as Record<string, unknown>[],
+      companyMembers: (allCompanyMembers as unknown) as Record<string, unknown>[],
     });
 
     if (deferredRankingInput.rankingType !== "interno") return driverRanking;

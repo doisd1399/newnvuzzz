@@ -73,7 +73,7 @@ export default function Login() {
           // e-mail. This keeps the handoff safe even on a shared device and
           // avoids reading an arbitrary document id from Web Storage.
           let companyRegistrationsForEmail:
-            | Array<{ id: string } & Record<string, any>>
+            | Array<{ id: string; type?: string; registrationType?: string; email?: string } & Record<string, any>>
             | null = null;
           const loadCompanyRegistrationsForEmail = async () => {
             if (companyRegistrationsForEmail) {
@@ -96,7 +96,7 @@ export default function Login() {
                 id: registrationDocument.id,
                 ...(registrationDocument.data() as Record<string, any>),
               }))
-              .filter((application) => {
+              .filter((application: any) => {
                 const applicationType = String(
                   application.type || application.registrationType || "",
                 );
