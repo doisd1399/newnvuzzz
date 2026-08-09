@@ -18,7 +18,7 @@ import {
   onAuthTeardown,
 } from "../lib/authLifecycle";
 import { normalizeTrip } from "../lib/tripNormalizer";
-import { mergeTripSources } from "../lib/tripDataset";
+import { areTripSourcesReady, mergeTripSources } from "../lib/tripDataset";
 import { isOpenJobStatus } from "../lib/jobStatus";
 
 
@@ -300,7 +300,6 @@ export class TripsRepository {
     // once per session. This removes two permanent duplicate listeners without
     // dropping historical records.
     let active = true;
-    let canonicalReady = false;
     let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
@@ -309,25 +308,14 @@ export class TripsRepository {
     const emit = () => {
       if (!active || isAuthTeardownActive()) return;
 
-      // Stale-while-revalidate: publish useful canonical/cache data as soon as
-      // it exists. Legacy aliases are merged later without blocking the first
-      // paint. An empty cache is never treated as a confirmed empty result.
-      if (canonicalReady) {
-        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
-          onNext(
-            legacyReady
-              ? mergeTripSources(canonicalTrips, legacyTrips)
-              : canonicalTrips,
-          );
-        } else if (legacyReady && legacyTrips.length > 0) {
-          onNext(legacyTrips);
-        }
-        return;
-      }
-
-      if (legacyReady && legacyTrips.length > 0) {
-        onNext(legacyTrips);
-      }
+      // Never publish a partial source. Desktop browsers and Android WebViews
+      // resolve the canonical listener and the legacy compatibility reads at
+      // different speeds; publishing the canonical subset first made each
+      // viewport capture a different ranking/history snapshot. The first
+      // result is now committed only after the authoritative server snapshot
+      // and the bounded legacy scan have both settled.
+      if (!areTripSourcesReady(canonicalAuthoritative, legacyReady)) return;
+      onNext(mergeTripSources(canonicalTrips, legacyTrips));
     };
 
     void loadLegacyTripsOnce({ companyId })
@@ -359,7 +347,6 @@ export class TripsRepository {
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
-        canonicalReady = true;
         canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },
@@ -390,7 +377,6 @@ export class TripsRepository {
     }
 
     let active = true;
-    let canonicalReady = false;
     let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
@@ -399,22 +385,8 @@ export class TripsRepository {
     const emit = () => {
       if (!active || isAuthTeardownActive()) return;
 
-      if (canonicalReady) {
-        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
-          onNext(
-            legacyReady
-              ? mergeTripSources(canonicalTrips, legacyTrips)
-              : canonicalTrips,
-          );
-        } else if (legacyReady && legacyTrips.length > 0) {
-          onNext(legacyTrips);
-        }
-        return;
-      }
-
-      if (legacyReady && legacyTrips.length > 0) {
-        onNext(legacyTrips);
-      }
+      if (!areTripSourcesReady(canonicalAuthoritative, legacyReady)) return;
+      onNext(mergeTripSources(canonicalTrips, legacyTrips));
     };
 
     void loadLegacyTripsOnce({ driverId })
@@ -446,7 +418,6 @@ export class TripsRepository {
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
-        canonicalReady = true;
         canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },
@@ -486,7 +457,6 @@ export class TripsRepository {
     const safeEnd = Number.isNaN(endDate.getTime()) ? new Date() : endDate;
 
     let active = true;
-    let canonicalReady = false;
     let canonicalAuthoritative = false;
     let legacyReady = false;
     let canonicalTrips: TripDocument[] = [];
@@ -495,25 +465,11 @@ export class TripsRepository {
     const emit = () => {
       if (!active || isAuthTeardownActive()) return;
 
-      // Ranking/performance surfaces can render the bounded canonical range
-      // immediately. Compatibility aliases are merged asynchronously and
-      // update the same cache entry without forcing a loading reset.
-      if (canonicalReady) {
-        if (canonicalTrips.length > 0 || canonicalAuthoritative) {
-          onNext(
-            legacyReady
-              ? mergeTripSources(canonicalTrips, legacyTrips)
-              : canonicalTrips,
-          );
-        } else if (legacyReady && legacyTrips.length > 0) {
-          onNext(legacyTrips);
-        }
-        return;
-      }
-
-      if (legacyReady && legacyTrips.length > 0) {
-        onNext(legacyTrips);
-      }
+      // Both inputs are required before committing a result. This keeps the
+      // ranking source identical on desktop and Android, where cache/listener
+      // timing is not the same.
+      if (!areTripSourcesReady(canonicalAuthoritative, legacyReady)) return;
+      onNext(mergeTripSources(canonicalTrips, legacyTrips));
     };
 
     void loadLegacyTripsByDateRangeOnce(safeStart, safeEnd)
@@ -548,7 +504,6 @@ export class TripsRepository {
         )
           return;
         canonicalTrips = mapSnapshotDocuments(snapshot);
-        canonicalReady = true;
         canonicalAuthoritative = isAuthoritativeSnapshot(snapshot);
         emit();
       },

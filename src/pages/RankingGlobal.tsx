@@ -380,21 +380,19 @@ export default function RankingGlobal() {
     loading: aggregateCompaniesLoading,
     refreshing: aggregateCompaniesRefreshing,
     error: aggregateCompaniesError,
+    complete: aggregateCompaniesComplete,
+    serverConfirmed: aggregateCompaniesServerConfirmed,
   } = useRankingCompaniesByIds(
     aggregateCompanyIds,
     Boolean(consolidatedAggregate),
   );
 
-  const aggregateCompanyLookupFailed = Boolean(
-    consolidatedAggregate &&
-      aggregateCompanyIds.length > 0 &&
-      aggregateCompaniesError,
-  );
-  const effectiveTripFallback =
-    useTripFallback || aggregateCompanyLookupFailed;
-  const aggregateForRanking = aggregateCompanyLookupFailed
-    ? null
-    : consolidatedAggregate;
+  // A failed bounded confirmation must not trigger a collection-wide
+  // fallback. Keep the aggregate gated until its exact company IDs are
+  // server-confirmed; this avoids turning a transient Android read failure
+  // into an expensive full `frotas` scan.
+  const effectiveTripFallback = useTripFallback;
+  const aggregateForRanking = consolidatedAggregate;
 
   const companies = useMemo(() => {
     const byId = new Map<string, any>();
@@ -946,7 +944,10 @@ export default function RankingGlobal() {
   const aggregateSourceReady = Boolean(aggregateForRanking);
   const aggregateCompaniesReady =
     !aggregateSourceReady ||
-    (!aggregateCompaniesLoading && !aggregateCompaniesRefreshing);
+    (aggregateCompaniesComplete === true &&
+      aggregateCompaniesServerConfirmed === true &&
+      !aggregateCompaniesLoading &&
+      !aggregateCompaniesRefreshing);
   const fallbackCompaniesReady =
     !effectiveTripFallback || (companyCatalogLoaded && !companiesLoading);
   const tripSourceReady =

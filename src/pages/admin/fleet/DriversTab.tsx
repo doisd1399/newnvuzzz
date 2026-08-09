@@ -28,7 +28,7 @@ import { useTripHistory } from "../../../hooks/useTripHistory";
 
 function DriversTab() {
   const navigate = useNavigate();
-  const { currentUser, isSeniorAuthenticated } = useSessionStore();
+  const { currentUser } = useSessionStore();
   const {
     activeCompanyId,
     approveDriver,
@@ -41,7 +41,7 @@ function DriversTab() {
   } = useCompanyStore();
   const { users, jobs, contracts, createManualDriver } = useOperationalStore();
   const { historicoTrips = [] } = useTripHistory(activeCompanyId);
-  const hasSeniorRole = Boolean((currentUser as any)?.role === "senior" || (Array.isArray((currentUser as any)?.roles) && (currentUser as any).roles.includes("senior"))) || isSeniorAuthenticated;
+  const hasSeniorRole = Boolean((currentUser as any)?.role === "senior" || (Array.isArray((currentUser as any)?.roles) && (currentUser as any).roles.includes("senior")));
   const [driverToRemove, setDriverToRemove] = useState<string | null>(null);
 
   const [processingRoleChangeId, setProcessingRoleChangeId] = useState<

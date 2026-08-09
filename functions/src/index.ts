@@ -532,3 +532,4 @@ export {
   auditUserStorageImagesOnDelete,
   auditCompanyStorageImagesOnDelete,
 } from "./storageCleanupAudit";
+export { authenticateSeniorAccess } from "./seniorAccess";

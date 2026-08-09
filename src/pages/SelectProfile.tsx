@@ -265,8 +265,6 @@ export default function SelectProfile() {
     try {
       sessionStorage.removeItem("seniorAccess");
       sessionStorage.removeItem("seniorCompanyId");
-      sessionStorage.removeItem("seniorPanelPasswordUnlocked");
-      sessionStorage.removeItem("seniorPanelPasswordUid");
     } catch {
       // O estado React continua sendo a fonte ativa em previews restritos.
     }

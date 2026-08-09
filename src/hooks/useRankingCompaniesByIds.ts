@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   documentId,
-  getDocs,
+  getDocsFromServer,
   query,
   where,
 } from "firebase/firestore";
@@ -17,6 +17,8 @@ export type RankingCompaniesState = {
   loading: boolean;
   refreshing: boolean;
   error: unknown | null;
+  complete: boolean;
+  serverConfirmed: boolean;
 };
 
 type RankingCompaniesEntry = {
@@ -27,6 +29,8 @@ type RankingCompaniesEntry = {
   request: Promise<void> | null;
   expiresAt: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  hasCompleteSnapshot: boolean;
+  serverConfirmed: boolean;
 };
 
 const FIRESTORE_IN_LIMIT = 30;
@@ -40,6 +44,8 @@ const EMPTY_STATE: RankingCompaniesState = {
   loading: false,
   refreshing: false,
   error: null,
+  complete: false,
+  serverConfirmed: false,
 };
 
 function normalizeIds(ids: Array<string | null | undefined>) {
@@ -68,6 +74,8 @@ function ensureTeardownListener() {
       if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
       entry.releaseTimer = null;
       entry.state = EMPTY_STATE;
+      entry.hasCompleteSnapshot = false;
+      entry.serverConfirmed = false;
       notify(entry);
       entry.subscribers.clear();
     });
@@ -83,8 +91,9 @@ function findReusableSourceState(ids: string[]): RankingCompaniesState | null {
   cache.forEach((candidate) => {
     if (
       candidate.ids.length < ids.length ||
-      candidate.state.companies.length === 0 ||
       candidate.state.loading ||
+      !candidate.hasCompleteSnapshot ||
+      !candidate.serverConfirmed ||
       candidate.expiresAt <= Date.now()
     ) {
       return;
@@ -101,6 +110,8 @@ function findReusableSourceState(ids: string[]): RankingCompaniesState | null {
     loading: false,
     refreshing: false,
     error: null,
+    complete: true,
+    serverConfirmed: true,
   };
 }
 
@@ -126,11 +137,15 @@ function ensureEntry(ids: string[]) {
         loading: ids.length > 0,
         refreshing: false,
         error: null,
+        complete: false,
+        serverConfirmed: false,
       },
     subscribers: new Set(),
     request: null,
     expiresAt: reusableSource ? Date.now() + CACHE_TTL_MS : 0,
     releaseTimer: null,
+    hasCompleteSnapshot: Boolean(reusableSource),
+    serverConfirmed: Boolean(reusableSource),
   };
   cache.set(key, entry);
   return entry;
@@ -139,7 +154,12 @@ function ensureEntry(ids: string[]) {
 function loadEntry(entry: RankingCompaniesEntry) {
   if (entry.request) return entry.request;
   if (isAuthTeardownActive()) return Promise.resolve();
-  if (entry.expiresAt > Date.now() && !entry.state.loading) {
+  if (
+    entry.expiresAt > Date.now() &&
+    !entry.state.loading &&
+    entry.hasCompleteSnapshot &&
+    entry.serverConfirmed
+  ) {
     return Promise.resolve();
   }
 
@@ -156,12 +176,16 @@ function loadEntry(entry: RankingCompaniesEntry) {
     loading: entry.state.companies.length === 0,
     refreshing: entry.state.companies.length > 0,
     error: null,
+    complete: entry.hasCompleteSnapshot,
+    serverConfirmed: entry.serverConfirmed,
   };
   notify(entry);
 
   entry.request = Promise.allSettled(
     chunks.map((ids) =>
-      getDocs(
+      // Android persistence can satisfy getDocs from a stale/local catalog.
+      // Only this bounded set is forced to the server for ranking identity.
+      getDocsFromServer(
         query(collection(db, "frotas"), where(documentId(), "in", ids)),
       ),
     ),
@@ -170,7 +194,6 @@ function loadEntry(entry: RankingCompaniesEntry) {
       if (isAuthTeardownActive() || cache.get(entry.key) !== entry) return;
 
       const merged = new Map<string, any>();
-      let successfulSources = 0;
       let firstError: unknown = null;
 
       results.forEach((result) => {
@@ -178,26 +201,59 @@ function loadEntry(entry: RankingCompaniesEntry) {
           firstError ||= result.reason;
           return;
         }
-        successfulSources += 1;
         result.value.docs.forEach((document) => {
           merged.set(document.id, { ...document.data(), id: document.id });
         });
       });
 
-      entry.state = {
-        companies:
-          successfulSources > 0
-            ? Array.from(merged.values())
-            : entry.state.companies,
-        loading: false,
-        refreshing: false,
-        error:
-          firstError ||
-          (successfulSources === 0
-            ? new Error("Não foi possível carregar as empresas do ranking.")
-            : null),
-      };
-      entry.expiresAt = Date.now() + CACHE_TTL_MS;
+      const allSourcesSucceeded = results.every(
+        (result) => result.status === "fulfilled",
+      );
+
+      if (allSourcesSucceeded) {
+        entry.hasCompleteSnapshot = true;
+        entry.serverConfirmed = true;
+        entry.state = {
+          companies: Array.from(merged.values()),
+          loading: false,
+          refreshing: false,
+          error: null,
+          complete: true,
+          serverConfirmed: true,
+        };
+        entry.expiresAt = Date.now() + CACHE_TTL_MS;
+      } else {
+        // Do not cache a successful subset as the requested company set. A
+        // previous complete result may remain visible while this refresh is
+        // retried; the first visit stays loading until every chunk settles.
+        entry.state = {
+          companies: entry.hasCompleteSnapshot
+            ? entry.state.companies
+            : Array.from(merged.values()),
+          loading: !entry.hasCompleteSnapshot,
+          refreshing: false,
+          error:
+            firstError ||
+            new Error("Não foi possível confirmar todas as empresas do ranking."),
+          complete: entry.hasCompleteSnapshot,
+          serverConfirmed: entry.serverConfirmed,
+        };
+        if (!entry.hasCompleteSnapshot) entry.expiresAt = 0;
+        if (!entry.hasCompleteSnapshot && entry.subscribers.size > 0) {
+          // Retry the bounded server confirmation without widening the read
+          // to the full company collection.
+          setTimeout(() => {
+            if (
+              cache.get(entry.key) === entry &&
+              entry.subscribers.size > 0 &&
+              !entry.request &&
+              !entry.hasCompleteSnapshot
+            ) {
+              void loadEntry(entry);
+            }
+          }, 1500);
+        }
+      }
       notify(entry);
     })
     .finally(() => {
@@ -261,6 +317,8 @@ export function useRankingCompaniesByIds(
             loading: true,
             refreshing: false,
             error: null,
+            complete: false,
+            serverConfirmed: false,
           },
   }));
 
@@ -290,6 +348,8 @@ export function useRankingCompaniesByIds(
           loading: true,
           refreshing: false,
           error: null,
+          complete: false,
+          serverConfirmed: false,
         };
   }
 

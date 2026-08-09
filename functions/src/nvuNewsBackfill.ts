@@ -2,6 +2,7 @@ import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import { createHash } from "node:crypto";
 import { syncCompanyApprovalNewsHistory } from "./companyApprovalNews";
+import { requireSenior } from "./authorization";
 
 const db = admin.firestore();
 const NEWS_TIME_ZONE = "UTC";
@@ -1732,9 +1733,10 @@ export const updateNvuNewsClassificationsOnSimulatorWrite = functions
 export const generateNvuNewsBackfill = functions
   .runWith({ timeoutSeconds: 540, memory: "1GB" })
   .https.onCall(async (_data, context) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError("unauthenticated", "Autenticação obrigatória para preparar o histórico NVU.");
-    }
+    requireSenior(
+      context,
+      "Somente o Painel Sênior pode preparar o histórico NVU.",
+    );
 
     try {
       return await generateFullHistory();

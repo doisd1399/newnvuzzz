@@ -13,8 +13,10 @@ service cloud.firestore {
 
     function isSenior() {
       return isAuthenticated() && (
-        ('role' in getUserData() && getUserData().role == 'senior') ||
-        ('roles' in getUserData() && getUserData().roles.hasAny(['senior']))
+        ('senior' in request.auth.token && request.auth.token.senior == true) ||
+        ('isSenior' in request.auth.token && request.auth.token.isSenior == true) ||
+        ('role' in request.auth.token && request.auth.token.role == 'senior') ||
+        ('roles' in request.auth.token && request.auth.token.roles is list && request.auth.token.roles.hasAny(['senior']))
       );
     }
 
@@ -77,13 +79,41 @@ service cloud.firestore {
       );
     }
 
-    // TEMPORARY COMPATIBILITY MODE (legacy Senior password 9173).
-    // Firestore Rules cannot inspect the browser's password or sessionStorage.
-    // Until the shared password is replaced with Firebase custom claims, the
-    // signed-in account is allowed to execute the Senior workflow. Remove this
-    // function and restore role-based checks during the security hardening pass.
+    function requestedPrivilegedUserRole() {
+      return (
+        ('role' in request.resource.data &&
+          request.resource.data.role in ['admin', 'senior']) ||
+        ('roles' in request.resource.data &&
+          request.resource.data.roles is list &&
+          request.resource.data.roles.hasAny(['admin', 'senior']))
+      );
+    }
+
+    function preservesOwnAuthorization(userId) {
+      return request.auth.uid != userId ||
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role',
+          'roles',
+          'permissions',
+          'companyId',
+          'empresaId',
+          'status',
+          'seniorAccessGrantedAt',
+          'seniorAccessVersion'
+        ]);
+    }
+
+    function ownsRequestedCompany() {
+      return request.resource.data.companyId is string &&
+        exists(/databases/$(database)/documents/frotas/$(request.resource.data.companyId)) &&
+        get(/databases/$(database)/documents/frotas/$(request.resource.data.companyId)).data.userId == request.auth.uid;
+    }
+
+    // Alias temporário mantido apenas para evitar uma troca ampla de nomes no
+    // arquivo. Ele não concede mais acesso a qualquer usuário autenticado: o
+    // Firebase Auth precisa confirmar o custom claim Sênior.
     function hasLegacySeniorPanelAccess() {
-      return isAuthenticated();
+      return isSenior();
     }
 
     function hasUserEmail() {
@@ -119,9 +149,13 @@ service cloud.firestore {
     // 1. users
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated(); // Allowed for initial setup
+      allow create: if isSenior() ||
+        (isOwner(userId) && !requestedPrivilegedUserRole());
       allow update: if (
-        hasLegacySeniorPanelAccess() || isOwner(userId) || isSenior() || isAdmin()
+        isSenior() ||
+        isAdmin() ||
+        (isOwner(userId) &&
+          (preservesOwnAuthorization(userId) || ownsRequestedCompany()))
       ) && preservesOwnOperationalModeration(userId);
       allow delete: if hasLegacySeniorPanelAccess() || isSenior();
     }
@@ -412,6 +446,16 @@ service cloud.firestore {
     // (Admin SDK) podem registrar ou revisar candidatos; nenhum cliente tem
     // acesso aos caminhos internos do Storage.
     match /storage_cleanup_candidates/{candidateId} {
+      allow read, write: if false;
+    }
+
+    // Estado interno de autenticação e auditoria do Painel Sênior. Somente
+    // Cloud Functions usam Admin SDK para ler ou gravar estas coleções.
+    match /security_rate_limits/{limitId} {
+      allow read, write: if false;
+    }
+
+    match /senior_access_audits/{auditId} {
       allow read, write: if false;
     }
 

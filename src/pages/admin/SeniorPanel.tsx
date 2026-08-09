@@ -70,6 +70,7 @@ import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import { createNotification } from "../../services/notificationService";
 import { isAuthTeardownActive, onAuthTeardown } from "../../lib/authLifecycle";
 import { getFilteredTrips, getMonthlyRange } from "../../lib/metricsEngine";
+import { authenticateSeniorAccess } from "../../services/seniorAccessService";
 
 type SeniorTab = "requests" | "approved" | "profile" | "settings";
 
@@ -78,12 +79,6 @@ type SeniorNavigation = {
   selectedCompanyId: string | null;
 };
 
-// Transitional access mode kept for the existing NVU operation. Replace this
-// shared password with a server-side role/custom-claim flow when the security
-// hardening phase is scheduled.
-const LEGACY_SENIOR_PASSWORD = "9173";
-const SENIOR_PASSWORD_SESSION_KEY = "seniorPanelPasswordUnlocked";
-const SENIOR_PASSWORD_UID_KEY = "seniorPanelPasswordUid";
 const SENIOR_COMPANY_PAGE_SIZE = 20;
 const FIRESTORE_IN_QUERY_CHUNK = 10;
 
@@ -153,32 +148,41 @@ export default function SeniorPanel() {
   const [isSimulatorManagerOpen, setIsSimulatorManagerOpen] = useState(false);
 
   const [password, setPassword] = useState("");
-  const hasSeniorRole = Boolean(
-    (currentUser as any)?.role === "senior" ||
-      (Array.isArray((currentUser as any)?.roles) &&
-        (currentUser as any).roles.includes("senior")),
-  );
+  const [authenticatingSenior, setAuthenticatingSenior] = useState(false);
   const currentUid = auth.currentUser?.uid || currentUser?.id || "";
   const [unlocked, setUnlocked] = useState(false);
+  const [seniorClaimConfirmed, setSeniorClaimConfirmed] = useState(false);
 
   useEffect(() => {
-    const roleSession =
-      hasSeniorRole && sessionStorage.getItem("seniorPanelUnlocked") === "true";
-    const passwordSession =
-      Boolean(currentUid) &&
-      sessionStorage.getItem(SENIOR_PASSWORD_SESSION_KEY) === "true" &&
-      sessionStorage.getItem(SENIOR_PASSWORD_UID_KEY) === currentUid;
-
-    if (hasSeniorRole || roleSession || passwordSession) {
-      setUnlocked(true);
-      setIsSeniorAuthenticated(true);
+    let active = true;
+    const firebaseUser = auth.currentUser;
+    if (!currentUid || !firebaseUser) {
+      setSeniorClaimConfirmed(false);
+      setUnlocked(false);
+      setIsSeniorAuthenticated(false);
       return;
     }
 
-    setUnlocked(false);
-    setIsSeniorAuthenticated(false);
-    if (!hasSeniorRole) sessionStorage.removeItem("seniorPanelUnlocked");
-  }, [currentUid, hasSeniorRole, setIsSeniorAuthenticated]);
+    void firebaseUser
+      .getIdTokenResult()
+      .then((token) => {
+        if (!active) return;
+        const confirmed = token.claims.senior === true;
+        setSeniorClaimConfirmed(confirmed);
+        setUnlocked(confirmed);
+        setIsSeniorAuthenticated(confirmed);
+      })
+      .catch(() => {
+        if (!active) return;
+        setSeniorClaimConfirmed(false);
+        setUnlocked(false);
+        setIsSeniorAuthenticated(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentUid, setIsSeniorAuthenticated]);
 
   // Global Data States
   const [registrations, setRegistrations] = useState<any[]>([]);
@@ -671,20 +675,35 @@ export default function SeniorPanel() {
     currentMonthTrips,
   ]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const passwordAccepted = password === LEGACY_SENIOR_PASSWORD;
-    if (hasSeniorRole || passwordAccepted) {
+    if (seniorClaimConfirmed) {
       setIsSeniorAuthenticated(true);
       setUnlocked(true);
-      sessionStorage.setItem("seniorPanelUnlocked", "true");
-      if (passwordAccepted && currentUid) {
-        sessionStorage.setItem(SENIOR_PASSWORD_SESSION_KEY, "true");
-        sessionStorage.setItem(SENIOR_PASSWORD_UID_KEY, currentUid);
-      }
       setPassword("");
-    } else {
-      toast.error("Senha de acesso inválida.");
+      return;
+    }
+
+    if (!password.trim() || authenticatingSenior) return;
+    try {
+      setAuthenticatingSenior(true);
+      await authenticateSeniorAccess(password);
+      setSeniorClaimConfirmed(true);
+      setIsSeniorAuthenticated(true);
+      setUnlocked(true);
+      setPassword("");
+      toast.success("Acesso Sênior confirmado com segurança.");
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code.includes("resource-exhausted")) {
+        toast.error("Muitas tentativas. Aguarde 30 minutos antes de tentar novamente.");
+      } else if (code.includes("permission-denied")) {
+        toast.error("Senha de acesso inválida.");
+      } else {
+        toast.error(error?.message || "Não foi possível validar o acesso Sênior.");
+      }
+    } finally {
+      setAuthenticatingSenior(false);
     }
   };
 
@@ -1373,13 +1392,15 @@ export default function SeniorPanel() {
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Senha de acesso"
                 autoComplete="current-password"
+                disabled={authenticatingSenior}
                 className="w-full h-11 rounded-xl border border-slate-200 dark:border-[#2A2F3A] bg-white dark:bg-[#09090b] px-3 text-center text-sm text-slate-900 dark:text-white outline-none focus:border-blue-500"
               />
               <Button
                 type="submit"
+                disabled={authenticatingSenior || !password.trim()}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl h-11"
               >
-                Entrar no painel
+                {authenticatingSenior ? "Validando acesso..." : "Entrar no painel"}
               </Button>
             </form>
           </CardContent>

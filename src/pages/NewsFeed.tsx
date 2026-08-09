@@ -23,10 +23,6 @@ import { preloadImages } from "../lib/imageCache";
 import NewsFeedView from "./NewsFeedView";
 import { useOperationalStore, useSessionStore } from "../context/AppContext";
 import { useCompanyStore } from "../context/CompanyContext";
-import {
-  ensureCompanyApprovalNewsSync,
-  ensureNvuNewsBackfill,
-} from "../services/nvuNewsBackfillService";
 import { getRuntimePerformanceProfile } from "../lib/runtimePerformance";
 
 const PAGE_SIZE = 10;
@@ -699,7 +695,7 @@ export default function NewsFeed() {
   const [refreshing, setRefreshing] = useState(false);
   const [searching, setSearching] = useState(false);
   const [hasMore, setHasMore] = useState(true);
-  const [historyPreparing, setHistoryPreparing] = useState(false);
+  const historyPreparing = false;
   const [feedReady, setFeedReady] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [unreadCounts, setUnreadCounts] = useState<Record<Section, number>>({ noticias: 0, comunicados: 0 });
@@ -720,9 +716,6 @@ export default function NewsFeed() {
   const prefetchedNextPagesRef = useRef(new Map<string, PrefetchedPage>());
   const nextPagePrefetchInFlightRef = useRef(new Map<string, Promise<void>>());
   const variantPrefetchInFlightRef = useRef(new Set<string>());
-  const companyApprovalSyncScheduledRef = useRef(false);
-  const refreshAfterCompanyCatalogSyncRef = useRef(false);
-  const backfillScheduledRef = useRef(false);
   const liveFirstPageIdsRef = useRef<Set<string>>(new Set());
   const companyCatalogRefreshAtRef = useRef(0);
   const scrollRestoreKeyRef = useRef("");
@@ -1491,88 +1484,6 @@ export default function NewsFeed() {
   ]);
 
   useEffect(() => {
-    if (
-      !feedReady ||
-      (!companyCatalogLoaded && !companyCatalogAttempted) ||
-      !currentUser?.id ||
-      companyApprovalSyncScheduledRef.current
-    ) return;
-    const scheduledQueryKey = activeQueryKey;
-    const delay = postsRef.current.length === 0 ? 350 : 1800;
-    return scheduleIdleTask(() => {
-      if (companyApprovalSyncScheduledRef.current) return;
-      companyApprovalSyncScheduledRef.current = true;
-      void ensureCompanyApprovalNewsSync(
-        false,
-        companyCatalogLoaded ? validCompanies.length : undefined,
-      )
-        .then(async (result) => {
-          const serverActiveCompanies = Number(result.activeCompanies);
-          if (
-            companyCatalogLoaded &&
-            Number.isFinite(serverActiveCompanies) &&
-            serverActiveCompanies !== validCompanies.length
-          ) {
-            refreshAfterCompanyCatalogSyncRef.current = true;
-            await loadCompanyCatalog(true);
-            return;
-          }
-          if (
-            (result.created > 0 || result.updated > 0 || (result.removed || 0) > 0) &&
-            lastQueryKeyRef.current === scheduledQueryKey
-          ) {
-            void fetchPosts(false, true);
-          }
-        })
-        .catch((error) => {
-          console.warn("[NVU NEWS] A sincronização das empresas aprovadas ainda não está disponível:", error);
-        });
-    }, delay);
-  }, [
-    activeQueryKey,
-    companyCatalogAttempted,
-    companyCatalogLoaded,
-    currentUser?.id,
-    feedReady,
-    fetchPosts,
-    loadCompanyCatalog,
-    validCompanies.length,
-  ]);
-
-  useEffect(() => {
-    if (!refreshAfterCompanyCatalogSyncRef.current || !companyCatalogLoaded) return;
-    refreshAfterCompanyCatalogSyncRef.current = false;
-    void fetchPosts(false, true);
-  }, [companyCatalogLoaded, fetchPosts, validCompanies.length]);
-
-  useEffect(() => {
-    if (!feedReady || !currentUser?.id || backfillScheduledRef.current) return;
-    const scheduledQueryKey = activeQueryKey;
-    const delay = postsRef.current.length === 0 ? 650 : 4500;
-    return scheduleIdleTask(() => {
-      if (backfillScheduledRef.current) return;
-      backfillScheduledRef.current = true;
-      setHistoryPreparing(true);
-      void ensureNvuNewsBackfill()
-        .then((result) => {
-          const historyChanged = result.created > 0 || result.updated > 0 ||
-            result.migratedCommunications > 0 || result.removedLegacyClassifications > 0;
-          if (
-            result.status !== "in_progress" &&
-            historyChanged &&
-            lastQueryKeyRef.current === scheduledQueryKey
-          ) {
-            void fetchPosts(false, true);
-          }
-        })
-        .catch((error) => {
-          console.warn("[NVU NEWS] A migração histórica ainda não está disponível:", error);
-        })
-        .finally(() => setHistoryPreparing(false));
-    }, delay);
-  }, [activeQueryKey, currentUser?.id, feedReady, fetchPosts]);
-
-  useEffect(() => {
     if (!feedReady) return;
     const cancelInitialLoad = scheduleIdleTask(() => void loadUnreadIndicators(), 800);
     const refreshWhenVisible = () => {
@@ -1583,12 +1494,6 @@ export default function NewsFeed() {
       if (Date.now() - companyCatalogRefreshAtRef.current >= 5 * 60 * 1000) {
         companyCatalogRefreshAtRef.current = Date.now();
         void loadCompanyCatalog(true)
-          .then((catalog) => ensureCompanyApprovalNewsSync(false, catalog.filter(isActiveCompany).length))
-          .then((result) => {
-            if (result.created > 0 || result.updated > 0 || (result.removed || 0) > 0) {
-              void fetchPosts(false, true);
-            }
-          })
           .catch((error) => {
             console.warn("[NVU NEWS] Atualização de empresas indisponível:", error);
           });

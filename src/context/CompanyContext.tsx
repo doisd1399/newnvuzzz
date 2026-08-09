@@ -15,6 +15,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   limit,
   onSnapshot,
   or,
@@ -36,6 +37,10 @@ import type {
 
 const PUBLIC_COMPANIES_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 const COMPANIES_CACHE_KEY = "nvu.public.companies.v5";
+// A cache written by older builds may contain the first page/chunk of the
+// catalog while claiming `complete: true`.  Keep it useful for the first
+// paint, but never use it as this session's authoritative catalog.
+const PUBLIC_COMPANIES_CACHE_SCHEMA_VERSION = 2;
 const SCOPED_COMPANIES_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const scopedCompaniesCacheKey = (uid: string) =>
   `nvu.session.v5.scoped-companies.${uid}`;
@@ -46,30 +51,58 @@ const isFreshCache = (cachedAt: unknown, maxAgeMs: number) =>
   cachedAt > 0 &&
   Date.now() - cachedAt <= maxAgeMs;
 
-const readCachedCompanies = (): CompanyProfile[] => {
+type CachedPublicCompanies = {
+  companies: CompanyProfile[];
+  serverConfirmed: boolean;
+};
+
+const readCachedCompanies = (): CachedPublicCompanies => {
   try {
     const raw = localStorage.getItem(COMPANIES_CACHE_KEY);
-    if (!raw) return [];
+    if (!raw) return { companies: [], serverConfirmed: false };
     const parsed = JSON.parse(raw) as {
       companies?: CompanyProfile[];
       cachedAt?: number;
       complete?: boolean;
+      cacheSchemaVersion?: number;
+      serverConfirmed?: boolean;
+      documentCount?: number;
     };
-    return Array.isArray(parsed.companies) &&
+    if (
+      !Array.isArray(parsed.companies) ||
+      !isFreshCache(parsed.cachedAt, PUBLIC_COMPANIES_CACHE_MAX_AGE_MS)
+    ) {
+      return { companies: [], serverConfirmed: false };
+    }
+
+    const serverConfirmed =
+      parsed.cacheSchemaVersion === PUBLIC_COMPANIES_CACHE_SCHEMA_VERSION &&
       parsed.complete === true &&
-      isFreshCache(parsed.cachedAt, PUBLIC_COMPANIES_CACHE_MAX_AGE_MS)
-      ? parsed.companies
-      : [];
+      parsed.serverConfirmed === true &&
+      Number.isInteger(parsed.documentCount) &&
+      parsed.documentCount === parsed.companies.length;
+
+    return { companies: parsed.companies, serverConfirmed };
   } catch {
-    return [];
+    return { companies: [], serverConfirmed: false };
   }
 };
 
-export const writeCachedCompanies = (companies: CompanyProfile[]) => {
+export const writeCachedCompanies = (
+  companies: CompanyProfile[],
+  options: { serverConfirmed?: boolean } = {},
+) => {
   try {
     localStorage.setItem(
       COMPANIES_CACHE_KEY,
-      JSON.stringify({ companies, cachedAt: Date.now(), complete: true }),
+      JSON.stringify({
+        companies,
+        cachedAt: Date.now(),
+        complete: options.serverConfirmed !== false,
+        serverConfirmed: options.serverConfirmed !== false,
+        cacheSchemaVersion: PUBLIC_COMPANIES_CACHE_SCHEMA_VERSION,
+        documentCount: companies.length,
+      }),
     );
   } catch {
     // Public company cache is best-effort only.
@@ -175,11 +208,14 @@ export const useCompanyDataController = ({
   suspendedRealtime = false,
 }: CompanyDataControllerOptions): CompanyDataController => {
   const initialCompanyState = useMemo(() => {
-    const publicCatalog = readCachedCompanies();
+    const publicCatalogCache = readCachedCompanies();
     const scopedCatalog = readCachedScopedCompanies(currentUser?.id);
     return {
-      companies: mergeCompanyCatalogs(publicCatalog, scopedCatalog),
-      publicCatalogLoaded: publicCatalog.length > 0,
+      // Cached records are a fast visual hint only.  The ranking and every
+      // catalog-dependent screen must obtain a server-confirmed snapshot in
+      // this session before treating the set as complete.
+      companies: mergeCompanyCatalogs(publicCatalogCache.companies, scopedCatalog),
+      publicCatalogLoaded: false,
     };
   }, []);
   const [companies, setCompanies] = useState<CompanyProfile[]>(
@@ -251,7 +287,10 @@ export const useCompanyDataController = ({
 
     setCompanyCatalogAttempted(false);
     beginCompaniesLoad();
-    const request = getDocs(collection(db, "frotas"))
+    // `getDocs` may resolve from the Android/WebView persistence layer.  A
+    // full catalog is only allowed to become authoritative after this
+    // explicit server read succeeds.
+    const request = getDocsFromServer(collection(db, "frotas"))
       .then((snapshot) => {
         const nextCompanies = snapshot.docs.map((companyDocument) =>
           normalizeCompanyProfile(companyDocument.id, companyDocument.data()),

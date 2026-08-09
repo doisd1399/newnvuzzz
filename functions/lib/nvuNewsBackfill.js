@@ -5,6 +5,7 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const node_crypto_1 = require("node:crypto");
 const companyApprovalNews_1 = require("./companyApprovalNews");
+const authorization_1 = require("./authorization");
 const db = admin.firestore();
 const NEWS_TIME_ZONE = "UTC";
 const AUTOMATION_VERSION = "nvu_news_individual_v6_utc_consistent";
@@ -1316,9 +1317,7 @@ exports.updateNvuNewsClassificationsOnSimulatorWrite = functions
 exports.generateNvuNewsBackfill = functions
     .runWith({ timeoutSeconds: 540, memory: "1GB" })
     .https.onCall(async (_data, context) => {
-    if (!context.auth) {
-        throw new functions.https.HttpsError("unauthenticated", "Autenticação obrigatória para preparar o histórico NVU.");
-    }
+    (0, authorization_1.requireSenior)(context, "Somente o Painel Sênior pode preparar o histórico NVU.");
     try {
         return await generateFullHistory();
     }

@@ -1,6 +1,7 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import { createHash } from "node:crypto";
+import { requireSenior } from "./authorization";
 
 const db = admin.firestore();
 const NEWS_COLLECTION = "nvu_classificacoes";
@@ -1319,12 +1320,10 @@ function canForceFullApprovalSync(context: {
 export const syncCompanyApprovalNews = functions
   .runWith({ timeoutSeconds: 300, memory: "512MB" })
   .https.onCall(async (data, context) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated",
-        "Autenticação obrigatória para sincronizar o histórico.",
-      );
-    }
+    requireSenior(
+      context,
+      "Somente o Painel Sênior pode sincronizar notícias de empresas.",
+    );
 
     const companyId = firstNonEmpty(data?.companyId);
     if (companyId) {

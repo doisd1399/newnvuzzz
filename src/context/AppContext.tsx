@@ -1270,17 +1270,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     const storedSeniorCompanyId = readSessionStorageValue("seniorCompanyId");
     return seniorAccess ? storedSeniorCompanyId : null;
   });
-  // Only restore the temporary Senior session when it is bound to the
-  // currently signed-in Firebase UID. The old generic flag is intentionally
-  // not trusted across account changes.
-  const [isSeniorAuthenticated, setIsSeniorAuthenticated] = useState<boolean>(() => {
-    const uid = auth.currentUser?.uid;
-    return Boolean(
-      uid &&
-        readSessionStorageValue("seniorPanelPasswordUnlocked") === "true" &&
-        readSessionStorageValue("seniorPanelPasswordUid") === uid,
-    );
-  });
+  // Este estado controla somente a interface. A autorização real é validada
+  // pelo custom claim do Firebase e refletida no documento canônico do usuário.
+  const [isSeniorAuthenticated, setIsSeniorAuthenticated] = useState(false);
   const [seniorCompanyId, setSeniorCompanyId] = useState<string | null>(() =>
     readSessionStorageValue("seniorCompanyId"),
   );
@@ -1355,9 +1347,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
       (Array.isArray((currentUser as any)?.roles) &&
         (currentUser as any).roles.includes("senior")),
   );
-  // Transitional password mode keeps the existing senior workflow usable
-  // until the shared password is replaced by server-side claims.
-  const hasSeniorPanelAccess = hasVerifiedSeniorRole || isSeniorAuthenticated;
+  const hasSeniorPanelAccess = hasVerifiedSeniorRole;
 
   const [globalPeriodPreset, setGlobalPeriodPreset] = useState<"semana" | "mes" | "custom">("mes");
   const [globalStartDateStr, setGlobalStartDateStr] = useState<string>("");
@@ -1594,10 +1584,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         setAuthInitialized(true);
         setSessionRecovering(true);
 
-        const passwordSessionBelongsToUser =
-          readSessionStorageValue("seniorPanelPasswordUnlocked") === "true" &&
-          readSessionStorageValue("seniorPanelPasswordUid") === firebaseUser.uid;
-        setIsSeniorAuthenticated(passwordSessionBelongsToUser);
+        setIsSeniorAuthenticated(false);
 
         console.log("[NVU Session] Firebase user detected:", firebaseUser.uid);
         let listenerHydrated = false;

@@ -458,20 +458,20 @@ const ProtectedRoute = ({
   // its login form before a role is configured; Firestore rules temporarily
   // mirror the old authenticated-only access policy.
   const isSeniorPanelRoute = location.pathname.startsWith("/admin/senior");
-  const hasLegacySeniorSession = isSeniorAuthenticated;
   const hasSeniorRole = Boolean(
     (currentUser as any).role === "senior" ||
       (Array.isArray((currentUser as any).roles) &&
         (currentUser as any).roles.includes("senior")),
   );
-  if (!membershipsLoaded && !hasSeniorRole && !isSeniorPanelRoute && !hasLegacySeniorSession) {
+  const hasVerifiedSeniorSession = isSeniorAuthenticated && hasSeniorRole;
+  if (!membershipsLoaded && !hasSeniorRole && !isSeniorPanelRoute && !hasVerifiedSeniorSession) {
     return <RouteLoading fullPage />;
   }
   if (
     (!activeCompanyId || !activeRole) &&
     !hasSeniorRole &&
     !isSeniorPanelRoute &&
-    !hasLegacySeniorSession
+    !hasVerifiedSeniorSession
   )
     return <Navigate to="/select-profile" replace />;
 
@@ -494,7 +494,7 @@ const ProtectedRoute = ({
   if (allowedRole === "admin") {
     hasRoleForCompany = Boolean(
       hasSeniorRole ||
-        hasLegacySeniorSession ||
+        hasVerifiedSeniorSession ||
         isSeniorPanelRoute ||
         membershipHasRole(activeMembership, "admin", currentUser) ||
         isOwner ||
@@ -513,7 +513,7 @@ const ProtectedRoute = ({
     return <Navigate to="/select-profile" replace />;
   }
 
-  if (!hasSeniorRole && !hasLegacySeniorSession && !isSeniorPanelRoute && activeRole && activeRole !== allowedRole) {
+  if (!hasSeniorRole && !hasVerifiedSeniorSession && !isSeniorPanelRoute && activeRole && activeRole !== allowedRole) {
     return (
       <Navigate to={activeRole === "admin" ? "/admin" : "/driver"} replace />
     );
