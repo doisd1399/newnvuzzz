@@ -1,20 +1,19 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Sistema NVU
 
-# Run and deploy your AI Studio app
+Plataforma de gestão operacional e logística para empresas e motoristas.
 
-This contains everything you need to run your app locally.
+## Executar localmente
 
-View your app in AI Studio: https://ai.studio/apps/449ae1a1-fd4f-4467-90fe-6a3e5842375b
+Pré-requisito: Node.js.
 
-## Run Locally
+1. Instale as dependências: `npm install`.
+2. Copie `.env.example` para `.env.local` e preencha as variáveis necessárias do Firebase/ambiente.
+3. Execute: `npm run dev`.
 
-**Prerequisites:**  Node.js
+## Validações do projeto
 
+- `npm run lint`
+- `npm run audit:firebase-costs`
+- `npm run audit:legacy-notifications`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+As Cloud Functions possuem build próprio em `functions/` e são compiladas automaticamente pelo predeploy do Firebase.

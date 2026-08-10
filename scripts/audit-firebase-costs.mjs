@@ -26,6 +26,10 @@ const newsFeed = read("src/pages/NewsFeed.tsx");
 const newsModal = read("src/components/admin/CreateNewsModal.tsx");
 const rankingAggregateHook = read("src/hooks/useRankingAggregate.ts");
 const rankingCompaniesHook = read("src/hooks/useRankingCompaniesByIds.ts");
+const rankingUsersHook = read("src/hooks/useRankingUsersRealtime.ts");
+const driverTripsHook = read("src/hooks/useDriverTrips.ts");
+const tripHistoryHook = read("src/hooks/useTripHistory.ts");
+const tripHistoryPage = read("src/pages/driver/TripHistory.tsx");
 const rankingAggregateFunctions = read("functions/src/rankingAggregates.ts");
 const nvuNewsBackfillFunctions = read("functions/src/nvuNewsBackfill.ts");
 const storageCleanupFunctions = read("functions/src/storageCleanupAudit.ts");
@@ -133,6 +137,57 @@ if (
     "RANKING_COMPANY_BATCH_LOADER",
     "src/hooks/useRankingCompaniesByIds.ts",
     "O carregador de empresas do ranking não está limitado por IDs em lotes ou reintroduziu listener permanente.",
+  );
+}
+
+
+if (
+  !rankingUsersHook.includes("failedSources.size > 0") ||
+  !rankingUsersHook.includes("scheduleRetry(entry)") ||
+  !rankingUsersHook.includes("RETRY_MAX_DELAY_MS")
+) {
+  add(
+    "critical",
+    "RANKING_USERS_PARTIAL_CACHE",
+    "src/hooks/useRankingUsersRealtime.ts",
+    "Falha de um lote de perfis do ranking pode ser promovida a snapshot completo ou ficar sem retry limitado.",
+  );
+}
+
+if (
+  !rankingCompaniesHook.includes("RETRY_MAX_DELAY_MS") ||
+  !rankingCompaniesHook.includes("scheduleRetry(entry)") ||
+  !rankingCompaniesHook.includes("1_500 * 2 ** entry.retryAttempt")
+) {
+  add(
+    "warning",
+    "RANKING_COMPANY_RETRY_BACKOFF",
+    "src/hooks/useRankingCompaniesByIds.ts",
+    "A confirmação de empresas do ranking não demonstra backoff exponencial limitado.",
+  );
+}
+
+if (
+  !driverTripsHook.includes("entry.subscribers.size === 0") ||
+  !tripHistoryHook.includes("entry.listeners.size === 0")
+) {
+  add(
+    "warning",
+    "HISTORY_RETRY_AFTER_UNMOUNT",
+    "src/hooks/useDriverTrips.ts",
+    "Retries de histórico podem continuar consultando o Firestore depois que a tela ficou sem consumidores.",
+  );
+}
+
+if (
+  tripHistoryPage.includes("TripsRepository.runBackfill(activeCompanyId)") &&
+  !tripHistoryPage.includes("needsLegacyEnrichment")
+) {
+  add(
+    "warning",
+    "TRIP_BACKFILL_UNNECESSARY_SCAN",
+    "src/pages/driver/TripHistory.tsx",
+    "O backfill legado pode varrer viagens no servidor em toda sessão mesmo quando os registros já estão enriquecidos.",
   );
 }
 

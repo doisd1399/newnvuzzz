@@ -34,6 +34,8 @@ type RankingUsersEntry = {
   subscribers: Set<() => void>;
   unsubscribers: Array<() => void>;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  retryAttempt: number;
   sourceMaps: Map<number, Map<string, any>>;
   readySources: Set<number>;
   failedSources: Set<number>;
@@ -41,6 +43,7 @@ type RankingUsersEntry = {
 
 const FIRESTORE_IN_LIMIT = 30;
 const LISTENER_RELEASE_DELAY_MS = 120_000;
+const RETRY_MAX_DELAY_MS = 30_000;
 const cache = new Map<string, RankingUsersEntry>();
 let teardownListenerAttached = false;
 
@@ -69,7 +72,7 @@ function notify(entry: RankingUsersEntry) {
   entry.subscribers.forEach((subscriber) => subscriber());
 }
 
-function stopEntry(entry: RankingUsersEntry) {
+function closeEntryListeners(entry: RankingUsersEntry) {
   entry.unsubscribers.forEach((unsubscribe) => {
     try {
       unsubscribe();
@@ -78,8 +81,15 @@ function stopEntry(entry: RankingUsersEntry) {
     }
   });
   entry.unsubscribers = [];
+}
+
+function stopEntry(entry: RankingUsersEntry) {
+  closeEntryListeners(entry);
   if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
   entry.releaseTimer = null;
+  if (entry.retryTimer) clearTimeout(entry.retryTimer);
+  entry.retryTimer = null;
+  entry.retryAttempt = 0;
 }
 
 function ensureTeardownListener() {
@@ -94,6 +104,38 @@ function ensureTeardownListener() {
     });
     cache.clear();
   });
+}
+
+function scheduleRetry(entry: RankingUsersEntry) {
+  if (
+    isAuthTeardownActive() ||
+    entry.retryTimer ||
+    entry.subscribers.size === 0
+  ) {
+    return;
+  }
+
+  const delay = Math.min(
+    RETRY_MAX_DELAY_MS,
+    1_500 * 2 ** entry.retryAttempt,
+  );
+  entry.retryAttempt += 1;
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    if (
+      isAuthTeardownActive() ||
+      entry.subscribers.size === 0 ||
+      cache.get(entry.key) !== entry
+    ) {
+      return;
+    }
+
+    // Firestore closes a listener after invoking its error callback. Restart
+    // the bounded participant set as one unit so a failed chunk can never be
+    // promoted to a complete ranking profile snapshot.
+    closeEntryListeners(entry);
+    openEntry(entry);
+  }, delay);
 }
 
 function emitMergedState(entry: RankingUsersEntry) {
@@ -129,15 +171,32 @@ function emitMergedState(entry: RankingUsersEntry) {
     return;
   }
 
+  if (entry.failedSources.size > 0) {
+    // A fulfilled subset must never become the reusable "complete" cache.
+    // Preserve the last complete snapshot when one exists; on the first visit
+    // keep the partial data non-authoritative while a bounded retry is queued.
+    entry.state = {
+      users: entry.hasCompleteSnapshot
+        ? entry.state.users
+        : Array.from(merged.values()),
+      loading: !entry.hasCompleteSnapshot,
+      refreshing: false,
+      error: new Error("Não foi possível confirmar todos os perfis do ranking."),
+    };
+    notify(entry);
+    scheduleRetry(entry);
+    return;
+  }
+
   entry.hasCompleteSnapshot = true;
+  entry.retryAttempt = 0;
+  if (entry.retryTimer) clearTimeout(entry.retryTimer);
+  entry.retryTimer = null;
   entry.state = {
     users: Array.from(merged.values()),
     loading: false,
     refreshing: false,
-    error:
-      allSourcesCompleted && entry.failedSources.size === sourceCount
-        ? new Error("Não foi possível carregar os perfis do ranking.")
-        : null,
+    error: null,
   };
   notify(entry);
 }
@@ -226,6 +285,8 @@ function ensureEntry(ids: string[]) {
     subscribers: new Set(),
     unsubscribers: [],
     releaseTimer: null,
+    retryTimer: null,
+    retryAttempt: 0,
     sourceMaps: new Map(),
     readySources: new Set(),
     failedSources: new Set(),

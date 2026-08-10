@@ -34,3 +34,14 @@ podiam exibir subconjuntos diferentes do mesmo período.
 
 Publique a aplicação web completa no mesmo site Netlify configurado como origem
 remota do APK. Não misture a pasta `dist` de outra versão com este código.
+
+## Correção adicional — confirmação atômica das datas legadas
+
+- As quatro consultas de compatibilidade por data (`dataFechamento`, `date`,
+  `dataLancamento` e `createdAt`) agora precisam ser confirmadas pelo servidor
+  no mesmo ciclo antes de formar o conjunto do ranking.
+- Uma falha transitória em qualquer consulta não pode mais armazenar um lote
+  parcial no cache de memória como se fosse o período completo.
+- Em caso de falha, o repositório mantém a fonte como não pronta e delega a
+  nova tentativa ao backoff já existente de `useTripsRealtime`; não há leitura
+  global adicional nem ampliação do escopo no Firestore.

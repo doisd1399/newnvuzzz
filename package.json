@@ -14,7 +14,8 @@
     "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "build:full": "npm run build && npm run build:server",
     "audit:firebase-costs": "node scripts/audit-firebase-costs.mjs",
-    "audit:legacy-notifications": "node scripts/audit-legacy-notifications.mjs"
+    "audit:legacy-notifications": "node scripts/audit-legacy-notifications.mjs",
+    "audit:structure": "node scripts/audit-project-structure.mjs"
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.3.0",

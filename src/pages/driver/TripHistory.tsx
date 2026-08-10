@@ -1156,11 +1156,27 @@ export default function TripHistory({
   const [pendingFilters, setPendingFilters] = useState(initialFilters);
   const [appliedFilters, setAppliedFilters] = useState(initialFilters);
 
-  // Legacy enrichment runs only after the first history snapshot is visible
-  // and while the browser/WebView is idle. It must never compete with the
-  // initial page transition or block the current trip list.
+  const needsLegacyEnrichment = React.useMemo(
+    () =>
+      companyHistoryTrips.some((trip: any) => {
+        const vehicleName = String(trip?.veiculoNome || "").trim();
+        const contractNumber = String(trip?.contratoNumero || "").trim();
+        return (
+          !vehicleName ||
+          vehicleName === "-" ||
+          !contractNumber ||
+          contractNumber === "-"
+        );
+      }),
+    [companyHistoryTrips],
+  );
+
+  // Legacy enrichment is a migration-only path. Do not scan the company's
+  // legacy trips again on every fresh session when the already-confirmed
+  // history shows that the enrichment fields are complete. When old records
+  // still need migration, preserve the existing idle/background behavior.
   useEffect(() => {
-    if (!activeCompanyId || historyLoading) return;
+    if (!activeCompanyId || historyLoading || !needsLegacyEnrichment) return;
 
     let cancelled = false;
     const runBackfill = () => {
@@ -1187,7 +1203,7 @@ export default function TripHistory({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeCompanyId, historyLoading]);
+  }, [activeCompanyId, historyLoading, needsLegacyEnrichment]);
 
   const canonicalHistoryTrips = React.useMemo(
     () =>

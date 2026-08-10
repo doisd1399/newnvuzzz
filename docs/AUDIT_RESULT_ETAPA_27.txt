@@ -1,0 +1,13 @@
+Etapa 27 — auditoria de consistência de históricos
+
+- Cache parcial dos aliases de empresa/motorista: corrigido.
+- Falha legada convertida em falso histórico vazio: corrigida.
+- Retry do histórico do motorista com backoff: implementado.
+- Último dataset confirmado preservado durante falhas/retry: confirmado.
+- Empresas vinculadas ainda não hidratadas: confirmação pontual via servidor + retry.
+- Leituras globais adicionais de historico_viagens/frotas: nenhuma.
+- Ranking Global: não alterado.
+- TypeScript/TSX: 136 arquivos analisados sintaticamente sem erro.
+- Auditoria Firebase: 0 críticos e 0 avisos.
+- Auditoria de notificações legadas: aprovada.
+- JSON: validado sem erros.

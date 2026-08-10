@@ -29,6 +29,8 @@ type RankingCompaniesEntry = {
   request: Promise<void> | null;
   expiresAt: number;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  retryAttempt: number;
   hasCompleteSnapshot: boolean;
   serverConfirmed: boolean;
 };
@@ -36,6 +38,7 @@ type RankingCompaniesEntry = {
 const FIRESTORE_IN_LIMIT = 30;
 const CACHE_TTL_MS = 120_000;
 const CACHE_RELEASE_DELAY_MS = 120_000;
+const RETRY_MAX_DELAY_MS = 30_000;
 const cache = new Map<string, RankingCompaniesEntry>();
 let teardownListenerAttached = false;
 
@@ -72,7 +75,10 @@ function ensureTeardownListener() {
   onAuthTeardown(() => {
     cache.forEach((entry) => {
       if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+      if (entry.retryTimer) clearTimeout(entry.retryTimer);
       entry.releaseTimer = null;
+      entry.retryTimer = null;
+      entry.retryAttempt = 0;
       entry.state = EMPTY_STATE;
       entry.hasCompleteSnapshot = false;
       entry.serverConfirmed = false;
@@ -144,11 +150,42 @@ function ensureEntry(ids: string[]) {
     request: null,
     expiresAt: reusableSource ? Date.now() + CACHE_TTL_MS : 0,
     releaseTimer: null,
+    retryTimer: null,
+    retryAttempt: 0,
     hasCompleteSnapshot: Boolean(reusableSource),
     serverConfirmed: Boolean(reusableSource),
   };
   cache.set(key, entry);
   return entry;
+}
+
+
+function scheduleRetry(entry: RankingCompaniesEntry) {
+  if (
+    isAuthTeardownActive() ||
+    entry.retryTimer ||
+    entry.subscribers.size === 0
+  ) {
+    return;
+  }
+
+  const delay = Math.min(
+    RETRY_MAX_DELAY_MS,
+    1_500 * 2 ** entry.retryAttempt,
+  );
+  entry.retryAttempt += 1;
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    if (
+      isAuthTeardownActive() ||
+      entry.subscribers.size === 0 ||
+      cache.get(entry.key) !== entry ||
+      entry.request
+    ) {
+      return;
+    }
+    void loadEntry(entry);
+  }, delay);
 }
 
 function loadEntry(entry: RankingCompaniesEntry) {
@@ -213,6 +250,9 @@ function loadEntry(entry: RankingCompaniesEntry) {
       if (allSourcesSucceeded) {
         entry.hasCompleteSnapshot = true;
         entry.serverConfirmed = true;
+        entry.retryAttempt = 0;
+        if (entry.retryTimer) clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
         entry.state = {
           companies: Array.from(merged.values()),
           loading: false,
@@ -239,20 +279,11 @@ function loadEntry(entry: RankingCompaniesEntry) {
           serverConfirmed: entry.serverConfirmed,
         };
         if (!entry.hasCompleteSnapshot) entry.expiresAt = 0;
-        if (!entry.hasCompleteSnapshot && entry.subscribers.size > 0) {
-          // Retry the bounded server confirmation without widening the read
-          // to the full company collection.
-          setTimeout(() => {
-            if (
-              cache.get(entry.key) === entry &&
-              entry.subscribers.size > 0 &&
-              !entry.request &&
-              !entry.hasCompleteSnapshot
-            ) {
-              void loadEntry(entry);
-            }
-          }, 1500);
-        }
+        // Retry only the same bounded participant set. The exponential backoff
+        // prevents a weak/offline Android connection from issuing a server
+        // confirmation every 1.5 seconds while the ranking remains open. A
+        // previously complete snapshot stays visible during these retries.
+        scheduleRetry(entry);
       }
       notify(entry);
     })
@@ -268,6 +299,9 @@ function scheduleRelease(entry: RankingCompaniesEntry) {
   entry.releaseTimer = setTimeout(() => {
     entry.releaseTimer = null;
     if (entry.subscribers.size > 0 || entry.request) return;
+    if (entry.retryTimer) clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
+    entry.retryAttempt = 0;
     if (cache.get(entry.key) === entry) cache.delete(entry.key);
   }, CACHE_RELEASE_DELAY_MS);
 }

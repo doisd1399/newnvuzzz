@@ -13,7 +13,7 @@ import React, {
 import {
   collection,
   doc,
-  getDoc,
+  getDocFromServer,
   getDocs,
   getDocsFromServer,
   limit,
@@ -234,6 +234,11 @@ export const useCompanyDataController = ({
     null,
   );
   const companyDocumentLoadsRef = useRef<Set<string>>(new Set());
+  const companyDocumentRetryTimerRef = useRef<
+    ReturnType<typeof setTimeout> | null
+  >(null);
+  const companyDocumentRetryAttemptRef = useRef(0);
+  const [companyDocumentRetryTick, setCompanyDocumentRetryTick] = useState(0);
   const companiesLoadingCountRef = useRef(0);
 
   useEffect(() => {
@@ -243,6 +248,17 @@ export const useCompanyDataController = ({
   useEffect(() => {
     companyCatalogLoadedRef.current = companyCatalogLoaded;
   }, [companyCatalogLoaded]);
+
+  useEffect(() => {
+    return () => {
+      if (companyDocumentRetryTimerRef.current) {
+        clearTimeout(companyDocumentRetryTimerRef.current);
+        companyDocumentRetryTimerRef.current = null;
+      }
+      companyDocumentRetryAttemptRef.current = 0;
+      companyDocumentLoadsRef.current.clear();
+    };
+  }, [currentUser?.id]);
 
   // Hydrate the authenticated user's own company cards before the browser
   // paints the profile selector. Firestore still refreshes every document,
@@ -351,13 +367,34 @@ export const useCompanyDataController = ({
       companyDocumentLoadsRef.current.add(companyId),
     );
     beginCompaniesLoad();
+    // Membership-linked cards must never disappear because Android reused a
+    // stale document cache or one targeted request failed. Read only the
+    // referenced company ids from the server, keep fulfilled cards visible,
+    // and schedule another pass when any server confirmation fails. Successful
+    // ids leave the missing set immediately, so retries stay scoped. This cache
+    // never marks the public catalog as complete.
     void Promise.allSettled(
-      missingIds.map((companyId) => getDoc(doc(db, "frotas", companyId))),
+      missingIds.map((companyId) =>
+        getDocFromServer(doc(db, "frotas", companyId)),
+      ),
     )
       .then((results) => {
         if (cancelled) return;
-        const scopedCompanies = results.flatMap((result) => {
-          if (result.status !== "fulfilled" || !result.value.exists()) return [];
+
+        const failedIds: string[] = [];
+        const scopedCompanies = results.flatMap((result, index) => {
+          if (result.status === "rejected") {
+            failedIds.push(missingIds[index]);
+            if (import.meta.env.DEV) {
+              console.warn(
+                "[CompanyContext] Falha ao confirmar empresa vinculada no servidor:",
+                missingIds[index],
+                result.reason,
+              );
+            }
+            return [];
+          }
+          if (!result.value.exists()) return [];
           return [
             normalizeCompanyProfile(
               result.value.id,
@@ -365,21 +402,45 @@ export const useCompanyDataController = ({
             ),
           ];
         });
-        if (scopedCompanies.length === 0) return;
-        setCompanies((current) => {
-          const next = scopedCompanies.reduce(
-            (catalog, company) => mergeCompanyProfile(catalog, company),
-            current,
+
+        if (scopedCompanies.length > 0) {
+          setCompanies((current) => {
+            const next = scopedCompanies.reduce(
+              (catalog, company) => mergeCompanyProfile(catalog, company),
+              current,
+            );
+            companiesRef.current = next;
+            if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
+            const scopedIds = new Set(companyIds);
+            writeCachedScopedCompanies(
+              currentUser.id,
+              next.filter((company) => scopedIds.has(company.id)),
+            );
+            return next;
+          });
+        }
+
+        if (failedIds.length === 0) {
+          companyDocumentRetryAttemptRef.current = 0;
+          if (companyDocumentRetryTimerRef.current) {
+            clearTimeout(companyDocumentRetryTimerRef.current);
+            companyDocumentRetryTimerRef.current = null;
+          }
+          return;
+        }
+
+        if (!companyDocumentRetryTimerRef.current) {
+          const delay = Math.min(
+            30_000,
+            1_000 * 2 ** companyDocumentRetryAttemptRef.current,
           );
-          companiesRef.current = next;
-          if (companyCatalogLoadedRef.current) writeCachedCompanies(next);
-          const scopedIds = new Set(companyIds);
-          writeCachedScopedCompanies(
-            currentUser.id,
-            next.filter((company) => scopedIds.has(company.id)),
-          );
-          return next;
-        });
+          companyDocumentRetryAttemptRef.current += 1;
+          companyDocumentRetryTimerRef.current = setTimeout(() => {
+            companyDocumentRetryTimerRef.current = null;
+            if (isAuthTeardownActive()) return;
+            setCompanyDocumentRetryTick((value) => value + 1);
+          }, delay);
+        }
       })
       .finally(() => {
         missingIds.forEach((companyId) =>
@@ -398,6 +459,7 @@ export const useCompanyDataController = ({
     currentUser?.id,
     memberships,
     membershipsLoaded,
+    companyDocumentRetryTick,
   ]);
 
   // Preserve realtime behavior only for the company active in the session.

@@ -17,9 +17,12 @@ type DriverTripsEntry = DriverTripsState & {
   subscribers: Set<() => void>;
   unsubscribe: (() => void) | null;
   releaseTimer: ReturnType<typeof setTimeout> | null;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  retryAttempt: number;
 };
 
 const RELEASE_DELAY_MS = 120_000;
+const RETRY_MAX_DELAY_MS = 30_000;
 const PERSISTED_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
 const PERSISTED_TRIP_LIMIT = 180;
 const PERSISTED_CACHE_PREFIX = "nvu.instant.v1.driver-trips.";
@@ -91,15 +94,96 @@ function ensureTeardown() {
   onAuthTeardown(() => {
     cache.forEach((entry) => {
       if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
+      if (entry.retryTimer) clearTimeout(entry.retryTimer);
+      entry.releaseTimer = null;
+      entry.retryTimer = null;
+      entry.retryAttempt = 0;
       try {
         entry.unsubscribe?.();
       } catch {
         // Cleanup is best-effort.
       }
+      entry.unsubscribe = null;
       entry.subscribers.clear();
     });
     cache.clear();
   });
+}
+
+function scheduleRetry(driverId: string, entry: DriverTripsEntry) {
+  if (
+    isAuthTeardownActive() ||
+    entry.retryTimer ||
+    entry.subscribers.size === 0
+  ) return;
+
+  const delay = Math.min(
+    RETRY_MAX_DELAY_MS,
+    1_000 * 2 ** entry.retryAttempt,
+  );
+  entry.retryAttempt += 1;
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    if (
+      isAuthTeardownActive() ||
+      entry.subscribers.size === 0 ||
+      cache.get(driverId) !== entry
+    ) return;
+
+    try {
+      entry.unsubscribe?.();
+    } catch {
+      // Listener cleanup is best-effort before a retry.
+    }
+    entry.unsubscribe = null;
+    entry.loading = entry.trips.length === 0;
+    subscribeEntry(driverId, entry);
+  }, delay);
+}
+
+function subscribeEntry(driverId: string, entry: DriverTripsEntry) {
+  if (isAuthTeardownActive()) return;
+
+  try {
+    entry.unsubscribe = TripsRepository.listenDriverTrips(
+      driverId,
+      (trips) => {
+        if (isAuthTeardownActive() || cache.get(driverId) !== entry) return;
+        entry.retryAttempt = 0;
+        if (entry.retryTimer) clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+        entry.trips = trips;
+        entry.loading = false;
+        entry.error = null;
+        writePersistedTrips(driverId, trips);
+        notify(entry);
+      },
+      (error) => {
+        if (isAuthTeardownActive() || cache.get(driverId) !== entry) return;
+        console.warn("Error fetching driver trips:", error);
+        try {
+          entry.unsubscribe?.();
+        } catch {
+          // Firestore may already have closed the failed listener.
+        }
+        entry.unsubscribe = null;
+        // Keep the most recent confirmed dataset visible. A failed legacy alias
+        // query is retried instead of replacing the history with a partial or
+        // false-empty result.
+        entry.loading = entry.trips.length === 0;
+        entry.error = error;
+        notify(entry);
+        scheduleRetry(driverId, entry);
+      },
+    );
+  } catch (error) {
+    if (isAuthTeardownActive() || cache.get(driverId) !== entry) return;
+    console.warn("Error subscribing to driver trips:", error);
+    entry.loading = entry.trips.length === 0;
+    entry.error = error;
+    notify(entry);
+    scheduleRetry(driverId, entry);
+  }
 }
 
 function ensureEntry(driverId: string) {
@@ -109,6 +193,9 @@ function ensureEntry(driverId: string) {
     if (existing.releaseTimer) {
       clearTimeout(existing.releaseTimer);
       existing.releaseTimer = null;
+    }
+    if (!existing.unsubscribe && !existing.retryTimer) {
+      subscribeEntry(driverId, existing);
     }
     return existing;
   }
@@ -121,26 +208,11 @@ function ensureEntry(driverId: string) {
     subscribers: new Set(),
     unsubscribe: null,
     releaseTimer: null,
+    retryTimer: null,
+    retryAttempt: 0,
   };
   cache.set(driverId, entry);
-
-  entry.unsubscribe = TripsRepository.listenDriverTrips(
-    driverId,
-    (trips) => {
-      if (isAuthTeardownActive()) return;
-      entry.trips = trips;
-      entry.loading = false;
-      entry.error = null;
-      writePersistedTrips(driverId, trips);
-      notify(entry);
-    },
-    (error) => {
-      if (isAuthTeardownActive()) return;
-      entry.loading = false;
-      entry.error = error;
-      notify(entry);
-    },
-  );
+  subscribeEntry(driverId, entry);
 
   return entry;
 }
@@ -180,6 +252,9 @@ export function useDriverTrips(
     const entry = ensureEntry(normalizedId);
     const update = () => setState(snapshot(entry));
     entry.subscribers.add(update);
+    if (!entry.unsubscribe && !entry.retryTimer) {
+      subscribeEntry(normalizedId, entry);
+    }
     update();
 
     return () => {
@@ -194,6 +269,9 @@ export function useDriverTrips(
           // Cleanup is best-effort.
         }
         entry.unsubscribe = null;
+        if (entry.retryTimer) clearTimeout(entry.retryTimer);
+        entry.retryTimer = null;
+        entry.retryAttempt = 0;
         if (cache.get(normalizedId) === entry) cache.delete(normalizedId);
       }, RELEASE_DELAY_MS);
     };

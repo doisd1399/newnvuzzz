@@ -109,6 +109,13 @@ const loadIdentityTripsOnce = async (
   const inFlight = promises.get(cacheKey);
   if (inFlight) return inFlight;
 
+  // Identity history must be just as deterministic as ranking history. Every
+  // legacy alias is a bounded server query for the same identity; accepting
+  // only the fulfilled aliases would silently turn a transient failure into a
+  // "complete" in-memory cache for the rest of the session. Wait for every
+  // alias request to settle, but commit the dataset only when all succeeded.
+  // Waiting for all requests also avoids overlapping still-running reads when
+  // the hook schedules a retry after a transient failure.
   const promise = Promise.allSettled(
     fields.map((field) =>
       getDocsFromServer(
@@ -120,33 +127,10 @@ const loadIdentityTripsOnce = async (
     ),
   )
     .then((results) => {
-      const snapshots = results
-        .filter((result): result is PromiseFulfilledResult<any> =>
-          result.status === "fulfilled",
-        )
-        .map((result) => result.value);
-
-      if (snapshots.length === 0) {
-        const failure = results.find(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-        );
-        throw failure?.reason || new Error("Falha ao carregar viagens legadas.");
-      }
-
-      if (import.meta.env.DEV) {
-        results
-          .filter((result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-          )
-          .forEach((result) =>
-            console.warn(
-              "[TripsRepository] Consulta de alias legado ignorada:",
-              result.reason,
-            ),
-          );
-      }
-
+      const snapshots = results.map((result) => {
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      });
       return mergeSnapshots(snapshots);
     })
     .then((trips) => {
@@ -220,7 +204,12 @@ const loadLegacyTripsByDateRangeOnce = async (
 
   const lowerBound = Timestamp.fromDate(startDate);
   const upperBound = Timestamp.fromDate(endDate);
-  const promise = Promise.allSettled(
+  // Ranking parity requires the whole legacy date-alias set to be confirmed
+  // by the server before it can be reused. `Promise.allSettled` previously
+  // allowed one successful alias query to turn a partial Android result into
+  // the in-memory range cache for the rest of the session. A transient failure
+  // can therefore never be promoted to a complete ranking dataset now.
+  const promise = Promise.all(
     LEGACY_DATE_FIELDS.map((field) =>
       getDocsFromServer(
         query(
@@ -231,36 +220,7 @@ const loadLegacyTripsByDateRangeOnce = async (
       ),
     ),
   )
-    .then((results) => {
-      const snapshots = results
-        .filter((result): result is PromiseFulfilledResult<any> =>
-          result.status === "fulfilled",
-        )
-        .map((result) => result.value);
-
-      if (snapshots.length === 0) {
-        const failure = results.find(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-        );
-        throw failure?.reason || new Error("Falha ao carregar compatibilidade de viagens.");
-      }
-
-      if (import.meta.env.DEV) {
-        results
-          .filter((result): result is PromiseRejectedResult =>
-            result.status === "rejected",
-          )
-          .forEach((result) =>
-            console.warn(
-              "[TripsRepository] Consulta de data legada ignorada:",
-              result.reason,
-            ),
-          );
-      }
-
-      return mergeSnapshots(snapshots);
-    })
+    .then((snapshots) => mergeSnapshots(snapshots))
     .then((trips) =>
       trips.filter((trip) => isTripInsideRange(trip, startDate, endDate)),
     )
@@ -328,9 +288,10 @@ export class TripsRepository {
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
         console.warn("Falha ao carregar viagens legadas da empresa:", error);
-        legacyTrips = [];
-        legacyReady = true;
-        emit();
+        // Do not promote a failed compatibility read to an authoritative empty
+        // source. The hook keeps the last valid visible dataset and retries
+        // these filtered identity queries with backoff.
+        onError?.(error);
       });
 
     const unsubscribe = onSnapshot(
@@ -399,9 +360,9 @@ export class TripsRepository {
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
         console.warn("Falha ao carregar viagens legadas do motorista:", error);
-        legacyTrips = [];
-        legacyReady = true;
-        emit();
+        // A failed legacy alias query is unknown, not an empty history. Keep
+        // the previously painted cache intact and delegate retry to the hook.
+        onError?.(error);
       });
 
     const unsubscribe = onSnapshot(
@@ -481,10 +442,11 @@ export class TripsRepository {
       })
       .catch((error) => {
         if (!active || isAuthTeardownActive()) return;
-        console.warn("Falha ao carregar compatibilidade de viagens:", error);
-        legacyTrips = [];
-        legacyReady = true;
-        emit();
+        console.warn("Falha ao confirmar compatibilidade de viagens:", error);
+        // Do not mark an empty/partial legacy source as ready. Propagate the
+        // failure so useTripsRealtime closes this generation and retries the
+        // same bounded server reads with its existing exponential backoff.
+        onError?.(error);
       });
 
     const rangeQuery = query(

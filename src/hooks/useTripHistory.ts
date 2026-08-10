@@ -140,6 +140,37 @@ function scheduleEntryRelease(companyId: string, entry: TripHistoryCacheEntry) {
   }, CACHE_RELEASE_DELAY_MS);
 }
 
+function scheduleHistoryRetry(
+  companyId: string,
+  entry: TripHistoryCacheEntry,
+) {
+  if (isAuthTeardownActive() || entry.retryTimer) return;
+
+  const delay = Math.min(
+    RETRY_MAX_DELAY_MS,
+    1_000 * 2 ** entry.retryAttempt,
+  );
+  entry.retryAttempt += 1;
+  entry.retryTimer = setTimeout(() => {
+    entry.retryTimer = null;
+    if (
+      isAuthTeardownActive() ||
+      entry.listeners.size === 0 ||
+      tripHistoryCache.get(companyId) !== entry
+    ) {
+      return;
+    }
+    try {
+      entry.unsubscribe?.();
+    } catch {
+      // Listener cleanup is best-effort before a retry.
+    }
+    entry.unsubscribe = null;
+    entry.loading = entry.trips.length === 0;
+    subscribeEntry(companyId, entry);
+  }, delay);
+}
+
 function subscribeEntry(companyId: string, entry: TripHistoryCacheEntry) {
   if (isAuthTeardownActive()) return;
 
@@ -160,34 +191,19 @@ function subscribeEntry(companyId: string, entry: TripHistoryCacheEntry) {
       (error) => {
         if (isAuthTeardownActive()) return;
         console.warn("Error fetching trip history:", error);
+        try {
+          entry.unsubscribe?.();
+        } catch {
+          // Firestore may already have closed the failed listener.
+        }
+        entry.unsubscribe = null;
         entry.error = error;
         // Keep the latest visible dataset during a retry. The repository may
         // publish canonical data first and reconcile legacy aliases afterward.
         entry.loading = entry.trips.length === 0;
         notify(entry);
 
-        if (entry.retryTimer) return;
-        const delay = Math.min(
-          RETRY_MAX_DELAY_MS,
-          1_000 * 2 ** entry.retryAttempt,
-        );
-        entry.retryAttempt += 1;
-        entry.retryTimer = setTimeout(() => {
-          entry.retryTimer = null;
-          if (
-            isAuthTeardownActive() ||
-            tripHistoryCache.get(companyId) !== entry
-          )
-            return;
-          try {
-            entry.unsubscribe?.();
-          } catch {
-            // Listener cleanup is best-effort before a retry.
-          }
-          entry.unsubscribe = null;
-          entry.loading = entry.trips.length === 0;
-          subscribeEntry(companyId, entry);
-        }, delay);
+        scheduleHistoryRetry(companyId, entry);
       },
     );
   } catch (error) {
@@ -196,6 +212,9 @@ function subscribeEntry(companyId: string, entry: TripHistoryCacheEntry) {
     entry.error = error;
     entry.loading = entry.trips.length === 0;
     notify(entry);
+    // Synchronous listener-attachment failures must follow the same bounded
+    // recovery path as asynchronous Firestore listener errors.
+    scheduleHistoryRetry(companyId, entry);
   }
 }
 
@@ -206,6 +225,9 @@ function ensureEntry(companyId: string): TripHistoryCacheEntry {
     if (existingEntry.releaseTimer) {
       clearTimeout(existingEntry.releaseTimer);
       existingEntry.releaseTimer = null;
+    }
+    if (!existingEntry.unsubscribe && !existingEntry.retryTimer) {
+      subscribeEntry(companyId, existingEntry);
     }
     return existingEntry;
   }
@@ -271,6 +293,9 @@ export function useTripHistory(
       setState({ companyId, value: getState(entry) });
 
     entry.listeners.add(updateState);
+    if (!entry.unsubscribe && !entry.retryTimer) {
+      subscribeEntry(companyId, entry);
+    }
     updateState();
 
     return () => {
