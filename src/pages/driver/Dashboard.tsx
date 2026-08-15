@@ -55,6 +55,10 @@ import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import TripHistory from "./TripHistory";
 import { OperationProgressBar } from "../../components/common/OperationProgressBar";
 import { isRunningJobStatus } from "../../lib/jobStatus";
+import { resolveTripSimulatorCode } from "../../lib/tripDistance";
+import { launchGtoWork } from "../../services/gtoWorkLauncher";
+import { GtoWorkModeDialog, type GtoWorkMode } from "../../components/GtoWorkModeDialog";
+import GtoObserverSetup from "../../components/GtoObserverSetup";
 
 import { cn, getJobRealTimestamp, getNomeContratoHistorico } from "../../lib/utils";
 import { useDriverTrips } from "../../hooks/useDriverTrips";
@@ -63,6 +67,19 @@ import {
   OperationResultModal,
   OperationResultData,
 } from "../../components/OperationResultModal";
+
+const GTO_PREFERRED_DESTINATIONS = [
+  "Itapetuna",
+  "Nova Macaé",
+  "Registro",
+  "Águas Velhas",
+  "Faz Areia Dourada",
+  "Cruz do Oeste",
+  "Cooperativa Agro Grão",
+  "Curitiba",
+  "Lages",
+  "Lauro Muller",
+] as const;
 
 function DashboardComponent({
   isIntegrated = false,
@@ -100,6 +117,7 @@ function DashboardComponent({
     updateUserOnlineStatus,
     jobsReady,
     contractsReady,
+    simulators,
   } = useOperationalStore();
   const { jobDemands } = useActivityStore();
   // The integrated profile already owns the company-trip cache. Reusing that
@@ -131,6 +149,7 @@ function DashboardComponent({
   const [isRequestingId, setIsRequestingId] = useState<string | null>(null);
   const [isContractModalOpen, setIsContractModalOpen] = useState(false);
   const [isSubmittingDemand, setIsSubmittingDemand] = useState(false);
+  const [isGtoModeDialogOpen, setIsGtoModeDialogOpen] = useState(false);
   const [demandSuccess, setDemandSuccess] = useState(false);
 
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
@@ -225,6 +244,121 @@ function DashboardComponent({
     const foundTrailer = tId ? trailers.find((t) => t.id === tId) : null;
     return foundTrailer;
   }, [myJob, contract, trailers]);
+
+  const currentCompany = useMemo(
+    () => companies.find((company) => company.id === activeCompanyId) || null,
+    [companies, activeCompanyId],
+  );
+
+  // The approved GTO spellings are seeded first and stay canonical. Contract route cities
+  // are additive. Previous OCR/history is deliberately excluded so a past typo can never
+  // become a spelling authority.
+  const trustedGtoCities = useMemo(() => {
+    const values: string[] = [...GTO_PREFERRED_DESTINATIONS];
+    const add = (value: unknown) => {
+      const city = String(value || "").trim().replace(/\s+/g, " ");
+      if (city && !values.some((item) => item.localeCompare(city, "pt-BR", { sensitivity: "base" }) === 0)) {
+        values.push(city);
+      }
+    };
+
+    contract?.deliveries?.forEach((route) => {
+      add(route.origin);
+      add(route.destination);
+    });
+    return values.slice(0, 120);
+  }, [contract?.deliveries]);
+
+  const activeDetailedGtoRoute = contract?.mode === "detailed"
+    ? contract.deliveries?.[Math.max(0, myJob?.progress || 0)]
+    : undefined;
+  const trustedGtoCitiesJson = JSON.stringify(trustedGtoCities);
+
+  const isGtoWork =
+    resolveTripSimulatorCode(currentCompany as any, simulators as any[]) === "GTO";
+
+  const handleTripAction = async () => {
+    if (operationalSuspension.active) {
+      alert(
+        isGtoWork
+          ? "Suas atividades operacionais estão suspensas. Aguarde a liberação para iniciar o trabalho."
+          : "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para lançar viagens.",
+      );
+      return;
+    }
+    if (!myJob || !contract || !currentUser || !currentCompany) {
+      alert(
+        isGtoWork
+          ? "Inicie uma operação para começar o trabalho no GTO."
+          : "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
+      );
+      return;
+    }
+
+    if (!isGtoWork) {
+      navigate("/driver/trip");
+      return;
+    }
+
+    setIsGtoModeDialogOpen(true);
+  };
+
+  const startGtoAutomatic = async () => {
+    if (!myJob || !contract || !currentUser || !currentCompany) {
+      alert("Inicie uma operação para começar o trabalho no GTO.");
+      return;
+    }
+
+    try {
+      const result = await launchGtoWork({
+        driverId: currentUser.id,
+        driverName: currentUser.name,
+        companyId: currentCompany.id,
+        companyName: currentCompany.companyName || currentCompany.name || "Empresa",
+        jobId: myJob.id,
+        jobStatus: myJob.status,
+        jobProgress: myJob.progress || 0,
+        jobTotalDeliveries: contract.totalDeliveries || 0,
+        contractId: contract.id,
+        contractName: contract.name || "",
+        contractMode: contract.mode,
+        vehicleId: vehicle?.id || "",
+        vehicleName: vehicle?.name || "",
+        trailerId: trailer?.id || "",
+        trailerName: trailer?.name || "",
+        expectedGtoDestination: activeDetailedGtoRoute?.destination || "",
+        trustedGtoCitiesJson,
+      });
+
+      if (result.status === "not-native") {
+        alert("Iniciar trabalho GTO está disponível no aplicativo Android NVU.");
+      } else if (result.status === "module-missing") {
+        alert("Este APK não possui o módulo GTO atualizado. Instale a versão atual do aplicativo.");
+      } else if (result.status === "gto-missing") {
+        alert("Global Truck Online não foi encontrado neste aparelho.");
+      } else if (result.status === "screen-capture-denied") {
+        alert("Autorize a leitura da tela para iniciar o trabalho GTO. O simulador só será aberto depois que o Android confirmar essa autorização.");
+      } else if (result.status === "job-not-ready") {
+        alert("Inicie a operação antes de abrir o trabalho GTO.");
+      } else if (result.status === "job-closed") {
+        alert("Operação concluída. Inicie uma nova operação para continuar.");
+      } else if (result.status === "observer-failed") {
+        alert(result.message || "O Observador GTO não conseguiu iniciar corretamente.");
+      }
+    } catch (error) {
+      console.error("Falha ao iniciar trabalho GTO:", error);
+      alert("Não foi possível abrir o trabalho GTO. Tente novamente.");
+    }
+  };
+
+  const handleGtoModeSelect = async (mode: GtoWorkMode) => {
+    setIsGtoModeDialogOpen(false);
+    if (mode === "print") {
+      navigate("/driver/trip?mode=print");
+      return;
+    }
+    await startGtoAutomatic();
+  };
 
   const unassignedContracts = useMemo(
     () => {
@@ -322,21 +456,7 @@ function DashboardComponent({
               )}
             >
               <button
-                onClick={() => {
-                  if (operationalSuspension.active) {
-                    alert(
-                      "Suas atividades operacionais estão suspensas. Aguarde o término da suspensão para lançar viagens.",
-                    );
-                    return;
-                  }
-                  if (!myJob) {
-                    alert(
-                      "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
-                    );
-                    return;
-                  }
-                  navigate("/driver/trip");
-                }}
+                onClick={() => void handleTripAction()}
                 className={cn(
                   "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
                   myJob && !operationalSuspension.active
@@ -356,7 +476,7 @@ function DashboardComponent({
                   />
                 )}
                 <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
-                  Lançar Viagem
+                  {isGtoWork ? "Iniciar trabalho" : "Lançar Viagem"}
                 </span>
               </button>
             </div>
@@ -998,6 +1118,11 @@ function DashboardComponent({
 
   return (
     <div className="space-y-3 sm:space-y-4 w-full max-w-7xl mx-auto pb-4 pt-0">
+      <GtoWorkModeDialog
+        open={isGtoModeDialogOpen}
+        onClose={() => setIsGtoModeDialogOpen(false)}
+        onSelect={handleGtoModeSelect}
+      />
       <OperationResultModal
         isOpen={showOperationResultModal}
         onClose={() => setShowOperationResultModal(false)}
@@ -1011,6 +1136,31 @@ function DashboardComponent({
         <div className="order-2 sm:order-2 w-full">
           <OperationalSuspensionNotice user={currentUser as any} />
         </div>
+        {isGtoWork && currentCompany && (
+          <div className="order-3 sm:order-3 w-full mb-0 sm:mb-3">
+            <GtoObserverSetup
+              context={{
+                driverId: currentUser.id,
+                driverName: currentUser.name,
+                companyId: currentCompany.id,
+                companyName: currentCompany.companyName || currentCompany.name || "Empresa",
+                jobId: myJob.id,
+                jobStatus: myJob.status,
+                jobProgress: myJob.progress || 0,
+                jobTotalDeliveries: contract.totalDeliveries || 0,
+                contractId: contract.id,
+                contractName: contract.name || "",
+                contractMode: contract.mode,
+                vehicleId: vehicle?.id || "",
+                vehicleName: vehicle?.name || "",
+                trailerId: trailer?.id || "",
+                trailerName: trailer?.name || "",
+                        expectedGtoDestination: activeDetailedGtoRoute?.destination || "",
+                trustedGtoCitiesJson,
+              }}
+            />
+          </div>
+        )}
         <header className="order-3 sm:order-1 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 w-full mb-0 sm:mb-3">
           <Card className="w-full shrink-0 border border-gray-100 dark:border-[#2A2F3A] shadow-sm rounded-2xl bg-white dark:bg-[#1A1F26] flex-1">
             <CardContent className="p-3">
@@ -1076,7 +1226,7 @@ function DashboardComponent({
                     Operação concluída!
                   </h3>
                   <p className="text-[10px] sm:text-[11px] font-medium text-gray-400 leading-tight">
-                    Todas as entregas feitas. Finalize para ver o resultado.
+                    Todas as entregas foram registradas. Finalize a operação para continuar.
                   </p>
                 </div>
                 <button

@@ -751,7 +751,7 @@ const TripListItem = React.memo(({
                   Origem
                 </span>
                 <span className="text-[11px] font-medium text-gray-900 dark:text-gray-100 truncate">
-                  {trip.origem}
+                  {trip.origem || trip.gtoOriginCompany || "-"}
                 </span>
               </div>
             </div>
@@ -2502,8 +2502,10 @@ export default function TripHistory({
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           <MapPin size={14} className="text-green-500 shrink-0" />
                           <div className="flex flex-col min-w-0">
-                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">Origem</span>
-                            <span className="text-[11px] font-semibold text-gray-900 dark:text-gray-100 truncate">{selectedTrip.origem}</span>
+                            <span className="text-[9px] text-gray-500 dark:text-gray-400 font-medium leading-tight mb-[2px]">
+                              Origem
+                            </span>
+                            <span className="text-[11px] font-semibold text-gray-900 dark:text-gray-100 truncate">{selectedTrip.origem || selectedTrip.gtoOriginCompany || "-"}</span>
                           </div>
                         </div>
                         <ArrowRight size={12} className="text-gray-400 shrink-0 mx-1.5" />

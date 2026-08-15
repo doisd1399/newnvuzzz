@@ -45,7 +45,7 @@ const hasUnsupportedSimulatorSemantic = (record: SimulatorLike): boolean =>
   simulatorSemanticValues(record).some(isUnsupportedSimulatorAlias);
 
 const KNOWN_SIMULATOR_ALIAS_GROUPS: readonly (readonly string[])[] = [
-  ["gto", "global-truck-online"],
+  ["gto", "global-truck-online", "global-truck"],
   ["wtds", "world-truck-driving-simulator"],
   ["wbds", "world-bus-driving-simulator"],
   ["toe-3", "toe3", "truckers-of-europe-3"],

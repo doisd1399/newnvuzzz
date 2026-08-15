@@ -122,8 +122,11 @@ export default function Portal() {
           </CardContent>
         </Card>
 
-        <p className="text-center text-xs font-semibold text-slate-400 dark:text-[#71717a] mt-8">
-          NVU © {new Date().getFullYear()} — Plataforma Operacional
+        <p className="text-center text-xs font-semibold text-slate-400 dark:text-[#71717a] mt-8 flex justify-center gap-2">
+          <span>NVU © {new Date().getFullYear()} — Plataforma Operacional</span>
+          <button onClick={() => navigate('/diagnostics')} className="hover:text-slate-600 dark:hover:text-[#e4e4e7] transition-colors" title="Diagnóstico de Conectividade">
+            •
+          </button>
         </p>
       </div>
     </div>

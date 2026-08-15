@@ -1,0 +1,23 @@
+{
+  "functionalRelease": "R3.34-PC-HF10",
+  "webVersion": "2.3.9",
+  "androidVersion": "1.0.62",
+  "androidVersionCode": 62,
+  "stableProductionBaseline": true,
+  "stableApkCapacitorPackage": "NVU-CAPACITOR-ANDROID-R3.34-PC-HF10.zip",
+  "stableApkCapacitorSha256": "bf0b3ddeea5de4bc80fd491b60aec93821ecf220c660242f665a8667cde3ee20",
+  "capacitorRuntime": "remote",
+  "netlifyUrl": "https://stirring-pavlova-ca6808.netlify.app",
+  "firebaseProjectId": "vtc-frota-log",
+  "canonicalGtoState": "native deterministic state machine + immutable freight snapshot + durable Firebase/Firestore mirror",
+  "devProfile": "Google AI Studio + Netlify web mirror",
+  "alignment": {
+    "srcMatchesApprovedHF10": true,
+    "functionsSourceMatchesApprovedHF10": true,
+    "rootDependencyLockMatchesApprovedHF10": true,
+    "functionsDependencyLockMatchesApprovedHF10": true,
+    "capacitorRemoteConfigMatchesApprovedHF10": true,
+    "netlifyConfigMatchesApprovedHF10": true
+  },
+  "generatedBy": "web-capacitor-production-alignment-2026-08-15"
+}

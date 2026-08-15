@@ -1,0 +1,54 @@
+NVU DEV GOOGLE AI STUDIO / NETLIFY — R3.34-PC-HF10
+Data: 2026-08-15
+
+BASE ESTÁVEL APROVADA
+- APK/Capacitor: R3.34-PC-HF10
+- Android: 1.0.62 / versionCode 62
+- Web: 2.3.9
+- SHA-256 do pacote estável: bf0b3ddeea5de4bc80fd491b60aec93821ecf220c660242f665a8667cde3ee20
+
+ALINHAMENTO APLICADO
+- src/: 145 arquivos, paridade exata com HF10 = True
+- functions/src/: 10 arquivos, paridade exata com HF10 = True
+- public/: 3 arquivos, paridade exata com HF10 = True
+- package-lock raiz: igual ao HF10 = True
+- package-lock Functions: igual ao HF10 = True
+- capacitor.config.ts: igual ao HF10 = True
+- capacitor.remote.json: igual ao HF10 = True
+- netlify.toml: igual ao HF10 = True
+
+PRINCIPAIS ATUALIZAÇÕES VS DEV RECEBIDO
+- Web 2.3.1 -> 2.3.9.
+- Fluxo GTO automático atualizado para preparar/rearmar a bolha antes de abrir o GTO.
+- Bridge Web atualizado com estados de captura, estabilidade, seleção, origem e diagnóstico.
+- Dicionário confiável de destinos alinhado à release aprovada.
+- Origem automática alinhada à empresa detectada no card GTO.
+- Functions atualizadas com gtoMoney.ts e money schema v2.
+- gtoTrips.ts alinhado ao contrato de origem/valor/continuidade da HF10.
+- Dependências de Functions alinhadas (firebase-admin ^12.7.0, firebase-functions ^5.1.1).
+- Runtime remoto do Capacitor documentado e validado contra o mesmo Netlify HTTPS.
+- NVU_RELEASE_METADATA.json corrigido para versionCode 62. O pacote HF10 original tinha um campo de metadata residual com code 60, enquanto build.gradle, workflow e README da release apontam corretamente code 62.
+
+VALIDAÇÕES EXECUTADAS NESTE DEV
+- verify-web-hf10-parity: PASS
+- validate-gto-auto-web: 47/47 PASS
+- R3.13 mode/print: 20/20 PASS
+- R3.13 print evidence: 12/12 PASS
+- Senior navigation: 10/10 PASS
+- TypeScript/TSX syntax parse: 154 arquivos PASS
+- JSON parse: 9 arquivos PASS
+- Paridade de src/functions/public com HF10: PASS
+
+OBSERVAÇÃO DE BUILD
+O npm ci completo não terminou neste sandbox por limitação de rede/ambiente. Não foi usado como evidência de compilação.
+A produção Web/Functions foi alinhada por paridade byte-a-byte dos fontes e locks com a release HF10 aprovada.
+No Google AI Studio/PC, a validação recomendada é:
+  npm ci
+  npm --prefix functions ci
+  npm run verify:web-hf10
+
+PUBLICAÇÃO
+Como o Dev recebido estava atrás da HF10 em src/ e functions/src/, para levar ESTE Dev ao ambiente online:
+1. publicar Firebase Functions;
+2. gerar npm run build e publicar Netlify;
+3. manter o APK/Capacitor estável R3.34-PC-HF10 instalado/compilado sem alteração.

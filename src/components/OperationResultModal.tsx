@@ -68,7 +68,7 @@ export function OperationResultModal({
                     <Check size={20} className="text-emerald-600 dark:text-emerald-400" strokeWidth={3} />
                   </div>
                   <h2 className="text-[18px] font-black text-gray-900 dark:text-[#fafafa] mb-1 tracking-tight text-center leading-none">Operação finalizada!</h2>
-                  <p className="text-gray-500 dark:text-gray-400 text-[12px] text-center font-medium">Confira os resultados da operação.</p>
+                  <p className="text-gray-500 dark:text-gray-400 text-[12px] text-center font-medium">Inicie uma nova operação para continuar.</p>
                 </div>
 
                 {/* Contract Info */}

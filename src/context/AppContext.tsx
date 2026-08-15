@@ -54,6 +54,7 @@ import {
 } from "../services/notificationService";
 import { Capacitor } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
+import { GtoObserver, isGtoObserverAvailable, isNativeAndroid } from "../lib/gtoObserver";
 import { registerDeviceForPush, clearPushRegistrationContext } from "../lib/capacitorPushService";
 import {
   doc,
@@ -2006,18 +2007,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     seniorCompanyId,
   ]);
 
-  // Senior is an authorization role, not a separate operational profile. Use
-  // the admin data subscriptions while keeping `currentUser.role ===
-  // "senior"` as the server-verified gate for the Senior panel.
+  // Senior is an authorization role, not a separate operational profile.
+  // Never overwrite an explicit Admin/Driver profile selection just because
+  // the account also has Senior access. A default Admin role is used only
+  // when no operational profile has been established yet.
   useEffect(() => {
     const roles = Array.isArray((currentUser as any)?.roles)
       ? (currentUser as any).roles
       : [];
-    if (
-      (currentUser as any)?.role === "senior" ||
-      roles.includes("senior")
-    ) {
-      if (activeRole !== "admin") setActiveRole("admin");
+    const hasSeniorRole =
+      (currentUser as any)?.role === "senior" || roles.includes("senior");
+    if (hasSeniorRole && !activeRole) {
+      setActiveRole("admin");
     }
   }, [currentUser?.id, (currentUser as any)?.role, activeRole]);
 
@@ -4711,6 +4712,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     // Notify page-level hooks and long-lived services before Auth is revoked.
     // They can unsubscribe synchronously and ignore any late callbacks.
     beginAuthTeardown();
+
+    // End the native GTO session before authentication is revoked. R3.1 keeps
+    // an already-confirmed delivery in its durable retry queue, but discards an
+    // unfinished route so it can never leak into the next account on a shared device.
+    try {
+      if (isNativeAndroid() && isGtoObserverAvailable()) {
+        await GtoObserver.logoutCleanup();
+      }
+    } catch (gtoLogoutError) {
+      // Older APKs may not expose logoutCleanup yet. Logout must still proceed.
+      console.warn("[NVU Logout] GTO native cleanup warning:", gtoLogoutError);
+    }
 
     // Stop every AppContext listener that requires authentication before
     // revoking Firebase Auth. This ordering prevents the transient

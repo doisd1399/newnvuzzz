@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { PhotoProvider, PhotoView } from 'react-photo-view';
 import 'react-photo-view/dist/react-photo-view.css';
 import { useOperationalStore, useSessionStore } from "../../context/AppContext";
@@ -36,7 +36,7 @@ import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
 import { isRunningJobStatus, isTripRecordableJobStatus } from "../../lib/jobStatus";
 import { parseTripValue } from "../../lib/tripNormalizer";
-import { extractGtoTripValue } from "../../services/gtoOcrService";
+import { analyzeGtoTripReceipt } from "../../services/gtoOcrService";
 import { extractScsTripData } from "../../services/scsTripOcrService";
 import { extractToe3TripData } from "../../services/toe3TripOcrService";
 import {
@@ -51,6 +51,7 @@ import {
   resolveTripSimulatorCode,
 } from "../../lib/tripDistance";
 import { TRIP_RECEIPT_RETENTION_DAYS } from "../../lib/tripReceiptRetention";
+import { launchGtoWork } from "../../services/gtoWorkLauncher";
 
 const generateImageHash = async (
   arrayBuffer: ArrayBuffer,
@@ -87,6 +88,7 @@ const resolveImageUploadErrorMessage = (
 
 export default function RecordTrip() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { currentUser } = useSessionStore();
   const { companies, activeCompanyId, memberships } = useCompanyStore();
   const { suspension: operationalSuspension } = useOperationalSuspension(
@@ -113,6 +115,9 @@ export default function RecordTrip() {
   const [showHistory, setShowHistory] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isReadingValue, setIsReadingValue] = useState(false);
+  const [gtoReceiptAnalysisStatus, setGtoReceiptAnalysisStatus] = useState<"idle" | "reading" | "ok" | "failed" | "blocked">("idle");
+  const [gtoAdDoubleDetected, setGtoAdDoubleDetected] = useState(false);
+  const [gtoAdEvidence, setGtoAdEvidence] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isNavigating, setIsNavigating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -133,6 +138,8 @@ export default function RecordTrip() {
     currentCompany as any,
     simulators as any[],
   );
+  const gtoMode = new URLSearchParams(location.search).get("mode");
+  const isGtoPrintMode = resolvedSimulatorCode === "GTO" && gtoMode === "print";
   const distanceRequired = requiresTripDistance(
     currentCompany as any,
     simulators as any[],
@@ -184,7 +191,13 @@ export default function RecordTrip() {
       )
     : null;
 
-  const predefinedRoutes = activeContract?.mode === "detailed" && activeContract.deliveries && activeContract.deliveries.length > 0 ? activeContract.deliveries : null;
+  const predefinedRoutes =
+    !isGtoPrintMode &&
+    activeContract?.mode === "detailed" &&
+    activeContract.deliveries &&
+    activeContract.deliveries.length > 0
+      ? activeContract.deliveries
+      : null;
   const currentRouteIndex = activeJob ? (activeJob.progress || 0) : 0;
   
   const isContractCompletedState = predefinedRoutes && currentRouteIndex >= predefinedRoutes.length;
@@ -329,6 +342,84 @@ export default function RecordTrip() {
       )
     : null;
 
+  if (resolvedSimulatorCode === "GTO" && !isGtoPrintMode) {
+    const startGto = async () => {
+      try {
+        const result = await launchGtoWork({
+          driverId: currentUser.id,
+          driverName: currentUser.name,
+          companyId: currentCompany.id,
+          companyName: currentCompany.companyName || currentCompany.name || "Empresa",
+          jobId: activeJob.id,
+          jobStatus: activeJob.status,
+          jobProgress: activeJob.progress || 0,
+          jobTotalDeliveries: activeContract.totalDeliveries || 0,
+          contractId: activeContract.id,
+          contractName: activeContract.name || "",
+          vehicleId: activeVehicle?.id || "",
+          vehicleName: activeVehicle?.name || "",
+          trailerId: activeTrailer?.id || "",
+          trailerName: activeTrailer?.name || "",
+        });
+        if (result.status === "not-native") {
+          toast.error("Iniciar trabalho GTO está disponível no aplicativo Android NVU.");
+        } else if (result.status === "module-missing") {
+          toast.error("Este APK não possui o módulo GTO atualizado.");
+        } else if (result.status === "gto-missing") {
+          toast.error("Global Truck Online não foi encontrado neste aparelho.");
+        } else if (result.status === "screen-capture-denied") {
+          toast.error("Autorize a leitura da tela. O GTO será aberto somente após a confirmação do Android.");
+        } else if (result.status === "job-not-ready") {
+          toast.error("Inicie a operação antes de abrir o trabalho GTO.");
+        } else if (result.status === "job-closed") {
+          toast.error("Operação concluída. Inicie uma nova operação para continuar.");
+        } else if (result.status === "observer-failed") {
+          toast.error(result.message || "O Observador GTO não conseguiu iniciar corretamente.");
+        }
+      } catch (error) {
+        console.error("Falha ao iniciar trabalho GTO:", error);
+        toast.error("Não foi possível abrir o trabalho GTO.");
+      }
+    };
+
+    return (
+      <div className="w-full max-w-lg mx-auto py-8 px-3">
+        <div className="bg-white dark:bg-[#121213] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 text-center">
+          <Truck size={28} className="mx-auto text-cyan-600 dark:text-cyan-300 mb-3" />
+          <h1 className="text-base font-bold text-slate-900 dark:text-white">
+            Trabalho GTO
+          </h1>
+          <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+            Escolha o frete no GTO e faça a rota normalmente. Ao chegar ao destino, a NVU identificará a conclusão e registrará a viagem automaticamente.
+          </p>
+          <div className="mt-4 space-y-2">
+            <button
+              type="button"
+              onClick={() => navigate("/driver/trip?mode=print", { replace: true })}
+              className="w-full h-11 rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 font-semibold"
+            >
+              Modo print
+            </button>
+            <button
+              type="button"
+              onClick={() => void startGto()}
+              className="w-full h-11 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold"
+            >
+              Modo automático
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/driver/profile", { replace: true })}
+            className="mt-2 w-full h-10 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold"
+          >
+            Voltar ao painel operacional
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const input = e.currentTarget;
     const selectedFile = input.files?.[0];
@@ -365,8 +456,14 @@ export default function RecordTrip() {
         });
 
         const requestId = ++ocrRequestIdRef.current;
+        if (imagePreview?.startsWith("blob:")) {
+          URL.revokeObjectURL(imagePreview);
+        }
         localPreviewUrl = URL.createObjectURL(file);
         receiptOriginalNameRef.current = file.name.trim();
+        setGtoReceiptAnalysisStatus("idle");
+        setGtoAdDoubleDetected(false);
+        setGtoAdEvidence([]);
         setImagePreview(localPreviewUrl);
 
         const simulatorId = resolveSimulatorId(currentCompany, simulators) || "";
@@ -393,25 +490,43 @@ export default function RecordTrip() {
         // parser and fills only distance and earnings.
         if (isGto) {
           setIsReadingValue(true);
-          void extractGtoTripValue(file)
-            .then((detected) => {
-              if (ocrRequestIdRef.current !== requestId) return;
+          setGtoReceiptAnalysisStatus("reading");
 
-              if (detected) {
-                setValor(detected);
-                toast.success(`Valor identificado: R$ ${detected}`);
-                return;
-              }
+          const analysis = await analyzeGtoTripReceipt(file);
+          if (ocrRequestIdRef.current !== requestId) return;
 
-              toast.warning(
-                "Não foi possível confirmar o valor automaticamente. Confira e preencha manualmente.",
-              );
-            })
-            .finally(() => {
-              if (ocrRequestIdRef.current === requestId) {
-                setIsReadingValue(false);
-              }
-            });
+          setIsReadingValue(false);
+
+          if (!analysis.analysisOk) {
+            setGtoReceiptAnalysisStatus("failed");
+            toast.error(
+              "Não foi possível validar o print do GTO. Envie uma imagem nítida da tela de conclusão.",
+            );
+            return;
+          }
+
+          if (analysis.value) {
+            setValor(analysis.value);
+          }
+
+          if (analysis.doubledByAd) {
+            setGtoAdDoubleDetected(true);
+            setGtoAdEvidence(analysis.evidence);
+            setGtoReceiptAnalysisStatus("blocked");
+            toast.error(
+              "Anúncio/valor dobrado detectado no print. Esta viagem não será aceita como resultado normal.",
+            );
+            return;
+          }
+
+          setGtoReceiptAnalysisStatus("ok");
+          if (analysis.value) {
+            toast.success(`Valor identificado: R$ ${analysis.value}`);
+          } else {
+            toast.warning(
+              "Print validado sem indício de anúncio/dobro, mas o valor não foi identificado. Confira e preencha manualmente.",
+            );
+          }
         } else if (isScsOcrSimulator) {
           setIsReadingValue(true);
           void extractScsTripData(file, resolvedSimulatorCode)
@@ -524,6 +639,9 @@ export default function RecordTrip() {
           setIsReadingValue(false);
           setImagePreview(null);
           setImageHash(null);
+          setGtoReceiptAnalysisStatus("idle");
+          setGtoAdDoubleDetected(false);
+          setGtoAdEvidence([]);
           receiptOriginalNameRef.current = "";
           if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
           return;
@@ -561,6 +679,9 @@ export default function RecordTrip() {
         setIsReadingValue(false);
         setImagePreview(null);
         setImageHash(null);
+        setGtoReceiptAnalysisStatus("idle");
+        setGtoAdDoubleDetected(false);
+        setGtoAdEvidence([]);
         receiptOriginalNameRef.current = "";
         if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl);
         toast.error(`Falha no envio da imagem. ${userMessage}`);
@@ -584,6 +705,26 @@ export default function RecordTrip() {
     if (isContractCompletedState) {
       toast.error("Este contrato já foi 100% concluído. Volte ao painel e finalize a operação.");
       return;
+    }
+
+
+    if (resolvedSimulatorCode === "GTO" && isGtoPrintMode) {
+      if (isReadingValue || gtoReceiptAnalysisStatus === "reading") {
+        toast.warning("Aguarde a NVU terminar a análise do print.");
+        return;
+      }
+      if (gtoReceiptAnalysisStatus === "failed") {
+        toast.error("Envie novamente um print nítido para validar valor e anúncio/dobro.");
+        return;
+      }
+      if (gtoAdDoubleDetected || gtoReceiptAnalysisStatus === "blocked") {
+        toast.error("Viagem bloqueada: o print indica anúncio/valor dobrado.");
+        return;
+      }
+      if (imagePreview && gtoReceiptAnalysisStatus !== "ok") {
+        toast.error("Aguarde a validação automática do print do GTO.");
+        return;
+      }
     }
     
     const finalOrigem = currentPredefinedRoute ? currentPredefinedRoute.origin : origem;
@@ -671,6 +812,13 @@ export default function RecordTrip() {
         receiptRetentionPolicy: "storage-lifecycle-v1",
         contractId: activeContract?.id || "",
         jobId: activeJob?.id || "",
+        ...(resolvedSimulatorCode === "GTO" && isGtoPrintMode
+          ? {
+              gtoEntryMode: "print",
+              gtoReceiptAnalyzed: gtoReceiptAnalysisStatus === "ok",
+              gtoRewardedAdDetected: false,
+            }
+          : {}),
       };
 
       if (uploadLocation) {
@@ -697,6 +845,9 @@ export default function RecordTrip() {
       setDistanciaPercorrida("");
       setImagePreview(null);
       setImageHash(null);
+      setGtoReceiptAnalysisStatus("idle");
+      setGtoAdDoubleDetected(false);
+      setGtoAdEvidence([]);
       receiptOriginalNameRef.current = "";
       if (fileInputRef.current) fileInputRef.current.value = "";
 
@@ -904,6 +1055,17 @@ export default function RecordTrip() {
         </div>
       </div>
 
+      {isGtoPrintMode && (
+        <div className="rounded-xl border border-blue-200 dark:border-blue-500/25 bg-blue-50/80 dark:bg-blue-500/10 px-3 py-2.5">
+          <div className="text-[12px] font-bold text-blue-800 dark:text-blue-300">
+            GTO · Modo print
+          </div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-blue-700/80 dark:text-blue-300/80">
+            Preencha origem e destino. Ao enviar o comprovante, a NVU lê os ganhos e valida se há confirmação de anúncio/valor dobrado.
+          </p>
+        </div>
+      )}
+
       {/* Form Card */}
       <div className="bg-white dark:bg-[#121213] border border-gray-200/80 dark:border-gray-800 shadow-[0_4px_24px_rgba(0,0,0,0.02)] sm:rounded-2xl rounded-xl p-3 sm:p-4 relative">
         <div className="space-y-3">
@@ -1031,6 +1193,35 @@ export default function RecordTrip() {
               </button>
             </div>
 
+            {isGtoPrintMode && gtoReceiptAnalysisStatus !== "idle" && (
+              <div
+                className={cn(
+                  "mb-2 rounded-lg border px-3 py-2 text-[11px] font-medium",
+                  gtoReceiptAnalysisStatus === "blocked"
+                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-500/25 dark:bg-red-500/10 dark:text-red-300"
+                    : gtoReceiptAnalysisStatus === "failed"
+                      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-300"
+                      : gtoReceiptAnalysisStatus === "ok"
+                        ? "border-green-200 bg-green-50 text-green-700 dark:border-green-500/25 dark:bg-green-500/10 dark:text-green-300"
+                        : "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/25 dark:bg-blue-500/10 dark:text-blue-300",
+                )}
+              >
+                {gtoReceiptAnalysisStatus === "reading" && "Analisando valor e confirmação de anúncio/dobro…"}
+                {gtoReceiptAnalysisStatus === "ok" && "Print validado · nenhum anúncio/valor dobrado confirmado."}
+                {gtoReceiptAnalysisStatus === "failed" && "Não foi possível validar o print. Envie uma imagem nítida da tela de conclusão."}
+                {gtoReceiptAnalysisStatus === "blocked" && (
+                  <>
+                    Anúncio/valor dobrado confirmado no print. O lançamento normal está bloqueado.
+                    {gtoAdEvidence.length > 0 && (
+                      <span className="block mt-0.5 opacity-80">
+                        Evidência: {gtoAdEvidence.join(", ")}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {imagePreview && (
               <div className="mt-2 space-y-1.5 transition-all">
                 <div className="flex justify-end">
@@ -1044,6 +1235,9 @@ export default function RecordTrip() {
                       }
                       setImagePreview(null);
                       setImageHash(null);
+                      setGtoReceiptAnalysisStatus("idle");
+                      setGtoAdDoubleDetected(false);
+                      setGtoAdEvidence([]);
                       if (fileInputRef.current) fileInputRef.current.value = "";
                     }}
                     className={cn(

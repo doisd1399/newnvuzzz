@@ -47,10 +47,11 @@ export default function Login() {
             (currentUser as any).role === "senior" ||
             (Array.isArray((currentUser as any).roles) &&
               (currentUser as any).roles.includes("senior"));
-          if (hasSeniorRole) {
-            if (active) navigate("/admin/senior", { replace: true });
-            return;
-          }
+
+          // Senior is an additional permission, not a landing profile.
+          // A senior user must still choose the operational profile/company
+          // normally; the Senior Panel opens only after an explicit click in
+          // the authenticated admin UI.
 
           // Memberships are already hydrated by AppContext and cached across
           // sessions. Re-querying the same collection here created the visible
@@ -58,7 +59,7 @@ export default function Login() {
           const hasActiveMembership =
             membershipsLoaded && memberships.some((membership) => membership.status === "active");
 
-          if (hasActiveMembership) {
+          if (hasActiveMembership || hasSeniorRole) {
             void preloadRoute("/select-profile");
             if (active) navigate("/select-profile", { replace: true });
             return;
@@ -332,12 +333,7 @@ export default function Login() {
     !sessionStorage.getItem("loginRedirect") &&
     (currentUserHasSeniorRole || currentUserHasActiveMembership)
   ) {
-    return (
-      <Navigate
-        to={currentUserHasSeniorRole ? "/admin/senior" : "/select-profile"}
-        replace
-      />
-    );
+    return <Navigate to="/select-profile" replace />;
   }
 
   if (
