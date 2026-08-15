@@ -71,6 +71,15 @@ export default function AdminLayout() {
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const isSeniorPanelRoute = location.pathname.startsWith("/admin/senior");
+  // The Senior route has its own Firebase-backed password/claim gate. Admin users
+  // must be able to see and open that gate even before the senior claim has been
+  // granted; hiding the entry behind the claim makes the panel impossible to discover.
+  // AdminLayout is mounted only behind ProtectedRoute allowedRole="admin".
+  // Keep the Senior entry visible for every authenticated admin; SeniorPanel itself
+  // still enforces the Firebase-backed password/custom-claim gate before exposing
+  // protected actions. This avoids hiding the only entry point because of stale or
+  // not-yet-refreshed role metadata.
+  const hasSeniorPanelAccess = true;
   const isNewsRoute = location.pathname.includes("/admin/news");
   const isManualRoute = location.pathname.includes("/admin/manual");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
@@ -681,16 +690,18 @@ export default function AdminLayout() {
                 />
               </button>
             </div>
-            <button
-              onClick={() => {
-                navigate("/admin/senior");
-                setIsMobileMenuOpen(false);
-              }}
-              className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
-            >
-              <Crown size={18} />
-              Painel Senior
-            </button>
+            {hasSeniorPanelAccess && (
+              <button
+                onClick={() => {
+                  navigate("/admin/senior");
+                  setIsMobileMenuOpen(false);
+                }}
+                className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"
+              >
+                <Crown size={18} />
+                Painel Sênior
+              </button>
+            )}
             <button
               onClick={handleLogout}
               className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-gray-600 dark:text-[#d4d4d8] hover:bg-gray-50 dark:bg-[#09090b] dark:hover:bg-[#3f3f46] hover:text-gray-900 dark:hover:text-[#f4f4f5] transition-colors"

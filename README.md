@@ -1,19 +1,25 @@
-# Sistema NVU
+# NVU — Google AI Studio / Netlify — R3.34-PC-HF10
 
-Plataforma de gestão operacional e logística para empresas e motoristas.
+Este projeto é o espelho Web/Dev compatível com a versão estável de produção do APK/Capacitor:
 
-## Executar localmente
+- Release funcional: **R3.34-PC-HF10**
+- Web: **2.3.9**
+- Android: **1.0.62 / versionCode 62**
+- Runtime Capacitor: **Netlify remoto HTTPS**
+- App ID Android: `com.nvu.operacional`
 
-Pré-requisito: Node.js.
+## Fonte canônica
 
-1. Instale as dependências: `npm install`.
-2. Copie `.env.example` para `.env.local` e preencha as variáveis necessárias do Firebase/ambiente.
-3. Execute: `npm run dev`.
+O código de produção em `src/`, o contrato das Cloud Functions em `functions/src/`, os locks de dependências, `netlify.toml` e o contrato de runtime remoto do Capacitor foram alinhados ao pacote aprovado R3.34-PC-HF10.
 
-## Validações do projeto
+O APK de produção continua responsável pela implementação Android nativa (overlay, MediaProjection, detecção visual e máquina de estados). Este Dev não inclui a pasta `android/`; ele mantém a contraparte Web/Netlify e o contrato de integração que o APK remoto consome.
 
-- `npm run lint`
-- `npm run audit:firebase-costs`
-- `npm run audit:legacy-notifications`
+## Verificação local
 
-As Cloud Functions possuem build próprio em `functions/` e são compiladas automaticamente pelo predeploy do Firebase.
+```bash
+npm ci
+npm --prefix functions ci
+npm run verify:web-hf10
+```
+
+Para publicar a Web, gere `dist/` com `npm run build` e publique pelo fluxo já configurado no Netlify. As Functions só precisam ser publicadas quando houver mudança em `functions/src/` ou dependências das Functions.

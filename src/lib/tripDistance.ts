@@ -37,7 +37,7 @@ export const normalizeTripSimulatorCode = (value: unknown): string => {
     return "TOE3";
   }
 
-  if (compact === "GTO" || compact.includes("GLOBALTRUCKONLINE")) {
+  if (compact === "GTO" || compact === "GLOBALTRUCK" || compact.includes("GLOBALTRUCKONLINE")) {
     return "GTO";
   }
 

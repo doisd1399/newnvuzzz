@@ -1,0 +1,136 @@
+$ node scripts/verify-web-hf10-parity.mjs
+PASS web version 2.3.9
+PASS functional release HF10
+PASS Android baseline 1.0.62/code 62
+PASS Capacitor remote URL equals Netlify production URL
+PASS Capacitor appId com.nvu.operacional
+PASS Capacitor consumes remote Netlify runtime
+PASS Netlify publishes dist
+PASS automatic mode rearms floating button before GTO
+PASS automatic mode opens GTO after observer preparation
+PASS web bridge exposes capture readiness
+PASS web bridge exposes canonical origin
+PASS trusted destination dictionary aligned
+PASS trusted destination list sent to native observer
+PASS Functions persists GTO company as Origem
+PASS Functions money schema v2
+PASS Functions shared money parser present
+PASS Functions dependencies aligned
+INFO src launcher sha256=677e8ff13a2e2ab9dfc3125113ddfba158ed06188e7a8b0dd4f095094e7e1f88
+INFO functions gtoTrips sha256=534190b12f2b0be71fc498ba42903ce3eb77b58bb1c372bc1e5ccd6b872ea3e4
+PASS Google AI Studio/Netlify web contract aligned with approved R3.34-PC-HF10 baseline.
+
+EXIT=0
+
+$ node scripts/validate-gto-auto-web.mjs
+OK   Dashboard changes label only for GTO
+OK   Profile changes label only for GTO
+OK   non-GTO still navigates to manual form
+OK   GTO automatic route is guarded while explicit print mode is allowed
+OK   GTO launcher sends current operation context
+OK   web bridge exposes FIX18 integrity fields
+OK   web bridge keeps precise-touch compatibility method
+OK   GTO card no longer says Firebase sync is disabled
+OK   GTO card surfaces sync status
+OK   callable is exported
+OK   callable has explicit us-central1 region
+OK   callable requires authenticated user
+OK   FIX18 contract version is accepted
+OK   FIX18 session format is validated
+OK   FIX18 client timestamp is validated
+OK   FIX18 fingerprint is generated
+OK   duplicate session validates fingerprint
+OK   FIX18 ACK includes success
+OK   FIX18 ACK includes contractVersion 18
+OK   FIX18 ACK echoes sessionId
+OK   callable is GTO-only
+OK   callable validates active job ownership
+OK   callable rejects vehicle drift
+OK   callable rejects trailer drift
+OK   automatic trip reuses historico_viagens
+OK   automatic trip stores final value as canonical valor
+OK   automatic trip preserves GTO cargo metadata
+OK   automatic trip persists FIX18 fingerprint
+OK   job progress is recalculated after registration
+OK   Firebase builds functions before deploy
+OK   R3.1 bridge exposes observer recovery
+OK   R3.1 bridge exposes native logout cleanup
+OK   R3.1 bridge exposes health and stage fields
+OK   R3.1 bridge carries job lifecycle context
+OK   launcher recovers an enabled observer
+OK   launcher rejects unhealthy observer startup
+OK   launcher blocks closed/completed jobs
+OK   launcher blocks not-yet-active jobs
+OK   Dashboard sends job lifecycle context
+OK   Profile sends job lifecycle context
+OK   RecordTrip sends job lifecycle context
+OK   logout cleans native GTO session before native auth signout
+OK   canonical resolver includes Global Truck alias
+OK   trip simulator code recognizes Global Truck alias
+OK   simulator labels recognize Global Truck alias
+OK   backend recognizes Global Truck alias
+OK   GTO page explains automatic completion
+
+47/47 checks passed.
+
+EXIT=0
+
+$ node scripts/audit-gto-r3-13-modes-print.mjs
+OK   Current Android release is 1.0.45 / 45 when Android project is present
+OK   GTO mode dialog exposes print and automatic choices
+OK   mode selector is GTO-only in Dashboard
+OK   mode selector is GTO-only in Profile
+OK   print choice opens manual trip page with persistent query mode
+OK   automatic choice retains native launchGtoWork flow
+OK   direct GTO trip route offers both modes
+OK   GTO print mode exposes the manual form
+OK   GTO print keeps origin/destination editable even for detailed contracts
+OK   GTO print OCR still auto-fills earnings
+OK   receipt analysis uses one broad pass and narrow value fallback
+OK   normal Dobrar valor button alone is not treated as watched-ad proof
+OK   strong doubled/ad confirmation patterns are present
+OK   GTO print waits for OCR before submit
+OK   GTO print validates locally before receipt upload
+OK   unreadable GTO print fails closed
+OK   confirmed rewarded-ad/doubled print is blocked
+OK   accepted print stores explicit audit mode
+OK   non-GTO flow remains manual and unchanged in entry behavior
+OK   automatic backend contract remains untouched by mode selector
+
+20/20 R3.13 GTO mode/print checks passed.
+
+EXIT=0
+
+$ node scripts/test-gto-r3-13-print-evidence.mjs
+OK   normal result with option: false
+OK   plain ad button: false
+OK   doubled confirmation: true
+OK   watched video confirmation: true
+OK   watched ad reversed: true
+OK   reward received: true
+OK   bonus applied: true
+OK   unrelated gameplay: false
+OK   source token valor-dobrado
+OK   source token midia-assistida
+OK   source token recompensa-recebida
+OK   source token dobro-confirmado-com-anuncio
+
+12/12 print evidence cases passed.
+
+EXIT=0
+
+$ node scripts/validate-senior-navigation.mjs
+OK   Login has no automatic navigation to Senior Panel
+OK   Hydrated senior session lands on profile selector
+OK   Senior role participates in profile-selector handoff
+OK   Admin profile selection targets fleet
+OK   Driver profile selection targets driver profile
+OK   Profile selection clears stale senior UI session
+OK   Senior authorization no longer overwrites an explicit active role
+OK   Senior Panel navigation exists as explicit AdminLayout action
+OK   Senior Panel button is always visible inside the admin-only layout and remains inside the secure route gate
+OK   Senior Panel label is explicit
+
+10/10 checks passed.
+
+EXIT=0

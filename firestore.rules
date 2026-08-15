@@ -311,6 +311,17 @@ service cloud.firestore {
     }
     
     // 13. historico_viagens
+    // Canonical GTO lifecycle mirror. Native/Cloud Functions write; the driver can read only its own session.
+    match /gto_active_gto_sessions/{driverId} {
+      allow read: if isAuthenticated() && request.auth.uid == driverId;
+      allow write: if false;
+    }
+
+    match /gto_trip_sessions/{sessionId} {
+      allow read: if isAuthenticated() && resource.data.driverId == request.auth.uid;
+      allow write: if false;
+    }
+
     match /historico_viagens/{tripId} {
       allow read: if true;
       allow create: if request.auth != null &&

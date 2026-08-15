@@ -53,6 +53,7 @@ const knownSimulatorLabel = (normalized: string): string | null => {
   const labels: Record<string, string> = {
     gto: "GTO",
     globaltruckonline: "GTO",
+    globaltruck: "GTO",
     wtds: "WTDS",
     wbds: "WBDS",
     toe3: "TOE 3",

@@ -1,0 +1,41 @@
+{
+  "release": "R3.34-PC-HF10",
+  "webVersion": "2.3.9",
+  "androidBaseline": {
+    "versionName": "1.0.62",
+    "versionCode": 62
+  },
+  "stableApkCapacitorSha256": "bf0b3ddeea5de4bc80fd491b60aec93821ecf220c660242f665a8667cde3ee20",
+  "parity": {
+    "src": {
+      "files": 145,
+      "sha256Tree": "6da27343b239a6ad84cc18976be12c60b5933fd64cd8c72288e7adcf8f343589",
+      "matchesStableHF10": true
+    },
+    "functionsSrc": {
+      "files": 10,
+      "sha256Tree": "3c752a4c55b8f75ed6fa1b379e6d1d9391bac4bf92963489a08df85596a7bca2",
+      "matchesStableHF10": true
+    },
+    "public": {
+      "files": 3,
+      "sha256Tree": "19b3371f9d98777040992a3080a659557910184f47eb56f3f9da31554eff37b7",
+      "matchesStableHF10": true
+    },
+    "netlifyTomlMatches": true,
+    "capacitorConfigMatches": true,
+    "capacitorRemoteMatches": true,
+    "rootLockMatches": true,
+    "functionsLockMatches": true
+  },
+  "validation": {
+    "verifyWebHf10Parity": "PASS",
+    "validateGtoAutoWeb": "47/47 PASS",
+    "gtoR313ModesPrint": "20/20 PASS",
+    "gtoR313PrintEvidence": "12/12 PASS",
+    "seniorNavigation": "10/10 PASS",
+    "typescriptTsxSyntax": "154 production files PASS",
+    "jsonParse": "9 files PASS",
+    "fullDependencyBuildInThisSandbox": "NOT RUN - npm ci timed out due environment/network; stable HF10 source parity is exact for production source and locks"
+  }
+}

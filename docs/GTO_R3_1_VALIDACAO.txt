@@ -1,0 +1,49 @@
+OK   Dashboard changes label only for GTO
+OK   Profile changes label only for GTO
+OK   non-GTO still navigates to manual form
+OK   GTO manual route is guarded
+OK   GTO launcher sends current operation context
+OK   web bridge exposes FIX18 integrity fields
+OK   web bridge keeps precise-touch compatibility method
+OK   GTO card no longer says Firebase sync is disabled
+OK   GTO card surfaces sync status
+OK   callable is exported
+OK   callable has explicit us-central1 region
+OK   callable requires authenticated user
+OK   FIX18 contract version is accepted
+OK   FIX18 session format is validated
+OK   FIX18 client timestamp is validated
+OK   FIX18 fingerprint is generated
+OK   duplicate session validates fingerprint
+OK   FIX18 ACK includes success
+OK   FIX18 ACK includes contractVersion 18
+OK   FIX18 ACK echoes sessionId
+OK   callable is GTO-only
+OK   callable validates active job ownership
+OK   callable rejects vehicle drift
+OK   callable rejects trailer drift
+OK   automatic trip reuses historico_viagens
+OK   automatic trip stores final value as canonical valor
+OK   automatic trip preserves GTO cargo metadata
+OK   automatic trip persists FIX18 fingerprint
+OK   job progress is recalculated after registration
+OK   Firebase builds functions before deploy
+OK   R3.1 bridge exposes observer recovery
+OK   R3.1 bridge exposes native logout cleanup
+OK   R3.1 bridge exposes health and stage fields
+OK   R3.1 bridge carries job lifecycle context
+OK   launcher recovers an enabled observer
+OK   launcher rejects unhealthy observer startup
+OK   launcher blocks closed/completed jobs
+OK   launcher blocks not-yet-active jobs
+OK   Dashboard sends job lifecycle context
+OK   Profile sends job lifecycle context
+OK   RecordTrip sends job lifecycle context
+OK   logout cleans native GTO session before native auth signout
+OK   canonical resolver includes Global Truck alias
+OK   trip simulator code recognizes Global Truck alias
+OK   simulator labels recognize Global Truck alias
+OK   backend recognizes Global Truck alias
+OK   GTO page explains automatic completion
+
+47/47 checks passed.

@@ -67,6 +67,9 @@ import { prepareAndCommitNavigation } from "../../lib/navigationTransition";
 import { preloadRoute } from "../../lib/routePreload";
 import { getCanonicalTripCompanyId } from "../../lib/tripIdentity";
 import { isOpenJobStatus, isTripRecordableJobStatus } from "../../lib/jobStatus";
+import { resolveTripSimulatorCode } from "../../lib/tripDistance";
+import { launchGtoWork } from "../../services/gtoWorkLauncher";
+import { GtoWorkModeDialog, type GtoWorkMode } from "../../components/GtoWorkModeDialog";
 
 type DriverProfileTab = "dashboard" | "profile" | "operations";
 
@@ -124,6 +127,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [isConfigMenuOpen, setIsConfigMenuOpen] = useState(false);
+  const [isGtoModeDialogOpen, setIsGtoModeDialogOpen] = useState(false);
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [periodFilter, setPeriodFilter] = useState<
     "all" | "hoje" | "semana" | "mes" | "custom"
@@ -453,6 +457,82 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         : null,
     [activeCompanyId, companies],
   );
+  const isGtoWork =
+    resolveTripSimulatorCode(currentActiveCompany as any, simulators as any[]) === "GTO";
+
+  const handleTripAction = async () => {
+    if (!activeJob || !activeContract || !currentActiveCompany || !isTripRecordableJobStatus(activeJob.status)) {
+      alert(
+        isGtoWork
+          ? "Inicie uma operação para começar o trabalho no GTO."
+          : "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
+      );
+      return;
+    }
+
+    if (!isGtoWork) {
+      navigate("/driver/trip");
+      return;
+    }
+
+    setIsGtoModeDialogOpen(true);
+  };
+
+  const startGtoAutomatic = async () => {
+    if (!activeJob || !activeContract || !currentActiveCompany || !isTripRecordableJobStatus(activeJob.status)) {
+      alert("Inicie uma operação para começar o trabalho no GTO.");
+      return;
+    }
+
+    try {
+      const result = await launchGtoWork({
+        driverId: currentUser.id,
+        driverName: currentUser.name,
+        companyId: currentActiveCompany.id,
+        companyName:
+          currentActiveCompany.companyName || currentActiveCompany.name || "Empresa",
+        jobId: activeJob.id,
+        jobStatus: activeJob.status,
+        jobProgress: activeJob.progress || 0,
+        jobTotalDeliveries: activeContract.totalDeliveries || 0,
+        contractId: activeContract.id,
+        contractName: activeContract.name || "",
+        vehicleId: activeVehicle?.id || "",
+        vehicleName: activeVehicle?.name || "",
+        trailerId: activeTrailer?.id || "",
+        trailerName: activeTrailer?.name || "",
+      });
+
+      if (result.status === "not-native") {
+        alert("Iniciar trabalho GTO está disponível no aplicativo Android NVU.");
+      } else if (result.status === "module-missing") {
+        alert("Este APK não possui o módulo GTO atualizado. Instale a versão atual do aplicativo.");
+      } else if (result.status === "gto-missing") {
+        alert("Global Truck Online não foi encontrado neste aparelho.");
+      } else if (result.status === "screen-capture-denied") {
+        alert("Autorize a leitura da tela para iniciar o trabalho GTO. O simulador só será aberto depois que o Android confirmar essa autorização.");
+      } else if (result.status === "job-not-ready") {
+        alert("Inicie a operação antes de abrir o trabalho GTO.");
+      } else if (result.status === "job-closed") {
+        alert("Operação concluída. Inicie uma nova operação para continuar.");
+      } else if (result.status === "observer-failed") {
+        alert(result.message || "O Observador GTO não conseguiu iniciar corretamente.");
+      }
+    } catch (error) {
+      console.error("Falha ao iniciar trabalho GTO:", error);
+      alert("Não foi possível abrir o trabalho GTO. Tente novamente.");
+    }
+  };
+
+  const handleGtoModeSelect = async (mode: GtoWorkMode) => {
+    setIsGtoModeDialogOpen(false);
+    if (mode === "print") {
+      navigate("/driver/trip?mode=print");
+      return;
+    }
+    await startGtoAutomatic();
+  };
+
   const getSimulatorLabel = (company: any) =>
     resolveSimulatorDisplayLabel(
       company,
@@ -613,15 +693,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
         {activeTab === "dashboard" && (
           <div className="min-w-0 sm:flex-1 flex-[5.5]">
             <button
-              onClick={() => {
-                if (!activeJob || !isTripRecordableJobStatus(activeJob.status)) {
-                  alert(
-                    "Inicie uma operação para lançar viagens.\n\n1. Receba um contrato.\n2. Inicie o contrato.\n3. Após iniciar a operação você poderá registrar suas viagens.",
-                  );
-                  return;
-                }
-                navigate("/driver/trip");
-              }}
+              onClick={() => void handleTripAction()}
               className={cn(
                 "w-full h-9 sm:h-[56px] rounded-lg sm:rounded-[12px] shadow-sm flex items-center justify-center gap-1.5 sm:gap-[12px] transition-colors",
                 activeJob && isTripRecordableJobStatus(activeJob.status)
@@ -641,7 +713,7 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
                 />
               )}
               <span className="text-[11px] sm:text-[16px] font-semibold tracking-wide sm:tracking-normal leading-none sm:leading-none">
-                Lançar Viagem
+                {isGtoWork ? "Iniciar trabalho" : "Lançar Viagem"}
               </span>
             </button>
           </div>
@@ -728,6 +800,12 @@ function DriverProfileContent({ currentUser }: { currentUser: User }) {
 
   return (
     <div className="max-w-7xl mx-auto w-full pb-6">
+      <GtoWorkModeDialog
+        open={isGtoModeDialogOpen}
+        onClose={() => setIsGtoModeDialogOpen(false)}
+        onSelect={handleGtoModeSelect}
+      />
+
       {/* iOS Style Nav Bar Content */}
       <div className="flex items-center justify-center px-4 py-0 sm:py-2"></div>
 

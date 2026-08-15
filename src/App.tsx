@@ -41,6 +41,7 @@ const DriverProfileIsolated = lazy(() => import("./pages/admin/DriverProfileIsol
 const RecordTrip = lazy(() => import("./pages/driver/RecordTrip"));
 const RecruitmentApply = lazy(() => import("./pages/RecruitmentApply"));
 const AuditPage = lazy(() => import("./pages/AuditPage"));
+const Diagnostics = lazy(() => import("./pages/Diagnostics"));
 const ApplicationStatus = lazy(() => import("./pages/ApplicationStatus"));
 const Manual = lazy(() => import("./pages/Manual"));
 
@@ -552,6 +553,7 @@ function AppRouteContent() {
         <Route path="/apply/:companyId" element={<LazyRoute fullPage><RecruitmentApply /></LazyRoute>} />
         <Route path="/register-company" element={<LazyRoute fullPage><RegisterCompany /></LazyRoute>} />
         <Route path="/status" element={<LazyRoute fullPage><ApplicationStatus /></LazyRoute>} />
+        <Route path="/diagnostics" element={<LazyRoute fullPage><Diagnostics /></LazyRoute>} />
         <Route path="/pending-applications" element={<LazyRoute fullPage><PendingApplications /></LazyRoute>} />
         <Route path="/audit" element={<LazyRoute fullPage><AuditPage /></LazyRoute>} />
 

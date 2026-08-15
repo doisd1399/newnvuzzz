@@ -533,3 +533,8 @@ export {
   auditCompanyStorageImagesOnDelete,
 } from "./storageCleanupAudit";
 export { authenticateSeniorAccess } from "./seniorAccess";
+
+
+export { registerGtoTrip } from "./gtoTrips";
+
+export { syncGtoTripState } from "./gtoState";
