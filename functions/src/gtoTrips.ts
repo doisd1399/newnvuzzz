@@ -373,7 +373,11 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
     }
     assertBoundedText(cargo, "cargo");
     assertBoundedText(originCompany, "originCompany");
-    assertBoundedText(destinationCompany, "destinationCompany");
+    // HF53 alignment: destinationCompany is optional metadata. Some valid GTO
+    // routes (for example rural destinations) do not expose a destination
+    // company. Requiring it here keeps a correctly sealed Android delivery in
+    // retry forever even though the rest of the freight snapshot is valid.
+    if (destinationCompany) assertBoundedText(destinationCompany, "destinationCompany");
     assertBoundedText(origin, "origin");
     assertBoundedText(destination, "destination");
     if (selectedRow < 0) {
