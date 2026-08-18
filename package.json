@@ -76,7 +76,11 @@
     "test:gto-r3.34-hf8-projection": "node scripts/test-gto-r3-34-hf8-projection-grant.mjs",
     "test:gto-r3.34-hf9-projection": "node scripts/test-gto-r3-34-hf9-projection-runtime.mjs",
     "test:gto-r3.34-hf10-projection": "node scripts/test-gto-r3-34-hf10-projection-runtime.mjs",
-    "verify:web-hf10": "node scripts/verify-web-hf10-parity.mjs && npm run validate:gto-auto && npm run lint && npm run build && npm --prefix functions run build"
+    "verify:web-hf10": "node scripts/verify-web-hf10-parity.mjs && npm run validate:gto-auto && npm run lint && npm run build && npm --prefix functions run build",
+    "prepare:ocr-assets": "node scripts/prepare-tesseract-assets.mjs",
+    "predev": "npm run prepare:ocr-assets",
+    "prebuild": "npm run prepare:ocr-assets",
+    "test:gto-print-upload-hf1": "node scripts/test-gto-print-upload-hf1.mjs"
   },
   "dependencies": {
     "@capacitor-firebase/authentication": "^8.3.0",
