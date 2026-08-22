@@ -6,8 +6,10 @@ import path from "node:path";
 const read = (p) => fs.readFileSync(p, "utf8");
 const servicePath = "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java";
 const detectorPath = "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java";
+const listEvidencePath = "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java";
 const service = read(servicePath);
 const detector = read(detectorPath);
+const listEvidence = read(listEvidencePath);
 const checks = [];
 function check(name, ok, detail = "") {
   checks.push({ name, ok: Boolean(ok), detail });
@@ -26,7 +28,7 @@ function runJava(name, mainClass, sources, javaArgs = []) {
 }
 
 check("freight list requires a bounded top-panel first row", detector.includes("screenHeight * 0.055f") && detector.includes("screenHeight * 0.20f"));
-check("freight list requires real Aceitar orange fill", detector.includes("orangeRatios[i] < 0.14f"));
+check("freight list requires repeated same-row Aceitar + freight-information anchors on multi-row pages", detector.includes("acceptAndInfoAnchorRows") && detector.includes("GtoFreightListEvidencePolicy.isPlausibleSimpleList") && listEvidence.includes("requiredAnchors") && listEvidence.includes("Math.min(2, rowCount)"));
 check("freight list rejects inconsistent button widths", detector.includes("largestWidth > Math.round(smallestWidth * 1.70f)"));
 check("freight list uses narrow repeated-card vertical cadence", detector.includes("screenHeight * 0.100f") && detector.includes("screenHeight * 0.235f"));
 check("bitmap/OCR fallback has the same strict refined list gate", service.includes("plausibleRefinedAcceptStack(bitmap, best)"));
@@ -42,6 +44,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoR329StrictFreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],
@@ -53,6 +56,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoFreightSelectionRegressionTest.java",
   ],
 );

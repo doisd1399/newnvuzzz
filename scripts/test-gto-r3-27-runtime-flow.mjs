@@ -7,6 +7,7 @@ const paths = {
   service: "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java",
   plugin: "android/app/src/main/java/com/nvu/operacional/GtoObserverPlugin.java",
   detector: "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+  listEvidence: "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
   policy: "android/app/src/main/java/com/nvu/operacional/GtoDeterministicFlowPolicy.java",
   visualPolicy: "android/app/src/main/java/com/nvu/operacional/GtoVisualForegroundPolicy.java",
   sync: "android/app/src/main/java/com/nvu/operacional/GtoAutoTripSync.java",
@@ -70,19 +71,19 @@ check(
   "stale OEM UsageStats can be recovered by real freight pixels after launch preparation",
   service.includes("capture-gate-freight-list")
     && service.includes("recordVisualGtoForegroundEvidence")
-    && service.includes('putLong("gtoLaunchVisualBridgeUntil", suppressForegroundHideUntil)')
-    && service.includes("now + PERMISSION_RETURN_GRACE_MS")
+    && service.includes("GtoProjectionContinuityPolicy")
+    && service.includes("mayProbeWaitingFreightDuringForegroundLag")
     && service.includes("trustedWaitingFreightProbe")
-    && service.includes("foregroundOwnerAllowsVisualProbe")
     && policy.includes("mayUseVisualFreightProof")
     && policy.includes("waitingForFreight"),
 );
 check(
   "launch visual bridge never overrides a known third-party foreground app",
-  service.includes("foregroundOwnerAllowsVisualProbe = foregroundPackage == null")
-    && service.includes("|| getPackageName().equals(foregroundPackage)")
-    && service.includes("!transientForegroundSurfaceActive")
-    && service.includes("known third-party foreground owner is never eligible"),
+  service.includes("packageMatchesGto")
+    && service.includes("packageUnknown")
+    && service.includes("packageIsNvu")
+    && service.includes("transientForegroundSurfaceActive")
+    && service.includes("A positively identified unrelated app is still excluded"),
 );
 check(
   "WAITING_FREIGHT consumes every selection frame in order",
@@ -116,7 +117,7 @@ check(
   "confirmed freight becomes immutable current trip and is shown to the driver",
   service.includes("GtoAutoTripSync.lockSelectedFreight")
     && service.includes("STATE_TRIP_IN_PROGRESS")
-    && service.includes("Frete identificado. Tudo preparado, podemos partir!")
+    && (service.includes("Frete identificado. Tudo preparado, podemos partir!") || service.includes("Frete confirmado ✓ · viagem em andamento."))
     && service.includes('freightHeading.setText("Frete atual em andamento")'),
 );
 check(
@@ -127,7 +128,7 @@ check(
 );
 check(
   "unknown screens stay neutral",
-  service.includes('recordNeutralScreenObservation("UNKNOWN_AFTER_RESULT"')
+  service.includes('recordNeutralScreenObservation("CERTIFIED_RESULT_PENDING_TERMINAL_ACTION"')
     && service.includes('recordNeutralScreenObservation("UNRECOGNIZED_FOR_" + getTripState()'),
 );
 check(
@@ -148,14 +149,14 @@ check(
     && setup.includes("tripStateWhenAnalysisPaused"),
 );
 check(
-  "real result is the only path that arms Receive",
-  service.includes('putString("completionStatus", "RESULT_SCREEN")')
-    && service.includes("STATE_RESULT_DETECTED")
-    && service.includes("touchCaptureNeeded"),
+  "real certified result arms automatic completion without requiring Receive",
+  service.includes('putString("completionStatus", "RESULT_CERTIFIED_AUTO_PENDING")')
+    && service.includes("attemptAutoFinalizeCertifiedResult")
+    && service.includes('putBoolean("resultAutoCompletionLatched", true)'),
 );
 check(
   "Receive is durably latched before automatic completion",
-  /latchExactReceiveAndSend[\s\S]{0,1000}\.commit\(\)[\s\S]{0,500}confirmNormalResultAutomatically\(\)/.test(service)
+  /latchExactReceiveAndSend[\s\S]{0,1800}\.commit\(\)[\s\S]{0,900}confirmNormalResultAutomatically\(\)/.test(service)
     && service.includes('putBoolean("resultReceiveLatched", true)'),
 );
 check(
@@ -189,13 +190,15 @@ check(
 runJava(
   "real freight list pixels",
   "com.nvu.operacional.GtoRealFreightScreenshotTest",
-  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", paths.detector, "scripts/java-tests/com/nvu/operacional/GtoRealFreightScreenshotTest.java"],
+  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", paths.detector,
+      paths.listEvidence, "scripts/java-tests/com/nvu/operacional/GtoRealFreightScreenshotTest.java"],
   ["-Djava.awt.headless=true"],
 );
 runJava(
   "real freight press selection",
   "com.nvu.operacional.GtoRealFreightPressSelectionTest",
-  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", paths.detector, "scripts/java-tests/com/nvu/operacional/GtoRealFreightPressSelectionTest.java"],
+  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", paths.detector,
+      paths.listEvidence, "scripts/java-tests/com/nvu/operacional/GtoRealFreightPressSelectionTest.java"],
   ["-Djava.awt.headless=true"],
 );
 runJava(
@@ -206,7 +209,8 @@ runJava(
 runJava(
   "result visual matrix",
   "com.nvu.operacional.GtoResultVisualGateScreenMatrixTest",
-  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", "android/app/src/main/java/com/nvu/operacional/GtoResultVisualGate.java", "scripts/java-tests/com/nvu/operacional/GtoResultVisualGateScreenMatrixTest.java"],
+  ["scripts/java-tests/android/graphics/Rect.java", "scripts/java-tests/android/media/Image.java", "android/app/src/main/java/com/nvu/operacional/GtoResultVisualGate.java",
+      "android/app/src/main/java/com/nvu/operacional/GtoResultEvidencePolicy.java", "scripts/java-tests/com/nvu/operacional/GtoResultVisualGateScreenMatrixTest.java"],
 );
 
 const failed = checks.filter((x) => !x.ok);

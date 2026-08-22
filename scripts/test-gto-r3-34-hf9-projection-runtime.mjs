@@ -103,6 +103,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+      "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
     "scripts/java-tests/com/nvu/operacional/GtoR334Hf9FreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],

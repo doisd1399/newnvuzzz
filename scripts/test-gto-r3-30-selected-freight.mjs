@@ -7,6 +7,7 @@ const read = (p) => fs.readFileSync(p, "utf8");
 const servicePath = "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java";
 const policyPath = "android/app/src/main/java/com/nvu/operacional/GtoFreightSelectionPolicy.java";
 const detectorPath = "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java";
+const listEvidencePath = "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java";
 const service = read(servicePath);
 const checks = [];
 function check(name, ok, detail = "") {
@@ -28,11 +29,15 @@ function runJava(name, mainClass, sources, javaArgs = []) {
 check("selection forces canonical page consensus before row OCR", service.includes("!isStableFreightSafeToCommit(canonicalBeforeSelection)"));
 check("secondary crop cannot destructively shorten parsed company route", service.includes("Refinement is fill-only") && service.includes("option.destinationCompany == null || option.destinationCompany.trim().isEmpty()"));
 check("wrapped destination company continuation is preserved", service.includes("destinationCompany.append(continuation)"));
-check("canonical multi-read page row is persisted verbatim", service.includes("FreightOption canonical = copyFreightOption(stable)"));
+check("immutable selected row remains base while frozen page evidence fills only truly missing fields",
+  service.includes("FreightOption canonical = exact == null ? new FreightOption() : copyFreightOption(exact)")
+  && service.includes("!GtoFreightFieldEvidencePolicy.text(")
+  && service.includes("!GtoFreightFieldEvidencePolicy.distance(")
+  && service.includes("!GtoFreightFieldEvidencePolicy.money("));
 check("secondary OCR is advisory except explicit numeric conflict", service.includes("GtoFreightSelectionPolicy.canCommitCanonicalRow"));
 check("secondary text differences are diagnostic and do not overwrite canonical text", service.includes("lastFreightSecondaryReadDiff"));
 check("old all-fields secondary agreement is no longer a commit gate", !service.includes("|| !hasIndependentVisibleAgreement(selected, stableSamePage)"));
-check("selection still fails closed if canonical row lacks reliable consensus", service.includes("A lista ainda não teve duas leituras completas e concordantes"));
+check("selection preserves the touched row when canonical OCR lacks consensus", service.includes("A linha selecionada foi preservada; confirme somente o campo que permaneceu sem evidência suficiente.") && service.includes("enterFreightReview"));
 check("selected freight still advances only through commitPreciseFreight", service.includes("commitPreciseFreight(selected)"));
 
 runJava(
@@ -51,6 +56,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoR329StrictFreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],
@@ -62,6 +68,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoFreightSelectionRegressionTest.java",
   ],
 );
@@ -73,6 +80,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoR330CurrentScreensTest.java",
   ],
   ["-Djava.awt.headless=true"],

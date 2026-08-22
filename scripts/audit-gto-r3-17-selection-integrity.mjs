@@ -4,6 +4,7 @@ const service = fs.readFileSync('android/app/src/main/java/com/nvu/operacional/G
 const sync = fs.readFileSync('android/app/src/main/java/com/nvu/operacional/GtoAutoTripSync.java', 'utf8');
 const detector = fs.readFileSync('android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java', 'utf8');
 const gradle = fs.readFileSync('android/app/build.gradle', 'utf8');
+const selectionIdentity = fs.readFileSync('android/app/src/main/java/com/nvu/operacional/GtoSelectionIdentityPolicy.java', 'utf8');
 
 const checks = [];
 const check = (name, ok, detail = '') => {
@@ -17,7 +18,7 @@ check('nearest-row freight resolver removed', !service.includes('findFreightAt('
 check('precise touch uses exact bounding boxes', service.includes('exactUniqueRowForTouch(x, y, buttons)') && !service.includes('target.inset(-dp(10), -dp(10))'));
 check('no widened freight touch hitbox helper remains in selection', !service.includes('isTapNearRect(rawX, rawY, option.acceptRect'));
 check('pre-touch baseline cannot fall back to arbitrary latest frame', service.includes('Never synthesize a pre-touch baseline from an arbitrary latest frame'));
-check('touch coordinates are only advisory and must agree when usable', service.includes('coordinateEvidenceAgreesWithRow') && service.includes('if (hit != row) return false'));
+check('touch coordinates are only advisory and must agree when usable', service.includes('coordinateEvidenceAgreesWithRow') && service.includes('GtoSelectionIdentityPolicy.resolveRow') && selectionIdentity.includes('visualCandidateRow != touchedRow'));
 check('touch-correlated row path remains available', service.includes('selectionCoordinator.isPostTouch(sequence)') && service.includes('detectPressedRowAfterTouch'));
 check('OEM visual fallback still requires isolated press + list closure', service.includes('fastVisualDetector.detectPressedRow(') && service.includes('fastMissingListFrames >= missingRequired') && service.includes('runPreciseSelectedRowOcr(transaction)'));
 check('list closure remains a confirmation gate', service.includes('fastMissingListFrames >= missingRequired') && service.includes('finalizeFastVisualSelection()'));

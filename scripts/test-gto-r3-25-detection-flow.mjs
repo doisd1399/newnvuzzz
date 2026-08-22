@@ -6,6 +6,7 @@ import path from "node:path";
 const files = {
   service: "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java",
   detector: "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+  listEvidence: "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
   visualPolicy: "android/app/src/main/java/com/nvu/operacional/GtoVisualForegroundPolicy.java",
   flowPolicy: "android/app/src/main/java/com/nvu/operacional/GtoDeterministicFlowPolicy.java",
   sync: "android/app/src/main/java/com/nvu/operacional/GtoAutoTripSync.java",
@@ -51,7 +52,7 @@ check(
 check(
   "live freight frames refresh visual foreground evidence before capture-ready check",
   service.includes('recordVisualGtoForegroundEvidence(now, runtimeFreightCount, "live-freight-list")')
-    && service.indexOf('"live-freight-list"') < service.indexOf("if (!gtoForeground || !isCaptureReadyForAnalysis(now)) return;"),
+    && service.indexOf('"live-freight-list"') < service.indexOf("!isCaptureReadyForAnalysis(now)"),
 );
 check(
   "fast freight path restores list lifecycle reopen/close edges",
@@ -68,13 +69,13 @@ check(
 );
 check(
   "driver receives explicit list-detected and selected-freight messages",
-  service.includes("Lista de fretes detectada · ")
-    && service.includes("Frete identificado. Tudo preparado, podemos partir!"),
+  (service.includes("Lista de fretes detectada · ") || service.includes("Lista de fretes detectada ✓ · "))
+    && (service.includes("Frete identificado. Tudo preparado, podemos partir!") || service.includes("Frete confirmado ✓ · viagem em andamento.")),
 );
 check(
   "menu status refreshes when freight runtime count changes",
   service.includes("mainHandler.post(this::refreshMenuContents)")
-    && service.includes('return detected > 0 ? "Lista de fretes detectada" : "Escolha seu frete"'),
+    && service.includes('if (detected > 0) return "Lista de fretes detectada"') && service.includes('if (visualDetected >= 2) return "Lista de fretes localizada"'),
 );
 check(
   "backend request type includes contractMode and still validates server contract mode",
@@ -158,7 +159,8 @@ declare module "node:crypto" { export function createHash(name: string): any; }
 runJava(
   "real reported screenshot",
   "com.nvu.operacional.GtoRealFreightScreenshotTest",
-  [files.rect, files.image, files.detector, files.realTest],
+  [files.rect, files.image, files.detector,
+      files.listEvidence, files.realTest],
   ["-Djava.awt.headless=true"],
 );
 runJava(
@@ -169,7 +171,8 @@ runJava(
 runJava(
   "1-6/visual selection regression",
   "com.nvu.operacional.GtoFreightSelectionRegressionTest",
-  [files.rect, files.image, files.detector, files.selectionTest],
+  [files.rect, files.image, files.detector,
+      files.listEvidence, files.selectionTest],
 );
 
 const failed = checks.filter((item) => !item.ok);

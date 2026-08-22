@@ -12,7 +12,7 @@ const sync=fs.readFileSync("android/app/src/main/java/com/nvu/operacional/GtoAut
 const consensus=fs.readFileSync("android/app/src/main/java/com/nvu/operacional/GtoResultValueConsensus.java","utf8");
 const functions=fs.readFileSync("functions/src/gtoTrips.ts","utf8");
 
-check("R3.34 HF10 Android version", gradle.includes("versionCode 62") && gradle.includes('versionName "1.0.62"'));
+check("R3.34 HF10+ Android version", Number((gradle.match(/versionCode\s+(\d+)/) || [])[1] || 0) >= 62 && Number((gradle.match(/versionName\s+"1\.0\.(\d+)"/) || [])[1] || 0) >= 62);
 check("result consensus uses explicit cents", consensus.includes("=c") && consensus.includes("GtoMoneyValue.parseCents") && consensus.includes("SCHEMA_VERSION = 2"));
 check("legacy ambiguous result evidence is invalidated", service.includes("resultValueConsensusVersion") && service.includes("GtoResultValueConsensus.SCHEMA_VERSION"));
 check("offered freight value uses the same locale-safe money parser", service.includes("private String canonicalMoney(String value)") && service.includes("return GtoMoneyValue.canonical(value);") && service.includes("differentMoneyValue(exact.offeredValue, stable.offeredValue)"));

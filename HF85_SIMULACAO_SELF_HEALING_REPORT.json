@@ -1,0 +1,97 @@
+{
+  "generatedAt": "2026-08-20T12:01:21.572Z",
+  "mode": "deterministic-no-device-simulation",
+  "scenarios": [
+    {
+      "name": "steady GTO frames",
+      "framesConsumed": 180,
+      "framesDropped": 0,
+      "resumeCalls": 0,
+      "supervisorRuns": 180,
+      "supervisorReschedules": 180,
+      "captureBarrierResets": 0,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "GTO_PACKAGE_CONFIRMED"
+    },
+    {
+      "name": "UsageStats stale with continuous frames",
+      "framesConsumed": 130,
+      "framesDropped": 0,
+      "resumeCalls": 1,
+      "supervisorRuns": 40,
+      "supervisorReschedules": 40,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    },
+    {
+      "name": "unknown foreground with continuous frames",
+      "framesConsumed": 100,
+      "framesDropped": 0,
+      "resumeCalls": 1,
+      "supervisorRuns": 18,
+      "supervisorReschedules": 18,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    },
+    {
+      "name": "transient overlay then return",
+      "framesConsumed": 110,
+      "framesDropped": 30,
+      "resumeCalls": 1,
+      "supervisorRuns": 45,
+      "supervisorReschedules": 45,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    },
+    {
+      "name": "capture stall and recovery",
+      "framesConsumed": 80,
+      "framesDropped": 0,
+      "resumeCalls": 1,
+      "supervisorRuns": 16,
+      "supervisorReschedules": 16,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    },
+    {
+      "name": "supervisor exception does not freeze",
+      "framesConsumed": 80,
+      "framesDropped": 0,
+      "resumeCalls": 1,
+      "supervisorRuns": 13,
+      "supervisorReschedules": 13,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 1,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    },
+    {
+      "name": "continuity never mutates trip state",
+      "framesConsumed": 90,
+      "framesDropped": 0,
+      "resumeCalls": 1,
+      "supervisorRuns": 30,
+      "supervisorReschedules": 30,
+      "captureBarrierResets": 1,
+      "tripStateMutations": 0,
+      "finalForeground": true,
+      "finalPaused": false,
+      "finalEvent": "LIVE_CAPTURE_FRAME"
+    }
+  ]
+}

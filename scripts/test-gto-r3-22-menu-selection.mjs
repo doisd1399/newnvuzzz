@@ -6,6 +6,7 @@ import path from "node:path";
 const files = {
   service: "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java",
   detector: "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+  listEvidence: "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
   rect: "scripts/java-tests/android/graphics/Rect.java",
   image: "scripts/java-tests/android/media/Image.java",
   test: "scripts/java-tests/com/nvu/operacional/GtoFreightSelectionRegressionTest.java",
@@ -69,6 +70,7 @@ try {
       files.rect,
       files.image,
       files.detector,
+      files.listEvidence,
       files.test,
     ],
     { encoding: "utf8" },

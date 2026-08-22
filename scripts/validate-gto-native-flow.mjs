@@ -57,20 +57,21 @@ check('WAITING_FREIGHT preserves ordered selection frames', methodBody(service, 
 check('non-waiting capture keeps latest-frame backpressure', methodBody(service, 'private void onImageAvailable', 'private FreightSelectionTransaction buildSelectionTransaction').includes('image = reader.acquireLatestImage()'));
 check('selection snapshot is immutable before state transition', service.includes('FreightSelectionTransaction transaction = takePendingSelectionTransaction()') && service.indexOf('FreightSelectionTransaction transaction = takePendingSelectionTransaction()') < service.indexOf('setTripState(STATE_CONFIRMING_FREIGHT, "Frete identificado · validando dados")'));
 check('transaction owns copied bitmap and geometry', service.includes('sourcePanel.copy(Bitmap.Config.ARGB_8888, false)') && service.includes('private static final class FreightSelectionTransaction'));
-check('pulse sensor is hidden with overlays', methodBody(service, 'private void hideOverlays()', 'private int overlayType()').includes('hideFreightTouchPulseSensor()'));
+check('pulse sensor is hidden with overlays', methodBody(service, 'private void removeAllOverlays()', 'private int overlayType()').includes('hideFreightTouchPulseSensor()') && methodBody(service, 'private void hideTransientOverlaysKeepBubble()', 'private void removeAllOverlays()').includes('hideFreightTouchPulseSensor()'));
 
 check('projection uses default display capture', permission.includes('createConfigForDefaultDisplay()'));
 check('projection handles captured-content resize', service.includes('onCapturedContentResize') && service.includes('resizeProjectionSurface'));
-check('trip result OCR uses lightweight visual gate', service.includes('resultVisualGate.looksLikeResultDialog(')
-  && service.includes('ACTIVE_TRIP_VISUAL_PROBE_MS')
-  && resultGate.includes('boolean looksLikeResultDialog'));
+check('trip result OCR uses simple semantic gate instead of pixel/color signature', !service.includes('tripResultCandidate = resultVisualGate.looksLikeResultDialog')
+  && service.includes('GtoSimpleScreenDetectionPolicy.isCompletedResult')
+  && service.includes('Concluído + monetary value'));
 check('trip result OCR keeps a slow fallback', service.includes('ACTIVE_TRIP_RESULT_FALLBACK_OCR_MS')
   && service.includes('tripFallbackOcrDue'));
-check('active trip ignores freight-like pixels unless replacement is explicit', service.includes('handleActiveTripFreightListEvidence')
-  && service.includes('mayProbeFreightListForCurrentState')
-  && service.includes('if (STATE_TRIP_IN_PROGRESS.equals(activeState) && !explicitReplacement)')
-  && service.includes('putString("screenState", "TRIP")')
-  && service.includes('armExplicitFreightReplacement()'));
+check('certified freight-list return deterministically closes the active trip and prepares a new selection', service.includes('handleActiveTripFreightListEvidence')
+  && service.includes('FREIGHT_LIST_REOPENED_CERTIFIED')
+  && service.includes('HF35 canonical lifecycle: the previous trip is discarded only after two')
+  && service.includes('GtoSimpleScreenDetectionPolicy.isCertifiedFreightListReturn')
+  && service.includes('isReplacementFreightSemanticFresh')
+  && service.includes('promoteReplacementFreightCandidateToWaiting'));
 check('no audio capture permission/code', !manifest.includes('RECORD_AUDIO') && !service.includes('AudioRecord') && !service.includes('MediaRecorder') && !service.includes('AudioPlaybackCapture'));
 check('plugin capture request only defers consent to confirmed GTO', methodBody(plugin, 'public void requestScreenCapture', 'public void setContext').includes('requestProjectionPermissionIfRunning') && methodBody(plugin, 'public void requestScreenCapture', 'public void setContext').includes('projectionPermissionDeferredToGto') && !methodBody(plugin, 'public void requestScreenCapture', 'public void setContext').includes('startActivityForResult'));
 check('no accessibility service remains', !manifest.includes('accessibilityservice') && !manifest.includes('BIND_ACCESSIBILITY_SERVICE'));

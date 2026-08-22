@@ -36,7 +36,7 @@ function runJava(name, mainClass, sources, javaArgs = []) {
   }
 }
 
-check("HF10 Android identity", gradle.includes("versionCode 62") && gradle.includes('versionName "1.0.62"'));
+check("HF10+ Android identity", Number((gradle.match(/versionCode\s+(\d+)/) || [])[1] || 0) >= 62 && Number((gradle.match(/versionName\s+"1\.0\.(\d+)"/) || [])[1] || 0) >= 62);
 check("permission host is landscape", manifest.includes('android:name=".GtoProjectionPermissionActivity"') && manifest.includes('android:screenOrientation="landscape"'));
 check("root cause removed: finishOnTaskLaunch is absent", !manifest.includes('android:finishOnTaskLaunch="true"'));
 check("permission host uses ordinary result-capable launch mode", manifest.includes('android:launchMode="standard"'));
@@ -134,6 +134,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+      "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
     "scripts/java-tests/com/nvu/operacional/GtoR334Hf9FreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],

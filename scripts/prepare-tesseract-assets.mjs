@@ -6,6 +6,8 @@ const workerSource = resolve(root, "node_modules/tesseract.js/dist/worker.min.js
 const coreSourceCandidates = [
   resolve(root, "node_modules/tesseract.js-core"),
   resolve(root, "node_modules/tesseract.js/node_modules/tesseract.js-core"),
+  // pnpm may place transitive packages in the virtual store's hoisted node_modules.
+  resolve(root, "node_modules/.pnpm/node_modules/tesseract.js-core"),
 ];
 const publicRoot = resolve(root, "public/tesseract");
 const workerTarget = resolve(publicRoot, "worker.min.js");

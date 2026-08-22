@@ -1,25 +1,7 @@
-# NVU — Google AI Studio / Netlify — R3.34-PC-HF10
+# NVU — Capacitor Android / GTO
 
-Este projeto é o espelho Web/Dev compatível com a versão estável de produção do APK/Capacitor:
+Projeto Android/Capacitor alinhado à mesma camada web do projeto Google AI Studio/Netlify.
 
-- Release funcional: **R3.34-PC-HF10**
-- Web: **2.3.9**
-- Android: **1.0.62 / versionCode 62**
-- Runtime Capacitor: **Netlify remoto HTTPS**
-- App ID Android: `com.nvu.operacional`
+O APK usa o Netlify como runtime remoto (`capacitor.remote.json`). Assim, novo deploy do Netlify atualiza automaticamente a interface e lógica web do APK, sem recompilar o APK para cada alteração web.
 
-## Fonte canônica
-
-O código de produção em `src/`, o contrato das Cloud Functions em `functions/src/`, os locks de dependências, `netlify.toml` e o contrato de runtime remoto do Capacitor foram alinhados ao pacote aprovado R3.34-PC-HF10.
-
-O APK de produção continua responsável pela implementação Android nativa (overlay, MediaProjection, detecção visual e máquina de estados). Este Dev não inclui a pasta `android/`; ele mantém a contraparte Web/Netlify e o contrato de integração que o APK remoto consome.
-
-## Verificação local
-
-```bash
-npm ci
-npm --prefix functions ci
-npm run verify:web-hf10
-```
-
-Para publicar a Web, gere `dist/` com `npm run build` e publique pelo fluxo já configurado no Netlify. As Functions só precisam ser publicadas quando houver mudança em `functions/src/` ou dependências das Functions.
+A camada nativa Android permanece responsável pelo Observador GTO, botão flutuante, permissões, captura de tela, integração nativa e demais APIs Capacitor.

@@ -6,6 +6,7 @@ import path from "node:path";
 const read = (p) => fs.readFileSync(p, "utf8");
 const servicePath = "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java";
 const detectorPath = "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java";
+const listEvidencePath = "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java";
 const policyPath = "android/app/src/main/java/com/nvu/operacional/GtoDeterministicFlowPolicy.java";
 const service = read(servicePath);
 const detector = read(detectorPath);
@@ -32,7 +33,7 @@ check("active trip freight detector is explicitly gated", service.includes("mayP
 check("unarmed trip force-clears stale freight-list UI", service.includes('putString("screenState", "TRIP")') && service.includes('putBoolean("activeTripFreightListVisible", false)'));
 check("legacy replacement path is explicit-only but no longer exposed in normal UI", !service.includes('menuButton("Trocar frete atual")') && service.includes("mayProbeFreightListForCurrentState") && service.includes("explicitReplacement"));
 check("post-ACK flow automatically prepares next freight", service.includes("shouldAutoPrepareNextFreightAfterSync") && service.includes("beginTrip(false, false)"));
-check("driver is explicitly told only ACK-confirmed send succeeded", service.includes("Viagem enviada com sucesso!"));
+check("driver is explicitly told only ACK-confirmed send succeeded", service.includes("Viagem enviada com sucesso!") || service.includes("Viagem enviada ✓"));
 check("app return refreshes only transient visual context", service.includes("refreshTransientVisualContextAfterGtoReturn") && service.includes("Durable selected-freight/result data is never"));
 check("post-sync state change while outside GTO is expected", service.includes("expectedPostSyncNextTrip") && service.includes("gtoAutoNextTripPreparedAt"));
 check("extreme top HUD cannot be a one-row list", detector.includes("screenHeight * 0.055f"));
@@ -50,6 +51,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoR329StrictFreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],

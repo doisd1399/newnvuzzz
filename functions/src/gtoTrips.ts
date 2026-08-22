@@ -6,6 +6,8 @@ import { finalValueCompatibilityIssue, parsePositiveNumber } from "./gtoMoney";
 
 type CallableContext = functions.https.CallableContext;
 
+const GTO_PROGRESS_SCHEMA_VERSION = 1;
+
 type GtoTripRequest = {
   contractVersion?: unknown;
   sessionId?: unknown;
@@ -110,9 +112,20 @@ const freightFingerprintForRequest = (fields: {
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 };
 
-const statusIsTripRecordable = (value: unknown): boolean => {
+const statusIsTripRecordable = (
+  value: unknown,
+  progress = 0,
+  totalDeliveries = 0,
+): boolean => {
   const normalized = text(value, 40).toLowerCase();
-  return normalized === "active" || normalized === "delayed";
+  if (normalized === "active" || normalized === "delayed") return true;
+  // A stale web/native status may say awaiting_completion while the contract
+  // still has deliveries left. Treat the server progress/contract total as the
+  // authority and keep the next delivery recordable in that narrow case.
+  return normalized === "awaiting_completion"
+    && totalDeliveries > 0
+    && Number.isFinite(Number(progress))
+    && Number(progress) < totalDeliveries;
 };
 
 const statusIsValidTrip = (value: unknown): boolean => {
@@ -286,7 +299,11 @@ const syncJobProgress = async (
   const freshJobSnapshot = await jobRef.get();
   const currentStatus = text(freshJobSnapshot.data()?.status, 60);
   let nextStatus = currentStatus;
-  const progressUpdate: Record<string, unknown> = { progress };
+  const progressUpdate: Record<string, unknown> = {
+    progress,
+    gtoProgressSchemaVersion: GTO_PROGRESS_SCHEMA_VERSION,
+    gtoProgressSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
   if (contractMode === "simple") {
     progressUpdate.completedRoutes = deriveSimpleCompletedRoutes(tripsSnapshot.docs);
     // Retire HF1 continuity metadata. A completed destination is never an origin source.
@@ -404,12 +421,6 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
         "A identidade do frete não corresponde aos dados enviados; registro bloqueado.",
       );
     }
-    if (origin !== originCompany) {
-      throw new functions.https.HttpsError(
-        "failed-precondition",
-        "A origem da viagem deve corresponder exatamente à empresa de origem detectada no GTO.",
-      );
-    }
     if (distanceKm <= 0 || distanceKm > 50_000 || finalValue <= 0 || finalValue > 1_000_000_000) {
       throw new functions.https.HttpsError(
         "invalid-argument",
@@ -507,6 +518,29 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
       }
 
       if (jobSnapshot.exists) {
+        const retryJob = jobSnapshot.data() || {};
+        const retryProgress = Number(retryJob.progress);
+        const hasCanonicalProgress =
+          Number(retryJob.gtoProgressSchemaVersion || 0) >= GTO_PROGRESS_SCHEMA_VERSION &&
+          Number.isFinite(retryProgress) &&
+          retryProgress >= 0;
+        if (hasCanonicalProgress) {
+          return {
+            success: true,
+            contractVersion: 18,
+            sessionId,
+            tripId,
+            created: false,
+            duplicate: true,
+            payloadFingerprint,
+            progress: Math.trunc(retryProgress),
+            jobStatus: text(retryJob.status, 60),
+          };
+        }
+
+        // One-time migration/heal for jobs created before HF58. The first retry/
+        // delivery scans historical trips, stamps the canonical progress schema,
+        // and every subsequent GTO delivery can use the atomic O(1) fast path.
         const synced = await syncJobProgress(
           db,
           jobId,
@@ -574,7 +608,7 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
         "O contrato não corresponde ao trabalho atual.",
       );
     }
-    if (!statusIsTripRecordable(job.status)) {
+    if (!statusIsTripRecordable(job.status, Number(job.progress), totalDeliveries)) {
       throw new functions.https.HttpsError(
         "failed-precondition",
         "A operação não está disponível para registrar novas viagens.",
@@ -601,11 +635,12 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
       );
     }
 
-    // Business rule for automatic GTO trips: the source company displayed on the
-    // selected freight card is the canonical Origem shown, stored and transmitted.
-    // Previous destinations are never reused as origin continuity.
-    const effectiveOrigin = originCompany;
-    const effectiveOriginSource = "GTO_ORIGIN_COMPANY";
+    // HF117: the GTO route has two distinct semantics. `origin` is the final
+    // location after the last separator; `originCompany` is optional metadata.
+    // The local Android payload and the historical trip record must use the final
+    // location as the canonical origin, never the company label.
+    const effectiveOrigin = origin;
+    const effectiveOriginSource = "GTO_ORIGIN_LOCATION";
 
     const simulator = await resolveSimulator(db, company);
     if (!simulator.isGto) {
@@ -679,7 +714,7 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
             "A chave desta sessão GTO já está vinculada a dados diferentes.",
           );
         }
-        return { created: false };
+        return { created: false, progressFastPath: false, progress: -1, jobStatus: "" };
       }
 
       const freshJobData = freshJob.exists ? freshJob.data() || {} : {};
@@ -687,11 +722,72 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
         freshJobData.driverId ?? freshJobData.motoristaId ?? freshJobData.userId,
         180,
       );
-      if (!freshJob.exists || freshDriverId !== uid || !statusIsTripRecordable(freshJobData.status)) {
+      if (
+        !freshJob.exists
+        || freshDriverId !== uid
+        || !statusIsTripRecordable(
+          freshJobData.status,
+          Number(freshJobData.progress),
+          totalDeliveries,
+        )
+      ) {
         throw new functions.https.HttpsError(
           "failed-precondition",
           "A operação mudou antes da confirmação da viagem.",
         );
+      }
+
+      const currentProgress = Number(freshJobData.progress);
+      const progressFastPath =
+        Number(freshJobData.gtoProgressSchemaVersion || 0) >= GTO_PROGRESS_SCHEMA_VERSION &&
+        Number.isFinite(currentProgress) &&
+        currentProgress >= 0;
+      let fastProgress = -1;
+      let fastJobStatus = text(freshJobData.status, 60);
+
+      if (progressFastPath) {
+        fastProgress = Math.trunc(currentProgress) + 1;
+        const progressUpdate: Record<string, unknown> = {
+          progress: fastProgress,
+          gtoProgressSchemaVersion: GTO_PROGRESS_SCHEMA_VERSION,
+          gtoProgressSyncedAt: serverNow,
+        };
+
+        if (serverContractMode === "simple") {
+          const existingRoutes = Array.isArray(freshJobData.completedRoutes)
+            ? freshJobData.completedRoutes
+                .map((route: any) => ({
+                  origin: text(route?.origin, 180),
+                  destination: text(route?.destination, 180),
+                }))
+                .filter((route: { origin: string; destination: string }) =>
+                  Boolean(route.origin) && Boolean(route.destination),
+                )
+            : [];
+          progressUpdate.completedRoutes = [
+            ...existingRoutes,
+            { origin: effectiveOrigin, destination },
+          ];
+          progressUpdate.lastKnownGtoCity = admin.firestore.FieldValue.delete();
+          progressUpdate.gtoRouteContinuityUpdatedAt = admin.firestore.FieldValue.delete();
+        }
+
+        if (
+          totalDeliveries > 0 &&
+          fastProgress >= totalDeliveries &&
+          ["active", "delayed", "pending"].includes(fastJobStatus)
+        ) {
+          fastJobStatus = "awaiting_completion";
+          progressUpdate.status = fastJobStatus;
+        } else if (fastJobStatus === "pending" && fastProgress > 0) {
+          fastJobStatus = "active";
+          progressUpdate.status = fastJobStatus;
+        }
+
+        // Same transaction as the idempotent trip create: duplicate retries can
+        // never increment progress twice, and a successful trip cannot exist without
+        // its corresponding progress update once the job has been migrated to HF58.
+        transaction.set(jobRef, progressUpdate, { merge: true });
       }
 
       transaction.create(tripRef, {
@@ -760,10 +856,17 @@ export const registerGtoTrip = functions.region("us-central1").https.onCall(
         gtoCompletedAtClient: completedAtClient,
       });
 
-      return { created: true };
+      return {
+        created: true,
+        progressFastPath,
+        progress: fastProgress,
+        jobStatus: fastJobStatus,
+      };
     });
 
-    const synced = await syncJobProgress(db, jobId, totalDeliveries, serverContractMode);
+    const synced = transactionResult.progressFastPath
+      ? { progress: transactionResult.progress, jobStatus: transactionResult.jobStatus }
+      : await syncJobProgress(db, jobId, totalDeliveries, serverContractMode);
 
     return {
       success: true,

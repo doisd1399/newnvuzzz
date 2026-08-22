@@ -9,7 +9,7 @@ public final class GtoCaptureStabilityGateTest {
         GtoCaptureStabilityGate gate = new GtoCaptureStabilityGate();
 
         GtoCaptureStabilityGate.Snapshot started = gate.reset(
-            GtoCaptureStabilityGate.CAPTURE_WAITING_GTO_FOREGROUND,
+            GtoCaptureStabilityGate.CAPTURE_STARTING,
             1920,
             1080,
             1_000L
@@ -17,14 +17,14 @@ public final class GtoCaptureStabilityGateTest {
         require(!started.ready, "new projection cannot be ready immediately");
         require(started.generation == 1L, "reset must advance generation");
 
-        GtoCaptureStabilityGate.Snapshot hidden = gate.observeFrame(
+        GtoCaptureStabilityGate.Snapshot inactive = gate.observeFrame(
             1920, 1080, 1_120L, false
         );
-        require(!hidden.ready, "NVU/permission frames cannot arm GTO analysis");
-        require(hidden.stableFrames == 0, "background frames cannot count as stable");
+        require(!inactive.ready, "inactive session cannot arm analysis");
+        require(inactive.stableFrames == 0, "inactive frames cannot count as stable");
         require(
-            GtoCaptureStabilityGate.CAPTURE_WAITING_GTO_FOREGROUND.equals(hidden.phase),
-            "gate must expose foreground wait phase"
+            GtoCaptureStabilityGate.INACTIVE.equals(inactive.phase),
+            "gate must expose inactive session phase"
         );
 
         require(!gate.observeFrame(1920, 1080, 1_200L, true).ready, "frame 1");
@@ -61,10 +61,10 @@ public final class GtoCaptureStabilityGateTest {
         require(resizedReady.ready, "resized geometry must settle independently");
 
         GtoCaptureStabilityGate.Snapshot background = gate.observeFrame(
-            2400, 1080, 1_620L, false
+            2400, 1080, 1_620L, true
         );
-        require(!background.ready, "losing GTO foreground must close the gate");
-        require(background.becameUnready, "foreground loss must invalidate analysis");
+        require(background.ready, "foreground/package staleness must not close a live session");
+        require(!background.becameUnready, "context loss must not invalidate transport analysis");
 
         System.out.println("GtoCaptureStabilityGateTest: PASS");
     }

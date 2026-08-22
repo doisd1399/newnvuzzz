@@ -63,10 +63,22 @@ export const syncGtoTripState = functions.region("us-central1").https.onCall(asy
     const current = currentSnap.exists ? (currentSnap.data() || {}) : null;
     const currentState = text(current?.state, 60).toUpperCase() || "IDLE";
 
-    if (!currentSnap.exists && state !== "WAITING_FREIGHT" && state !== "IDLE") {
+    // HF58 Cost Safe: a lost callable response must be idempotent. If the first
+    // transaction already committed the requested target state, the retry returns
+    // success without another pair of Firestore writes or an ABORTED retry loop.
+    if (currentSnap.exists && currentState === state) {
+      return { previousState: currentState, state, duplicate: true };
+    }
+
+    const bootstrapState = !currentSnap.exists && (state === "WAITING_FREIGHT" || state === "IDLE");
+    if (!currentSnap.exists && !bootstrapState) {
       throw new functions.https.HttpsError("failed-precondition", "A sessão precisa começar em WAITING_FREIGHT.");
     }
-    if (expectedState && expectedState !== currentState) {
+    // A new session has a new document by design. Its local predecessor is not the
+    // remote state of this session, so comparing expectedState with the synthetic IDLE
+    // value would reject every valid post-ACK bootstrap with HTTP 400. Existing sessions
+    // remain compare-and-swap protected: a stale expectedState still fails closed.
+    if (expectedState && !bootstrapState && expectedState !== currentState) {
       throw new functions.https.HttpsError("aborted", "O estado remoto mudou antes desta transição.");
     }
     if (currentSnap.exists && currentState !== state && !transitions[currentState]?.has(state)) {

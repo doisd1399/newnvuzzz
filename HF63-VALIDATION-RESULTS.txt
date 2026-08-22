@@ -1,0 +1,39 @@
+NVU R3.34-PC-HF63 — VALIDATION RESULTS
+Date: 2026-08-19
+Identity: com.nvu.operacional / 1.0.115 / versionCode 115
+
+PASS
+- check:android-java-syntax — 53 sources
+- test:gto-r3.34-hf29-post-consent-list-recovery — 11/11
+- test:gto-r3.34-hf30-continuous-projection — 24/24
+- test:gto-r3.34-hf32-continuous-recognition — 18/18
+- test:gto-r3.34-hf34-deterministic-lifecycle — 22/22
+- test:gto-r3.34-hf35-freight-list-authority — 10/10
+- test:gto-r3.34-hf36-cargo-auto-recovery — 11/11
+- test:gto-r3.34-hf43-responsive-messages — 17/17
+- test:gto-r3.34-hf44-live-list-message — 17/17
+- test:gto-r3.34-hf45-critical-flow — 18/18
+- test:gto-r3.34-hf48-return-recognition — 17/17
+- test:gto-r3.34-hf55-return-result-recovery — 20/20
+- test:gto-r3.34-hf57-instant-messages — 20/20
+- test:gto-r3.34-hf59-sync-safe — 29/29
+- test:gto-r3.34-hf60-terminal-safe — 29/29
+- test:gto-r3.34-hf61-completion-commit — 29/29
+- test:gto-r3.34-hf62-bootstrap-coordinate — 10/10; nested R3.24 — 14/14
+- test:gto-r3.34-hf63-return-freight — 20/20
+- exact three reported HF63 screenshots: production fast detector recognized 5 freight rows in each
+- HF63 pure projection-continuity policy test: PASS
+
+FULL RELEASE GATE
+- npm run verify:release was started and every stage reached through R3.33 passed.
+- The sandbox command hit its 30-minute execution timeout while the gate was still progressing; it did not report a test failure before timeout.
+- The relevant late HF34-HF63 regressions were then executed individually and passed as listed above.
+
+ANDROID GRADLE COMPILE IN THIS SANDBOX
+- A direct Gradle compile was attempted.
+- The sandbox has no internet and did not have Gradle 8.14.3 cached, so the wrapper could not download services.gradle.org.
+- This is an environment/network limitation, not a source/test failure.
+- The included GitHub Actions release workflow downloads Java/Android/Gradle dependencies, runs verify:release, compiles the real Android release, signs it, and validates package/version before producing the APK artifact.
+
+SOURCE SCOPE AUDIT
+Compared with the uploaded HF62 ZIP, no src/, Web or Firebase Functions business source was changed. Functional changes are confined to Android native foreground/capture continuity, version/release workflow metadata, and HF63 regression fixtures/tests/docs.

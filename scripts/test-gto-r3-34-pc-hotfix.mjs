@@ -23,12 +23,12 @@ const launcher = read("src/services/gtoWorkLauncher.ts");
 const functionsTs = read("functions/src/gtoTrips.ts");
 const functionsJs = read("functions/lib/gtoTrips.js");
 
-check("hotfix remains based on R3.34 Android identity", gradle.includes("versionCode 62") && gradle.includes('versionName "1.0.62"'));
+check("hotfix remains based on R3.34 Android identity", Number((gradle.match(/versionCode\s+(\d+)/) || [])[1] || 0) >= 62 && Number((gradle.match(/versionName\s+"1\.0\.(\d+)"/) || [])[1] || 0) >= 62);
 check("Windows Gradle Java compile is pinned to UTF-8", gradle.includes("options.encoding = 'UTF-8'"));
 check("native money display is grouped pt-BR with cents", money.includes('"R$ %s,%02d"') && money.includes("groupThousands(whole)"));
 check("approved destination spellings have conservative first priority", ["Itapetuna", "Nova Macaé", "Registro", "Águas Velhas", "Faz Areia Dourada", "Cruz do Oeste", "Cooperativa Agro Grão", "Curitiba", "Lages", "Lauro Muller"].every((name) => resolver.includes(`"${name}"`)) && resolver.includes("PREFERRED_DESTINATION_NEAR_MATCH") && resolver.includes("tie"));
-check("selected-row OCR can repair only stronger one-edit city evidence", service.includes("preferPreciseVerifiedRow") && resolver.includes("preciseConfidence < 0.70f") && resolver.includes("stableConfidence + 0.035f"));
-check("unresolved one-letter destination conflict fails closed", service.includes("hasUnresolvedDestinationOneEditConflict") && service.includes("A cidade de destino teve duas leituras diferentes por 1 caractere"));
+check("selected-row OCR never silently rewrites destination spelling", !service.includes("finalDestination = resolveTrustedDestination(canonical.destination)") && !service.includes("option.destination = destinationResolution.value") && service.includes("destination OCR stays literal"));
+check("unresolved destination conflict retries selected row before field review without reselection", service.includes("hasUnresolvedDestinationOneEditConflict") && service.includes("scheduleFocusedFreightConflictRetry") && service.includes("A releitura focalizada não confirmou um campo com segurança") && service.includes("GtoFreightReviewPolicy.DESTINATION"));
 check("web seeds approved spellings and excludes OCR history", dashboard.includes("GTO_PREFERRED_DESTINATIONS") && dashboard.includes("trustedGtoCitiesJson") && dashboard.includes("contract?.deliveries?.forEach") && !/currentOperationTrips\.forEach[\s\S]{0,300}trustedGtoCities/.test(dashboard));
 check("native bridge stores expected/trusted city context", plugin.includes('putString("trustedGtoCitiesJson"') && plugin.includes('putString("expectedGtoDestination"'));
 check("previous-destination origin continuity is removed", !functionsTs.includes("deriveSimpleRouteContinuity") && !functionsTs.includes("PREVIOUS_CONFIRMED_DESTINATION") && functionsTs.includes("FieldValue.delete()"));
@@ -45,7 +45,7 @@ check("GTO foreground attaches bubble before recorder permission", service.index
 }
 check("freight money ingestion preserves locale semantics", service.includes("private String extractMoneyValue") && service.includes('return GtoMoneyValue.canonical("R$ " + matcher.group(1));') && !service.includes('option.offeredValue = "R$ " + moneyDigits'));
 check("transient OEM/system overlays keep the main bubble", service.includes("suspendInteractiveOverlaysKeepBubble") && service.includes("TRANSIENT_OVERLAY_STALE_RECOVERY_MS") && service.includes("Interface temporária sobre o GTO"));
-check("capture resize has bounded self-recovery before reauthorization", service.includes("captureResizeRetryCount < 1") && service.includes("postDelayed(() -> resizeProjectionSurface(width, height), 180L)"));
+check("capture resize self-recovers without invalidating a still-valid projection token", service.includes("RECOVERING_RESIZE") && service.includes("retryDelay") && service.includes("Only MediaProjection.Callback.onStop() is allowed"));
 check("projection grant is validated before token use", service.includes("GRANT_DATA_INVALID") && service.includes("projectionGrantReceivedAt") && service.includes("android.app.Activity.RESULT_OK"));
 check("early projection stop is explicit and diagnosable", service.includes("STOPPED_EARLY") && service.includes("projectionActiveForMs") && service.includes("outra gravação/compartilhamento de tela"));
 

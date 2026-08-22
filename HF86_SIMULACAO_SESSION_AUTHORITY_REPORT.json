@@ -1,0 +1,66 @@
+{
+  "mode": "deterministic-session-authority-no-device",
+  "scenarioCount": 5,
+  "results": [
+    {
+      "name": "foreground stale does not block live session",
+      "framesConsumed": 100,
+      "framesAnalyzed": 100,
+      "staleReaderRejected": 0,
+      "resumeCalls": 1,
+      "rebinds": 0,
+      "revocations": 0,
+      "semanticMutations": 1,
+      "active": true,
+      "ready": true
+    },
+    {
+      "name": "return after NVU does not require package confirmation",
+      "framesConsumed": 132,
+      "framesAnalyzed": 132,
+      "staleReaderRejected": 0,
+      "resumeCalls": 1,
+      "rebinds": 0,
+      "revocations": 0,
+      "semanticMutations": 1,
+      "active": true,
+      "ready": true
+    },
+    {
+      "name": "old ImageReader callback cannot kill replacement",
+      "framesConsumed": 70,
+      "framesAnalyzed": 50,
+      "staleReaderRejected": 20,
+      "resumeCalls": 0,
+      "rebinds": 1,
+      "revocations": 0,
+      "semanticMutations": 1,
+      "active": true,
+      "ready": true
+    },
+    {
+      "name": "real MediaProjection revocation is the only hard stop",
+      "framesConsumed": 100,
+      "framesAnalyzed": 70,
+      "staleReaderRejected": 0,
+      "resumeCalls": 1,
+      "rebinds": 0,
+      "revocations": 1,
+      "semanticMutations": 1,
+      "active": true,
+      "ready": true
+    },
+    {
+      "name": "repeated supervisor polls are idempotent",
+      "framesConsumed": 120,
+      "framesAnalyzed": 120,
+      "staleReaderRejected": 0,
+      "resumeCalls": 1,
+      "rebinds": 0,
+      "revocations": 0,
+      "semanticMutations": 1,
+      "active": true,
+      "ready": true
+    }
+  ]
+}

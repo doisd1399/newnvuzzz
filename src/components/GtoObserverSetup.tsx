@@ -229,6 +229,28 @@ export default function GtoObserverSetup({
     status?.driverStageMessage
       && (!status?.tripStateChangedAt || !status?.driverStageAt || status.driverStageAt >= status.tripStateChangedAt),
   );
+  const submissionState = status?.tripSubmissionState || "READY";
+  const submissionMessage = submissionState === "SENDING"
+    ? "Enviando viagem automaticamente."
+    : submissionState === "PENDING_RETRY"
+      ? "Envio pendente; nova tentativa automática."
+      : submissionState === "SYNCED"
+        ? "Viagem registrada com sucesso."
+        : "";
+  // Lifecycle/background is orthogonal to the driver's current operation. A stale
+  // foreground label must not hide the live stage of a consecutive freight.
+  const backgroundLifecycleOnly = Boolean(
+    status?.observerLifecycleStatus === "GTO_BACKGROUND_OBSERVER_ACTIVE"
+      && ![
+        "WAITING_FREIGHT",
+        "CONFIRMING_FREIGHT",
+        "TRIP_IN_PROGRESS",
+        "RESULT_DETECTED",
+        "AWAITING_BONUS_VALIDATION",
+        "RESULT_CONFIRMED",
+        "REJECTED_BONUS",
+      ].includes(canonicalTripState),
+  );
 
   return (
     <div className="bg-white dark:bg-[#121213] border border-slate-200 dark:border-slate-800 sm:rounded-2xl rounded-xl p-3 sm:p-4 shadow-[0_2px_12px_rgba(0,0,0,0.025)]">
@@ -285,20 +307,31 @@ export default function GtoObserverSetup({
               <div className="font-medium text-cyan-700 dark:text-cyan-300">
                 Fluxo: 1. escolher frete → 2. realizar rota → 3. receber no GTO → 4. envio automático
               </div>
-              {driverStageIsCurrent && status.driverStageMessage && (
+              {!backgroundLifecycleOnly
+                && driverStageIsCurrent
+                && status.driverStageMessage && (
                 <div>
                   Etapa atual: <strong>{status.driverStageMessage}</strong>
                 </div>
               )}
-              {!driverStageIsCurrent && (
+              {backgroundLifecycleOnly ? (
+                <div className="text-cyan-700 dark:text-cyan-300">
+                  Observador: <strong>ativo · aguardando o retorno do GTO; sessão preservada.</strong>
+                </div>
+              ) : !driverStageIsCurrent ? (
                 <div>
                   Etapa atual: <strong>{stateLabel(canonicalTripState)}</strong>
                 </div>
-              )}
+              ) : null}
               <div>
                 Estado: <strong>{stateLabel(canonicalTripState)}</strong>
               </div>
               <div>Tela: <strong>{status.screenAnalysisPaused ? "PAUSADA_FORA_DO_GTO" : (status.screenState || "UNKNOWN")}</strong></div>
+              {status.observerLifecycleStatus === "GTO_BACKGROUND_OBSERVER_ACTIVE" && (
+                <div className="text-cyan-700 dark:text-cyan-300">
+                  Ciclo de vida: <strong>Observador NVU ativo · GTO fechado, minimizado ou em segundo plano não encerra o serviço.</strong>
+                </div>
+              )}
               {status.screenAnalysisPaused && (
                 <div className="text-cyan-700 dark:text-cyan-300">
                   Leitura: <strong>pausada fora do GTO · estado preservado em {stateLabel(status.tripStateWhenAnalysisPaused || canonicalTripState)}.</strong>
@@ -331,8 +364,12 @@ export default function GtoObserverSetup({
                   Resultado: <strong>leituras do valor divergiram; nenhum valor foi presumido.</strong>
                 </div>
               )}
-              {status.gtoTripSyncStatus && (
-                <div>Sincronização: <strong>{status.gtoTripSyncStatus}</strong></div>
+              {submissionMessage && (
+                <div className={submissionState === "PENDING_RETRY"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : "text-cyan-700 dark:text-cyan-300"}>
+                  Envio: <strong>{submissionMessage}</strong>
+                </div>
               )}
               {status.gtoTripIntegrityStatus && (
                 <div>Integridade: <strong>{status.gtoTripIntegrityStatus}</strong></div>

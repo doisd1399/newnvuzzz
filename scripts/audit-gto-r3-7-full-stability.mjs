@@ -44,7 +44,7 @@ check('stale projection onStop cannot release new capture', has(service, 'Never 
 check('manual projection stop invalidates callbacks first', has(service, 'projectionGeneration++;') && has(service, 'Invalidate callbacks before calling MediaProjection.stop()'));
 check('system projection stop requests explicit reauthorization', has(service, 'putBoolean("projectionReauthRequired", true)') && has(service, 'Leitura da tela foi encerrada pelo Android'));
 check('projection reauthorization is visible to driver', has(service, 'maybeNotifyProjectionReauthorization()') && has(service, 'autorize novamente'));
-check('touch sensor cannot remain active without projection', /boolean shouldShow = gtoForeground\s*\n\s*&& projectionActive/.test(service));
+check('passive touch observer is scoped to enabled GTO foreground even across projection rebinds', has(service, 'GtoResultActionFlowPolicy.keepPassiveTouchObserver') && has(read('android/app/src/main/java/com/nvu/operacional/GtoResultActionFlowPolicy.java'), 'return observeEnabled && gtoForeground && overlayAllowed'));
 check('permission activity reports missing MediaProjectionManager', has(permission, 'MANAGER_UNAVAILABLE') && has(permission, 'MediaProjectionManager indisponível'));
 check('permission activity reports consent launch failure', has(permission, 'CONSENT_LAUNCH_FAILED'));
 
@@ -80,7 +80,7 @@ check('adaptive OCR panel follows detected button column', has(service, 'freight
 check('freight conflict is fail-closed instead of guessing', has(service, 'lastFreightConflict') && has(service, 'Frete não confirmado'));
 check('page generation isolation remains present', has(service, 'freightPageGeneration'));
 
-check('exact Receive latch has no timeout', has(service, 'the exact Receber touch is the completion rule') && !has(service, 'RESULT_ACTION_EVIDENCE_MS'));
+check('exact Receive latch has no timeout', has(service, 'putBoolean("resultReceiveLatched", true)') && has(service, 'The exact Receber action is durable') && !has(service, 'RESULT_ACTION_EVIDENCE_MS'));
 check('exact ADS remains isolated from Receive', has(service, 'latchExactAdsTouch') && has(service, 'VERIFYING_AD_BONUS'));
 check('late OCR cannot downgrade Receive latch', has(service, 'receiveAlreadyLatched') && has(service, 'A late OCR callback must never downgrade'));
 check('persisted capture OCR can recover and revalidate final result value',

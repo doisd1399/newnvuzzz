@@ -47,9 +47,10 @@ check(
       < onImageAvailable.indexOf("if (STATE_WAITING_FREIGHT.equals(getTripState()))"),
 );
 check(
-  "freight touch sensor is blocked until final geometry is ready",
-    source.service.includes("&& captureStabilityGate.isReady()")
-    && source.service.includes("!captureStabilityGate.isReady()"),
+  "freight selection mutation remains blocked until final geometry is ready while passive result observer may stay armed",
+  source.service.includes("if (selectionArmed)")
+    && source.service.includes("if (!captureStabilityGate.isReady()) return false;")
+    && source.service.includes("Receber must remain observable even while ImageReader/surface"),
 );
 check(
   "resize invalidates geometry-bound analysis before rebuilding the reader",
@@ -83,9 +84,10 @@ check(
     && source.plugin.includes('status.put("captureReadiness"'),
 );
 check(
-  "resize failure is fail-closed and requires reauthorization",
-  source.service.includes('projectionStatus = "RESIZE_FAILED"')
-    && source.service.includes('putBoolean("projectionReauthRequired", true)'),
+  "resize failure preserves valid MediaProjection and retries automatically",
+  source.service.includes('putString("captureReadiness", "RECOVERING_RESIZE")')
+    && source.service.includes('handler.postDelayed(() -> resizeProjectionSurface(width, height), retryDelay)')
+    && source.service.includes('Only MediaProjection.Callback.onStop() is allowed'),
 );
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "nvu-gto-gate-"));

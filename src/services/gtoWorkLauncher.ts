@@ -5,6 +5,10 @@ import {
   isGtoObserverAvailable,
   isNativeAndroid,
 } from "../lib/gtoObserver";
+import {
+  isClosedJobStatus,
+  isTripRecordableJobStatus,
+} from "../lib/jobStatus";
 
 export type GtoWorkLaunchResult =
   | { status: "opened" }
@@ -18,30 +22,27 @@ export type GtoWorkLaunchResult =
   | { status: "job-not-ready" }
   | { status: "job-closed" };
 
-const normalizeStatus = (value: unknown): string =>
-  String(value || "").trim().toLowerCase();
-
-const isClosedJobStatus = (value: unknown): boolean =>
-  ["completed", "awaiting_completion", "cancelled"].includes(normalizeStatus(value));
-
-const isRecordableJobStatus = (value: unknown): boolean =>
-  ["active", "delayed"].includes(normalizeStatus(value));
+const isRecordableJobStatus = (
+  value: unknown,
+  progress = 0,
+  total = 0,
+): boolean => isTripRecordableJobStatus(value, progress, total);
 
 const contextAlreadyClosed = (context: GtoObserverContext): boolean => {
-  if (isClosedJobStatus(context.jobStatus)) return true;
   const progress = Math.max(0, Number(context.jobProgress || 0));
   const total = Math.max(0, Number(context.jobTotalDeliveries || 0));
+  if (isClosedJobStatus(context.jobStatus, progress, total)) return true;
   return total > 0 && progress >= total;
 };
 
 const observerReportsClosedJob = (status: GtoObserverStatus): boolean => {
   if (status.gtoBackendJobClosed) return true;
-  if (isClosedJobStatus(status.gtoJobStatus || status.jobStatus)) return true;
   const progress = Math.max(
     Number(status.jobProgress || 0),
     Number(status.gtoJobProgress || 0),
   );
   const total = Math.max(0, Number(status.jobTotalDeliveries || 0));
+  if (isClosedJobStatus(status.gtoJobStatus || status.jobStatus, progress, total)) return true;
   return total > 0 && progress >= total;
 };
 
@@ -56,7 +57,9 @@ export async function launchGtoWork(
   if (!isNativeAndroid()) return { status: "not-native" };
   if (!isGtoObserverAvailable()) return { status: "module-missing" };
   if (contextAlreadyClosed(context)) return { status: "job-closed" };
-  if (context.jobStatus && !isRecordableJobStatus(context.jobStatus)) {
+  const contextProgress = Math.max(0, Number(context.jobProgress || 0));
+  const contextTotal = Math.max(0, Number(context.jobTotalDeliveries || 0));
+  if (context.jobStatus && !isRecordableJobStatus(context.jobStatus, contextProgress, contextTotal)) {
     return { status: "job-not-ready" };
   }
 
@@ -64,7 +67,12 @@ export async function launchGtoWork(
   let status = await GtoObserver.getStatus();
 
   if (observerReportsClosedJob(status)) return { status: "job-closed" };
-  if (status.jobStatus && !isRecordableJobStatus(status.jobStatus)) {
+  const firstStatusProgress = Math.max(
+    Number(status.jobProgress || 0),
+    Number(status.gtoJobProgress || 0),
+  );
+  const firstStatusTotal = Math.max(0, Number(status.jobTotalDeliveries || 0));
+  if (status.jobStatus && !isRecordableJobStatus(status.jobStatus, firstStatusProgress, firstStatusTotal)) {
     return { status: "job-not-ready" };
   }
 
@@ -117,7 +125,12 @@ export async function launchGtoWork(
   // keep another company/job as the active automatic-trip context.
   status = await GtoObserver.setContext(context);
   if (observerReportsClosedJob(status)) return { status: "job-closed" };
-  if (status.jobStatus && !isRecordableJobStatus(status.jobStatus)) {
+  const refreshedStatusProgress = Math.max(
+    Number(status.jobProgress || 0),
+    Number(status.gtoJobProgress || 0),
+  );
+  const refreshedStatusTotal = Math.max(0, Number(status.jobTotalDeliveries || 0));
+  if (status.jobStatus && !isRecordableJobStatus(status.jobStatus, refreshedStatusProgress, refreshedStatusTotal)) {
     return { status: "job-not-ready" };
   }
 

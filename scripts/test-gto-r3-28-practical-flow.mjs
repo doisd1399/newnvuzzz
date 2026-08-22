@@ -7,6 +7,7 @@ const read = (p) => fs.readFileSync(p, "utf8");
 const servicePath = "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java";
 const activityPath = "android/app/src/main/java/com/nvu/operacional/GtoProjectionPermissionActivity.java";
 const detectorPath = "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java";
+const listEvidencePath = "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java";
 const syncPath = "android/app/src/main/java/com/nvu/operacional/GtoAutoTripSync.java";
 const service = read(servicePath);
 const permissionActivity = read(activityPath);
@@ -73,7 +74,8 @@ check(
     && service.includes("if (gtoLandscapeExpected && initialHeight > initialWidth)"))
   || (service.includes("private void maybeStartPendingProjectionSurface(long now)")
     && service.includes("DisplayMetrics metrics = realDisplayMetrics()")
-    && service.includes("if (!packageMatchesGto || width <= 0 || height <= 0 || width <= height)")
+    && (service.includes("if (!packageMatchesGto || width <= 0 || height <= 0 || width <= height)")
+      || service.includes("if (!trustedGtoContext || width <= 0 || height <= 0 || width <= height)"))
     && service.includes("createProjectionSurface(width, height)")),
 );
 check(
@@ -100,7 +102,7 @@ check(
   "selected freight remains immutable and visible as current trip",
   service.includes("GtoAutoTripSync.lockSelectedFreight")
     && service.includes('freightHeading.setText("Frete atual em andamento")')
-    && service.includes("Frete identificado. Tudo preparado, podemos partir!"),
+    && (service.includes("Frete identificado. Tudo preparado, podemos partir!") || service.includes("Frete confirmado ✓ · viagem em andamento.")),
 );
 check(
   "Receive is persisted before automatic queue and Firebase send",
@@ -116,6 +118,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     detectorPath,
+    listEvidencePath,
     "scripts/java-tests/com/nvu/operacional/GtoR328ReportedFreightScreenTest.java",
   ],
   ["-Djava.awt.headless=true"],
@@ -135,6 +138,7 @@ runJava(
     "scripts/java-tests/android/graphics/Rect.java",
     "scripts/java-tests/android/media/Image.java",
     "android/app/src/main/java/com/nvu/operacional/GtoResultVisualGate.java",
+      "android/app/src/main/java/com/nvu/operacional/GtoResultEvidencePolicy.java",
     "scripts/java-tests/com/nvu/operacional/GtoResultVisualGateScreenMatrixTest.java",
   ],
 );

@@ -6,9 +6,11 @@ import path from "node:path";
 const servicePath = "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java";
 const pluginPath = "android/app/src/main/java/com/nvu/operacional/GtoObserverPlugin.java";
 const policyPath = "android/app/src/main/java/com/nvu/operacional/GtoDeterministicFlowPolicy.java";
+const bridgePolicyPath = "android/app/src/main/java/com/nvu/operacional/GtoProjectionForegroundBridgePolicy.java";
 const service = fs.readFileSync(servicePath, "utf8");
 const plugin = fs.readFileSync(pluginPath, "utf8");
 const policy = fs.readFileSync(policyPath, "utf8");
+const bridgePolicy = fs.readFileSync(bridgePolicyPath, "utf8");
 
 const checks = [];
 function check(name, ok, detail = "") {
@@ -39,10 +41,10 @@ check(
 check(
   "known non-GTO foreground app cannot be overridden by freight-like pixels",
   policy.includes("packageMatchesGto || packageUnknown || permissionReturnFromNvu")
-    && service.includes("boolean permissionReturnFromNvu = returnGrace && getPackageName().equals(foregroundPackage)")
-    && service.includes("boolean foregroundOwnerAllowsVisualProbe = foregroundPackage == null")
-    && service.includes("|| getPackageName().equals(foregroundPackage);")
-    && service.includes("&& foregroundOwnerAllowsVisualProbe")
+    && bridgePolicy.includes("if (!verifiedGtoBridge || transientSurface) return false;")
+    && bridgePolicy.includes("return packageUnknown || (packageIsNvu && !nvuMainActivityForeground);")
+    && /private boolean hasVerifiedGtoProjectionBridge[\s\S]{0,900}GtoProjectionForegroundBridgePolicy\.allow/.test(service)
+    && /private boolean canUseFreightListAsVisualGtoProof[\s\S]{0,1500}hasVerifiedGtoProjectionBridge\(\)/.test(service)
     && service.includes("pauseScreenAnalysisOutsideGto("),
 );
 check(
@@ -75,7 +77,7 @@ check(
   "active trip replacement requires an explicit driver arm and a real new selection",
   !service.includes('menuButton("Trocar frete atual")')
     && service.includes("armExplicitFreightReplacement()")
-    && service.includes("replacementFreightTouchPending || replacementFreightPressedRow >= 0")
+    && service.includes("boolean selectedNewRow = replacementFreightTouchPending")
     && policy.includes('return explicitlyArmed && "TRIP_IN_PROGRESS".equals(state);'),
 );
 check(
@@ -101,9 +103,10 @@ check(
     && !/private void clearActiveTripFreightListRuntime\(\) \{[\s\S]{0,180}clearActiveTripFreightListRuntime\(\);/.test(service),
 );
 check(
-  "driver notices are acknowledged only after overlay attachment succeeds",
+  "driver notices are acknowledged only after overlay attachment and readable exposure",
   service.includes("windowManager.addView(chip, params)")
-    && service.includes("if (onShown != null) onShown.run()")
+    && service.includes("acknowledgementDelay")
+    && service.includes("DRIVER_STAGE_MIN_VISIBLE_MS")
     && service.includes("acknowledgeDriverStageShown(key)")
     && service.includes("retryPendingDriverStageIfNeeded(now)"),
 );
@@ -112,7 +115,8 @@ check(
   service.includes("FREIGHT_CONFIRMATION_WATCHDOG_MS")
     && service.includes("armFreightConfirmationWatchdog()")
     && service.includes("restoreWaitingAfterSelectionFailure(")
-    && service.includes("Tempo limite ao confirmar o frete"),
+    && service.includes("hasConfirmedSelectionIdentity()")
+    && service.includes("A leitura demorou além do esperado"),
 );
 check(
   "frame failures keep class plus concrete error message",

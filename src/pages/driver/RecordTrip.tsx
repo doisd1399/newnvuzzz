@@ -35,7 +35,11 @@ import { OperationalSuspensionNotice } from "../../components/OperationalSuspens
 import { useOperationalSuspension } from "../../hooks/useOperationalSuspension";
 import { resolveSimulatorId } from "../../lib/resolveSimulator";
 import { resolveSimulatorDisplayLabel } from "../../lib/simulatorOptions";
-import { isRunningJobStatus, isTripRecordableJobStatus } from "../../lib/jobStatus";
+import {
+  isClosedJobStatus,
+  isRunningJobStatus,
+  isTripRecordableJobStatus,
+} from "../../lib/jobStatus";
 import { parseTripValue } from "../../lib/tripNormalizer";
 import { analyzeGtoTripReceipt } from "../../services/gtoOcrService";
 import { extractScsTripData } from "../../services/scsTripOcrService";
@@ -195,6 +199,19 @@ export default function RecordTrip() {
         (c) => c.id === activeJob.contractId && c.companyId === activeCompanyId,
       )
     : null;
+  const activeJobProgress = Math.max(0, Number(activeJob?.progress || 0));
+  const activeJobTotalDeliveries = Math.max(
+    0,
+    Number(activeContract?.totalDeliveries || 0),
+  );
+  const activeJobClosed = Boolean(
+    activeJob &&
+      isClosedJobStatus(
+        activeJob.status,
+        activeJobProgress,
+        activeJobTotalDeliveries,
+      ),
+  );
 
   const predefinedRoutes =
     !isGtoPrintMode &&
@@ -209,12 +226,13 @@ export default function RecordTrip() {
   const currentPredefinedRoute = (predefinedRoutes && !isContractCompletedState) ? predefinedRoutes[currentRouteIndex] : null;
 
   useEffect(() => {
-    if (activeJob?.status === "awaiting_completion" && !isUploading) {
-      // The operation was marked as awaiting_completion by a recent upload.
-      // Redirect to the operational dashboard seamlessly.
+    if (activeJobClosed && !isUploading) {
+      // `awaiting_completion` is only closed when the server progress is
+      // consistent with the contract total. A stale status with remaining
+      // deliveries must continue through the GTO launch path.
       navigate("/driver/profile", { replace: true });
     }
-  }, [activeJob?.status, isUploading, navigate]);
+  }, [activeJobClosed, isUploading, navigate]);
 
   useEffect(() => {
     if (currentPredefinedRoute) {
@@ -304,7 +322,7 @@ export default function RecordTrip() {
 
 
   // Protect route
-  if ((!activeJob || !activeContract) || ((activeJob.status === "completed" || activeJob.status === "awaiting_completion") && !isUploading && !isNavigating)) {
+  if ((!activeJob || !activeContract) || (activeJobClosed && !isUploading && !isNavigating)) {
     // Only admins or something? Wait, admins can't launch trips for themselves unless they have an active contract here.
     return (
       <div className="w-full text-center py-10 px-4">
@@ -798,7 +816,20 @@ export default function RecordTrip() {
       // 6. Backend validation check
       const jobDocRef = doc(db, "trabalhos", activeJob.id);
       const jobDocSnap = await getDoc(jobDocRef);
-      if (!jobDocSnap.exists() || !isTripRecordableJobStatus(jobDocSnap.data()?.status)) {
+      const freshJobData = jobDocSnap.exists() ? jobDocSnap.data() : null;
+      const freshJobProgress = Math.max(0, Number(freshJobData?.progress || 0));
+      const freshJobTotalDeliveries = Math.max(
+        0,
+        Number(activeContract?.totalDeliveries || 0),
+      );
+      if (
+        !freshJobData ||
+        !isTripRecordableJobStatus(
+          freshJobData.status,
+          freshJobProgress,
+          freshJobTotalDeliveries,
+        )
+      ) {
         setIsUploading(false);
         toast.error("Operação não está ativa no servidor. Inicie a operação e tente novamente.");
         return;

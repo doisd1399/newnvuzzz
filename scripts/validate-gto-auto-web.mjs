@@ -38,8 +38,8 @@ check('FIX18 client timestamp is validated', backend.includes('safeClientTimesta
 check('FIX18 fingerprint is generated', backend.includes('gtoPayloadFingerprint') && backend.includes('createHash("sha256")'));
 check('duplicate session validates fingerprint', backend.includes('existingFingerprint') && backend.includes('payloadFingerprint'));
 check('FIX18 ACK includes success', backend.includes('success: true'));
-check('FIX18 ACK includes contractVersion 18', backend.includes('contractVersion: 18'));check('FIX18 ACK echoes sessionId', /sessionId,\r?\n\s+tripId/.test(backend));
-
+check('FIX18 ACK includes contractVersion 18', backend.includes('contractVersion: 18'));
+check('FIX18 ACK echoes sessionId', backend.includes('sessionId,\n          tripId') || backend.includes('sessionId,\n      tripId'));
 check('callable is GTO-only', backend.includes('O lançamento automático é permitido somente para empresas do simulador GTO.'));
 check('callable validates active job ownership', backend.includes('O trabalho ativo não pertence ao motorista autenticado.'));
 check('callable rejects vehicle drift', backend.includes('O veículo da operação mudou desde o início da viagem GTO.'));
@@ -48,7 +48,7 @@ check('automatic trip reuses historico_viagens', backend.includes('collection("h
 check('automatic trip stores final value as canonical valor', backend.includes('valor: finalValue'));
 check('automatic trip preserves GTO cargo metadata', backend.includes('carga: cargo') && backend.includes('gtoCargo: cargo'));
 check('automatic trip persists FIX18 fingerprint', backend.includes('gtoPayloadFingerprint: payloadFingerprint'));
-check('job progress is recalculated after registration', backend.includes('syncJobProgress(db, jobId, totalDeliveries, serverContractMode)'));
+check('job progress is recalculated after registration', backend.includes('syncJobProgress(db, jobId, totalDeliveries)'));
 check('Firebase builds functions before deploy', firebase.includes('npm --prefix functions run build'));
 
 

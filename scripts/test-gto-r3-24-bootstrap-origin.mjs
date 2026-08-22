@@ -64,7 +64,7 @@ check(
 check(
   "automatic freight uses detected source company as canonical Origem in every contract mode",
   service.includes('selected.origin = selected.originCompany')
-    && service.includes('putString("selectedOriginSource", "GTO_ORIGIN_COMPANY")')
+    && service.includes('putString("selectedOriginSource", selected.originCompanyEvidenceSource')
     && sync.includes('candidate.put("origin", clean(candidate.optString("originCompany", "")))'),
 );
 check(

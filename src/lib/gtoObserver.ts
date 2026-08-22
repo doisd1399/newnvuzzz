@@ -8,6 +8,23 @@ export interface GtoObserverStatus {
   running: boolean;
   enabled: boolean;
   observerHealthy?: boolean;
+  observerLifecycleActive?: boolean;
+  observerLifecycleStatus?:
+    | "OBSERVER_ACTIVE"
+    | "GTO_FOREGROUND_CAPTURE"
+    | "GTO_BACKGROUND_OBSERVER_ACTIVE"
+    | "WAITING_ANDROID_REAUTH"
+    | "SERVICE_STOPPED"
+    | string;
+  observerLifecycleChangedAt?: number;
+  gtoCaptureReady?: boolean;
+  detectorActive?: boolean;
+  detectorHeartbeatAt?: number;
+  detectorProbeHeartbeatAt?: number;
+  captureHealth?: "HEALTHY_REAL_DETECTOR" | "NOT_HEALTHY" | string;
+  captureHealthChangedAt?: number;
+  captureLastFrameAt?: number;
+  captureLastAnalyzedFrameAt?: number;
   serviceStartedAt?: number;
   serviceHeartbeatAt?: number;
   overlayVisible?: boolean;
@@ -77,7 +94,6 @@ export interface GtoObserverStatus {
   screenAnalysisPauseReason?: string;
   tripStateWhenAnalysisPaused?: string;
   activeTripFreightListVisible?: boolean;
-  freightReplacementExplicitlyArmed?: boolean;
   frameProcessingErrorArea?: string;
   frameProcessingError?: string;
   frameProcessingErrorAt?: number;
@@ -88,6 +104,12 @@ export interface GtoObserverStatus {
   driverStageCode?: string;
   driverStageMessage?: string;
   driverStageAt?: number;
+  pausePromptVisible?: boolean;
+  pauseScreenDetected?: boolean;
+  pauseReadStatus?: string;
+  pauseMissingField?: string;
+  pauseScreenDetectedAt?: number;
+  pauseLastReadAt?: number;
   lastCancellationReason?: string;
   lastCancelledAt?: number;
   selectedFreight: string;
@@ -113,6 +135,8 @@ export interface GtoObserverStatus {
   completionDetectedAt?: number;
   gtoTripSessionId?: string;
   gtoTripSyncStatus?: string;
+  tripSubmissionState?: "READY" | "SENDING" | "SYNCED" | "PENDING_RETRY" | string;
+  tripSubmissionStateAt?: number;
   gtoRegisteredTripId?: string;
   gtoTripSyncError?: string;
   gtoTripSyncLastAttemptAt?: number;

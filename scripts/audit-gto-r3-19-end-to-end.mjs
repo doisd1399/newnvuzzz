@@ -48,7 +48,7 @@ check('touch gap does not select a neighboring row', hitRow(800, 270, boxes) ===
 check('overlapping bounding boxes fail closed', hitRow(800, 215, [boxes[0], {left: 700, top: 200, right: 900, bottom: 230}]) === -1);
 check('nearest-row resolver is absent', !service.includes('findFreightAt(') && !service.includes('findFreightFlexible('));
 check('OEM-safe visual selection requires isolated row change plus list closure', service.includes('fastVisualDetector.detectPressedRow(') && service.includes('!fastTouchPulseActive') && service.includes('fastMissingListFrames >= missingRequired') && service.includes('finalizeFastVisualSelection()'));
-check('replacement flow cannot promote row without touch', service.includes('boolean touchEvidence = replacementFreightTouchPending;') && !service.includes('boolean touchEvidence = replacementFreightTouchPending || rowAlreadyPressed;'));
+check('certified returned list may close stale trip but cannot commit a new row without human-backed selection', service.includes('HF35 canonical lifecycle: the previous trip is discarded only after two') && service.includes('isReplacementFreightSemanticFresh') && service.includes('ensureHumanSelectionConfirmedForFreight') && service.includes('GtoSelectionEvidencePolicy.isHumanBackedSource') && service.includes('SELECTION_BLOCKED_NO_HUMAN_ACTION'));
 
 // 2. Correlation invariants.
 check('touch marker is sequenced on capture coordinator', coordinator.includes('markTouch()') && service.includes('selectionCoordinator.markTouch()'));
@@ -84,10 +84,10 @@ check('snapshot lock refuses missing selectedFreight', sync.includes('Snapshot d
 check('missing durable session snapshot fails closed', sync.includes('Snapshot durável da sessão GTO ausente; viagem bloqueada por segurança.'));
 check('session snapshot is write-once', sync.includes('A session snapshot is write-once') && sync.includes('if (existing != null)'));
 
-// 4. Payload integrity: the detected source company is the requested business-semantic Origem.
-check('durable payload forces canonical origin from detected source company', sync.includes('payload.put("origin", clean(payload.optString("originCompany", "")))'));
-check('backend persists canonical origin field', backend.includes('origem: effectiveOrigin') || backend.includes('origem: origin'));
-check('backend uses originCompany as canonical route origin by explicit rule', backend.includes('const effectiveOrigin = originCompany') && backend.includes('if (origin !== originCompany)'));
+// 4. Payload integrity: GTO `origin` is the final location; the source company is metadata.
+check('durable payload preserves canonical final origin location', sync.includes('String canonicalOrigin = clean(payload.optString("origin", ""))') && sync.includes('payload.put("origin", canonicalOrigin)'));
+check('backend persists canonical final origin field', backend.includes('origem: effectiveOrigin') && backend.includes('const effectiveOrigin = origin'));
+check('backend keeps originCompany as optional metadata', backend.includes('gtoOriginCompany: originCompany') && backend.includes('gtoOriginSource: effectiveOriginSource'));
 check('backend accepts destination company separately', backend.includes('destinationCompany') && backend.includes('gtoDestinationCompany'));
 check('backend verifies freight fingerprint against supplied freight fields', backend.includes('expectedFreightFingerprint') && backend.includes('freightFingerprint !== expectedFreightFingerprint'));
 

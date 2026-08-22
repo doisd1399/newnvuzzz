@@ -1,0 +1,2 @@
+8e7323b007e289493289dba15847dded5666b9938fc101cf724cb6b12aad5bf1  /home/ubuntu/upload/NVU-R3.34-PC-HF94-release-signed.apk
+121f2920af08bf848363c90c0b964517548a111477a73ee84ca33b8ce5e8d001  /home/ubuntu/upload/NVU-R3.34-PC-HF94-fonte.zip

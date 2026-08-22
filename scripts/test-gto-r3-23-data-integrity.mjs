@@ -10,7 +10,9 @@ const paths = {
   moneyValue: "android/app/src/main/java/com/nvu/operacional/GtoMoneyValue.java",
   resultConsensus: "android/app/src/main/java/com/nvu/operacional/GtoResultValueConsensus.java",
   detector: "android/app/src/main/java/com/nvu/operacional/GtoFastVisualDetector.java",
+  listEvidence: "android/app/src/main/java/com/nvu/operacional/GtoFreightListEvidencePolicy.java",
   resultGate: "android/app/src/main/java/com/nvu/operacional/GtoResultVisualGate.java",
+  resultEvidence: "android/app/src/main/java/com/nvu/operacional/GtoResultEvidencePolicy.java",
   autoSync: "android/app/src/main/java/com/nvu/operacional/GtoAutoTripSync.java",
   dashboard: "src/pages/driver/Dashboard.tsx",
   observerSetup: "src/components/GtoObserverSetup.tsx",
@@ -34,9 +36,12 @@ function check(name, condition, detail = "") {
 }
 
 check(
-  "canonical freight text remains literal while secondary row OCR cannot overwrite it",
-  service.includes("FreightOption canonical = copyFreightOption(stable)")
+  "canonical freight text remains literal while page history cannot overwrite selected-row evidence",
+  service.includes("FreightOption canonical = exact == null ? new FreightOption() : copyFreightOption(exact)")
     && service.includes("lastFreightSecondaryReadDiff")
+    && service.includes("!GtoFreightFieldEvidencePolicy.text(")
+    && service.includes("!GtoFreightFieldEvidencePolicy.distance(")
+    && service.includes("!GtoFreightFieldEvidencePolicy.money(")
     && selectionPolicy.includes("numericConflict(secondaryKm, canonicalKm)")
     && selectionPolicy.includes("moneyConflict(secondaryValue, canonicalValue)"),
 );
@@ -48,14 +53,15 @@ check(
 check(
   "fast page OCR uses the same stabilization evidence as full OCR",
   service.includes("List<FreightOption> stable = stabilizeFreightOptions(pageKey, parsed)")
-    && service.includes("option.destinationVotes >= 2")
-    && service.includes("option.destinationCompanyVotes >= 2"),
+    && service.includes("base.destinationVotes = destination.count")
+    && service.includes("GtoFreightFieldEvidencePolicy")
+    && service.includes("base.dataConfidence = evidence / 5f"),
 );
 check(
   "legacy company-city continuity is retired and selected source company becomes Origem",
   !service.includes("learnCompanyCities(")
     && !service.includes("resolveKnownOrigin(")
-    && service.includes('putString("selectedOriginSource", "GTO_ORIGIN_COMPANY")')
+    && service.includes('putString("selectedOriginSource", selected.originCompanyEvidenceSource')
     && service.includes('selected.origin = selected.originCompany'),
 );
 check(
@@ -89,8 +95,11 @@ check(
     && service.includes("freightOverlaySafeRight"),
 );
 check(
-  "page and selected-row OCR are serialized for low-memory devices",
-  service.includes("preciseSelectionOcrBusy || ocrBusy.get()")
+  "selected-row OCR is latency-isolated but memory-bounded on a dedicated cropped recognizer",
+  service.includes("selectionTextRecognizer = TextRecognition.getClient")
+    && service.includes("Bitmap rowCrop = Bitmap.createBitmap")
+    && service.includes("preciseSelectionOcrBusy || focusedFreightConflictRetryBusy")
+    && !service.includes("preciseSelectionOcrBusy || focusedFreightConflictRetryBusy || ocrBusy.get()")
     && service.includes("PRECISE_OCR_BUSY_WAIT_TIMEOUT_MS"),
 );
 check(
@@ -124,12 +133,14 @@ try {
     paths.rect,
     paths.image,
     paths.detector,
+      paths.listEvidence,
     paths.selectionTest,
   ]);
   runJava("screen-size-result", "com.nvu.operacional.GtoResultVisualGateScreenMatrixTest", [
     paths.rect,
     paths.image,
     paths.resultGate,
+      paths.resultEvidence,
     paths.resultGateTest,
   ]);
 } finally {

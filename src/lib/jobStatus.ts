@@ -24,10 +24,39 @@ export const isOpenJobStatus = (status: unknown): boolean =>
 export const isRunningJobStatus = (status: unknown): boolean =>
   (RUNNING_JOB_STATUSES as readonly string[]).includes(normalizeJobStatus(status));
 
-export const isTripRecordableJobStatus = (status: unknown): boolean =>
+export const hasRemainingDeliveries = (
+  status: unknown,
+  progress = 0,
+  totalDeliveries = 0,
+): boolean => {
+  const safeProgress = Number.isFinite(Number(progress)) ? Math.max(0, Number(progress)) : 0;
+  const safeTotal = Number.isFinite(Number(totalDeliveries)) ? Math.max(0, Number(totalDeliveries)) : 0;
+  return normalizeJobStatus(status) === "awaiting_completion"
+    && safeTotal > 0
+    && safeProgress < safeTotal;
+};
+
+export const isTripRecordableJobStatus = (
+  status: unknown,
+  progress = 0,
+  totalDeliveries = 0,
+): boolean =>
   (TRIP_RECORDABLE_JOB_STATUSES as readonly string[]).includes(
     normalizeJobStatus(status),
-  );
+  ) || hasRemainingDeliveries(status, progress, totalDeliveries);
 
 export const isTerminalJobStatus = (status: unknown): boolean =>
   (TERMINAL_JOB_STATUSES as readonly string[]).includes(normalizeJobStatus(status));
+
+export const isClosedJobStatus = (
+  status: unknown,
+  progress = 0,
+  totalDeliveries = 0,
+): boolean => {
+  const normalized = normalizeJobStatus(status);
+  if ((TERMINAL_JOB_STATUSES as readonly string[]).includes(normalized)) return true;
+  if (normalized !== "awaiting_completion") return false;
+  const safeProgress = Number.isFinite(Number(progress)) ? Math.max(0, Number(progress)) : 0;
+  const safeTotal = Number.isFinite(Number(totalDeliveries)) ? Math.max(0, Number(totalDeliveries)) : 0;
+  return safeTotal <= 0 || safeProgress >= safeTotal;
+};
