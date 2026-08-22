@@ -1,0 +1,21 @@
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+--- legacy audit ---
+Auditoria de compatibilidade das notificações legadas
+
+[OK] Leitura histórica controlável
+[OK] Realtime legado controlável
+[OK] Fallback de escrita controlável
+[OK] Resolução/migração legada controlável
+[OK] Push legado controlável no servidor
+[OK] Compatibilidade preservada por padrão
+
+Referências diretas controladas:
+- functions/src/index.ts
+- src/context/NotificationsContext.tsx
+- src/services/notificationService.ts
+- src/services/userIdentityService.ts
+
+Resultado: preparado para desativação gradual, com compatibilidade ativa por padrão.

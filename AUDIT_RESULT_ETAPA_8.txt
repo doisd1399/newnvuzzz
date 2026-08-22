@@ -1,0 +1,11 @@
+
+> react-example@2.3.0 audit:firebase-costs
+> node scripts/audit-firebase-costs.mjs
+
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 2
+[AVISO] FROTAS_BOOT_CATALOG — src/context/AppContext.tsx
+  O catálogo completo de frotas ainda é lido uma vez no boot; rankings e recrutamento dependem dele.
+[AVISO] COMMUNICATIONS_ADMIN_LISTENER — src/components/admin/CreateNewsModal.tsx
+  O modal administrativo ainda observa todos os comunicados enquanto está aberto.
+Resultado: aprovado sem regressões críticas detectadas.

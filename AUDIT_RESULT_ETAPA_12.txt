@@ -1,0 +1,10 @@
+NVU — auditoria estática de custos e regressões
+Etapa 12 — checkpoints persistentes dos backfills
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+Validações adicionais:
+- 120 arquivos TypeScript/TSX transpilados para verificação sintática.
+- JavaScript compilado das Functions validado com node --check.
+- Nenhuma alteração em telas, rankings visuais, regras do Firestore ou histórico do cliente.
+- Build completo indisponível porque o registro do ambiente não fornece yocto-queue@0.1.0.

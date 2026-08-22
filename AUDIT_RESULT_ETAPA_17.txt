@@ -1,0 +1,7 @@
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+Validação sintática: 124 arquivos TypeScript/TSX analisados sem erro de parsing/transpilação isolada.
+Build completo indisponível: dependências do projeto não instaladas no ambiente extraído.
+Deploy adicional: não necessário para esta etapa.

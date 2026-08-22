@@ -1,0 +1,21 @@
+NVU GTO — validação da transição automática
+
+Base: nvu-zzz (76) (1)
+
+Escopo alterado:
+- Dashboard motorista: GTO => Iniciar trabalho; demais simuladores => Lançar Viagem.
+- Perfil/painel operacional: mesma regra.
+- /driver/trip: formulário manual bloqueado somente para GTO.
+- Cloud Function registerGtoTrip: registro server-side em historico_viagens.
+- Mesmos campos canônicos de histórico/ranking/operação.
+- Idempotência por driverId + gtoTripSessionId.
+- Progresso do trabalho recalculado após o registro.
+
+Validações executadas:
+- TypeScript do frontend: tsc --noEmit aprovado (dependências temporariamente apontadas para o ambiente de validação; tesseract apenas stub de tipo porque o projeto enviado não contém node_modules).
+- validate-gto-auto-web.mjs: 18/18 aprovado.
+- gtoTrips.ts: parse/transpile TypeScript sem erros de sintaxe.
+- index.ts: parse/transpile TypeScript sem erros de sintaxe.
+
+Observação:
+- O build completo das Cloud Functions depende de npm install dentro de functions no ambiente do usuário/CI. O ZIP original recebido não contém functions/node_modules e este runtime não possui acesso npm externo.

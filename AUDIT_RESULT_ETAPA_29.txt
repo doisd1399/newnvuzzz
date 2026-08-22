@@ -1,0 +1,20 @@
+Etapa 29 — limpeza estrutural e prevenção de regressões
+
+- Arquivos temporários de patch/teste na raiz: removidos.
+- bun.lock vazio e conflitante com package-lock: removido.
+- Módulos frontend sem caminho de execução: 5 removidos.
+- Página admin/Operations antiga substituída por OperationsTab: removida.
+- Serviço frontend de backfill NVU News sem consumidores: removido.
+- functions/lib gerado: removido e adicionado ao .gitignore.
+- package.json/package-lock.json: versão alinhada em 2.3.0.
+- Injeção Vite de GEMINI_API_KEY não utilizada: removida.
+- Auditoria estrutural automática: adicionada como npm run audit:structure.
+- Imports locais quebrados: 0.
+- Arquivos de execução órfãos após limpeza: 0.
+- TypeScript/TSX: 140 arquivos, 0 erros sintáticos.
+- Auditoria Firebase: 0 críticos / 0 avisos.
+- Auditoria notificações legadas: aprovada.
+- npm ci --dry-run --offline: status 0.
+- Dependências diretas sem uso ainda declaradas por preservação do lock: @google/genai, dotenv, react-medium-image-zoom.
+- Regras, índices, Functions fonte, ranking e históricos: inalterados.
+- Deploy de Functions/Rules/índices: não necessário.

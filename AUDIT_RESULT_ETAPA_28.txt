@@ -1,0 +1,17 @@
+Etapa 28 — auditoria residual de listeners, cache e leituras Firebase
+
+- Lote parcial de perfis do ranking promovido a completo: corrigido.
+- Retry dos perfis segmentados do ranking: backoff limitado e somente com consumidor ativo.
+- Retry das empresas do ranking a cada 1,5 s: substituído por backoff exponencial até 30 s.
+- Falha de refresh com cache completo de empresas: mantém cache e volta a tentar de forma limitada.
+- Retries de histórico após saída da tela: bloqueados quando não há consumidores.
+- Reassinatura de histórico após listener encerrado: garantida.
+- Falha síncrona ao anexar histórico da empresa: passa a ter retry limitado.
+- Backfill de histórico já enriquecido em toda nova sessão: evitado por verificação do dataset já confirmado.
+- Novas leituras globais: nenhuma.
+- Cálculo/filtros do Ranking Global: não alterados.
+- TypeScript/TSX: 143 arquivos analisados sintaticamente, 0 erros.
+- Auditoria Firebase: 0 críticos / 0 avisos.
+- Auditoria de notificações legadas: aprovada.
+- JSON: válido.
+- Deploy de Functions/Rules/índices: não necessário.

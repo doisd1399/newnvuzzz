@@ -1,0 +1,10 @@
+> react-example@2.3.0 audit:firebase-costs
+> node scripts/audit-firebase-costs.mjs
+
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+Validação sintática:
+Checked 116 TypeScript/TSX files.
+Syntax/transpile check passed.

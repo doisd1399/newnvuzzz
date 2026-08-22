@@ -1,0 +1,4 @@
+Etapa 25
+- TypeScript/TSX modificado: aprovado na transpilação isolada.
+- Auditoria Firebase: 0 críticos, 0 avisos.
+- Notificações legadas: compatibilidade aprovada.
