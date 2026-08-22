@@ -8,3 +8,26 @@ coverage/
 !.env.example
 
 functions/lib/
+functions/node_modules/
+
+# Android generated state and local machine paths
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
+# Android signing material — never commit
+*.jks
+*.keystore
+android/key.properties
+keystore-base64.txt
+
+# Release outputs and local upload folders
+*.apk
+*.aab
+release-artifacts/
+upload/
+Downloads/
+
+# android/app/google-services.json may contain normal Firebase client configuration;
+# service-account JSON/private keys must never be committed.
