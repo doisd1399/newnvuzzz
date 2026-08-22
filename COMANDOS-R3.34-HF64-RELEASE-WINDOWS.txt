@@ -1,0 +1,51 @@
+NVU R3.34-PC-HF64 COMPLETION DEADLOCK SAFE — RELEASE WINDOWS
+
+IDENTIDADE ESPERADA
+- applicationId: com.nvu.operacional
+- versionName: 1.0.116
+- versionCode: 115
+
+ESCOPO
+- Hotfix Android-only sobre HF62.
+- Web/Netlify e Firebase Functions permanecem inalterados.
+- Corrige perda/oscilação de detecção ao sair e retornar ao GTO quando UsageStats do Android permanece atrasado em outro aplicativo.
+- Mantém todas as regras de segurança do HF62: toque real, linha exata, valor/origem e autoridade semântica continuam fail-closed.
+
+1) PREPARAR E VALIDAR
+Na raiz do projeto execute:
+
+PREPARAR-ANDROID-WINDOWS.bat
+
+Somente prossiga se aparecer:
+[OK] PROJETO PREPARADO COM SUCESSO
+
+Esse processo executa verify:release e a compilação Java real do Android antes da geração da release.
+
+2) TESTE FUNCIONAL RECOMENDADO
+No APK debug/release de teste valide pelo menos:
+- GTO aberto -> lista com 5 fretes detectada imediatamente.
+- Abrir outro app/receber ligação -> voltar ao GTO -> a lista deve ser reconhecida novamente sem reiniciar o modo GTO.
+- Repetir sair/voltar pelo menos 5 vezes.
+- Lista -> Aceitar -> viagem -> Concluído -> envio automático -> nova lista -> nova viagem.
+- Confirmar que um app terceiro em primeiro plano não é tratado como GTO.
+
+3) RELEASE PELO GITHUB ACTIONS
+O workflow .github/workflows/build-android-release.yml está alinhado para:
+R3.34-PC-HF64 / 1.0.116 / versionCode 116
+
+No GitHub:
+Actions -> Build NVU R3.34 PC-HF64 Release -> Run workflow
+
+O workflow executa verify:release, build/sync do Capacitor, Gradle release, zipalign, assinatura e validação de applicationId/versionName/versionCode.
+
+4) ARTEFATO ESPERADO
+NVU-R3.34-PC-HF64-release
+contendo:
+NVU-R3.34-PC-HF64-release.apk
+
+5) ASSINATURA
+Use os mesmos secrets/keystore oficiais das releases NVU anteriores.
+Não crie uma nova chave.
+
+6) OBSERVAÇÃO DE PLATAFORMA
+Se o próprio Android revogar de fato o token MediaProjection ou matar o processo, nenhuma aplicação pode ignorar a autorização de captura do sistema. O HF64 preserva o estado e arma a reautorização automática; quando o Android exigir consentimento, o motorista ainda precisa confirmar a tela oficial do sistema.
