@@ -1,0 +1,30 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+const root = path.resolve(new URL("..", import.meta.url).pathname);
+const service = fs.readFileSync(path.join(root, "android/app/src/main/java/com/nvu/operacional/GtoObserverService.java"), "utf8");
+const health = fs.readFileSync(path.join(root, "android/app/src/main/java/com/nvu/operacional/GtoCaptureHealthPolicy.java"), "utf8");
+const operational = fs.readFileSync(path.join(root, "android/app/src/main/java/com/nvu/operacional/GtoObserverOperationalPolicy.java"), "utf8");
+const touch = fs.readFileSync(path.join(root, "android/app/src/main/java/com/nvu/operacional/GtoResultActionFlowPolicy.java"), "utf8");
+const build = fs.readFileSync(path.join(root, "android/app/build.gradle"), "utf8");
+
+assert.ok(health.includes("static boolean isTransportHealthy"), "saúde de transporte separada deve existir");
+assert.ok(service.includes("GtoCaptureHealthPolicy.isTransportHealthy"), "serviço deve usar saúde de transporte");
+const pipeline = service.slice(service.indexOf("private boolean isCapturePipelineHealthy"), service.indexOf("private void markProjectionFrameAnalyzed"));
+assert.ok(!pipeline.includes("GtoCaptureHealthPolicy.isHealthy"), "pipeline não pode usar política acoplada a foreground");
+const session = service.slice(service.indexOf("private boolean isFrameAnalysisSessionActive"), service.indexOf("private boolean projectionGrantValidated"));
+assert.ok(!session.includes("captureWidth > captureHeight"), "sessão não pode depender de orientação");
+const readiness = service.slice(service.indexOf("private boolean isCaptureReadyForAnalysis"), service.indexOf("private boolean mayProbePausedResultReturn"));
+assert.ok(!readiness.includes("captureGeometryMatchesCurrentDisplay"), "análise não pode depender de DisplayMetrics stale");
+assert.ok(service.includes("private boolean reconcileLiveCaptureFromFrame"), "frame atual deve reconciliar flag de transporte");
+assert.ok(service.includes("private void reconcileCaptureGeometryFromFrame"), "geometria deve seguir o ImageReader atual");
+assert.ok(service.includes("CURRENT_IMAGE_READER_FRAME"), "origem da geometria deve ser observável");
+assert.ok(touch.includes("keepPassiveTransportObserver"), "listener passivo deve sobreviver à oscilação de foreground");
+assert.ok(operational.includes("transportReady"), "política operacional deve possuir prontidão de transporte");
+assert.ok(operational.includes("shouldRepairBoundTransport"), "reparo não pode exigir foreground");
+assert.ok(service.includes("private boolean isCurrentGtoActionContext"), "ações devem usar contexto visual atual");
+assert.ok(service.includes("hasFreshVisualGtoActionEvidence"), "ações devem exigir evidência visual fresca");
+assert.match(build, /versionCode 152/);
+assert.ok(build.includes('versionName "1.0.152"'));
+console.log("PASS HF90: transporte, contexto, geometria e ações separados contra retorno stale e resize atrasado.");
