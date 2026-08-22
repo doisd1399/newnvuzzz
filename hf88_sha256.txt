@@ -1,0 +1,1 @@
+6d1aa92ace7a1b38e54b998200e59ce67f1fc8faac5b1f209834505d7c67e0f9  /home/ubuntu/upload/NVU-R3.34-PC-HF88-release-signed.apk
