@@ -24,11 +24,7 @@ final class GtoFastVisualDetector {
         final List<Rect> buttons;
         final List<int[]> buttonSignatures;
         final float[] orangeRatios;
-        final float[] cardDarkRatios;
-        final float[] cardLightTextRatios;
-        final float[] cardGreenInfoRatios;
         final int[] panelSignature;
-        final int screenWidth;
         final int screenHeight;
 
         Frame(long capturedAtMs,
@@ -37,42 +33,14 @@ final class GtoFastVisualDetector {
               List<int[]> buttonSignatures,
               float[] orangeRatios,
               int[] panelSignature,
-              int screenWidth,
-              int screenHeight) {
-            this(capturedAtMs, imageTimestampNs, buttons, buttonSignatures, orangeRatios,
-                trustedSyntheticEvidence(buttons), trustedSyntheticEvidence(buttons),
-                trustedSyntheticEvidence(buttons), panelSignature, screenWidth, screenHeight);
-        }
-
-        Frame(long capturedAtMs,
-              long imageTimestampNs,
-              List<Rect> buttons,
-              List<int[]> buttonSignatures,
-              float[] orangeRatios,
-              float[] cardDarkRatios,
-              float[] cardLightTextRatios,
-              float[] cardGreenInfoRatios,
-              int[] panelSignature,
-              int screenWidth,
               int screenHeight) {
             this.capturedAtMs = capturedAtMs;
             this.imageTimestampNs = imageTimestampNs;
             this.buttons = buttons;
             this.buttonSignatures = buttonSignatures;
             this.orangeRatios = orangeRatios;
-            this.cardDarkRatios = cardDarkRatios;
-            this.cardLightTextRatios = cardLightTextRatios;
-            this.cardGreenInfoRatios = cardGreenInfoRatios;
             this.panelSignature = panelSignature;
-            this.screenWidth = screenWidth;
             this.screenHeight = screenHeight;
-        }
-
-        private static float[] trustedSyntheticEvidence(List<Rect> buttons) {
-            int count = buttons == null ? 0 : buttons.size();
-            float[] evidence = new float[count];
-            java.util.Arrays.fill(evidence, 1f);
-            return evidence;
         }
 
         boolean hasFreightList() {
@@ -80,90 +48,20 @@ final class GtoFastVisualDetector {
             // frame-level validation on the exact same scale envelope so a valid list
             // is not rejected only because a device renders the GTO UI slightly smaller
             // or larger (common across 16:9, 18:9, 20:9 and older Android devices).
-            if (buttons == null || buttons.isEmpty() || buttons.size() > 6
-                || screenWidth <= 0 || screenHeight <= 0) return false;
+            if (buttons == null || buttons.isEmpty() || buttons.size() > 6 || screenHeight <= 0) return false;
             // GTO 0.1.x changed the scale of the freight cards on some devices. The
             // previous 3.8% lower bound made a perfectly valid 3-4% Aceitar button
             // disappear before the selection state machine ever saw the page.
             int minHeight = Math.max(10, Math.round(screenHeight * 0.014f));
             int maxHeight = Math.max(minHeight + 1, Math.round(screenHeight * 0.160f));
-            int minWidth = Math.max(10, Math.round(screenWidth * 0.025f));
-            int maxWidth = Math.max(minWidth + 1, Math.round(screenWidth * 0.130f));
-            int smallestHeight = Integer.MAX_VALUE;
-            int largestHeight = 0;
-            int smallestWidth = Integer.MAX_VALUE;
-            int largestWidth = 0;
-            int minCenterX = Integer.MAX_VALUE;
-            int maxCenterX = 0;
-            for (int i = 0; i < buttons.size(); i++) {
-                Rect rect = buttons.get(i);
+            for (Rect rect : buttons) {
                 if (rect.height() < minHeight || rect.height() > maxHeight) return false;
-                if (rect.width() < minWidth || rect.width() > maxWidth) return false;
-                // A real Aceitar rectangle has a substantial orange fill. Tiny orange
-                // scenery/HUD fragments can survive the band scan but must never promote
-                // WAITING_FREIGHT to FREIGHT_LIST.
-                if (orangeRatios == null || i >= orangeRatios.length) return false;
-                smallestHeight = Math.min(smallestHeight, rect.height());
-                largestHeight = Math.max(largestHeight, rect.height());
-                smallestWidth = Math.min(smallestWidth, rect.width());
-                largestWidth = Math.max(largestWidth, rect.width());
-                minCenterX = Math.min(minCenterX, ((rect.left + rect.right) / 2));
-                maxCenterX = Math.max(maxCenterX, ((rect.left + rect.right) / 2));
             }
-
-            // The freight cards always start in a bounded top band of the right jobs
-            // panel. A lower bound is as important as the upper one: recording/HUD
-            // controls can create a wide orange fragment against the extreme top edge
-            // and previously looked like a one-row freight list.
-            int firstCenterY = buttons.get(0).centerY();
-            if (firstCenterY < Math.round(screenHeight * 0.055f)
-                || firstCenterY > Math.round(screenHeight * 0.20f)) return false;
-
-            // R3.32: an orange rectangle alone is never a freight list. At least one
-            // visible row must have the complete GTO card signature beside Aceitar:
-            // dark neutral card body + light freight text + green distance/value text.
-            // For multi-row pages we require this evidence on most rows so scenery/HUD
-            // fragments cannot promote WAITING_FREIGHT even when they accidentally form
-            // a plausible vertical orange stack.
-            int cardEvidence = 0;
-            int orangeEvidence = 0;
-            int acceptAndInfoAnchorRows = 0;
-            float orangeTotal = 0f;
-            for (int i = 0; i < buttons.size(); i++) {
-                float orange = orangeRatios != null && i < orangeRatios.length ? orangeRatios[i] : 0f;
-                float dark = cardDarkRatios != null && i < cardDarkRatios.length ? cardDarkRatios[i] : 0f;
-                float light = cardLightTextRatios != null && i < cardLightTextRatios.length ? cardLightTextRatios[i] : 0f;
-                float green = cardGreenInfoRatios != null && i < cardGreenInfoRatios.length ? cardGreenInfoRatios[i] : 0f;
-                orangeTotal += orange;
-                if (orange >= 0.14f) orangeEvidence++;
-                if (dark >= 0.68f && light >= 0.014f && green >= 0.0050f) cardEvidence++;
-                // HF35: HUB/HUD controls can share orange and green pixels with the jobs
-                // screen. A strong row therefore needs the actual freight-card texture:
-                // dominant neutral-dark body plus non-trivial light text and green info.
-                if (orange >= 0.18f && dark >= 0.68f && light >= 0.014f && green >= 0.0050f) {
-                    acceptAndInfoAnchorRows++;
-                }
+            if (buttons.size() == 1) {
+                return buttons.get(0).centerY() <= Math.round(screenHeight * 0.32f);
             }
-            float averageOrange = buttons.isEmpty() ? 0f : orangeTotal / buttons.size();
-            // Keep the historical aggregate counters for diagnostics/regressions, but
-            // screen presence is now decided by a single strong row + bounded geometry.
-            if (!GtoFreightListEvidencePolicy.isPlausibleSimpleList(
-                buttons.size(), true, acceptAndInfoAnchorRows
-            )) return false;
-            if (!GtoFreightListEvidencePolicy.isPlausibleList(
-                buttons.size(), true, orangeEvidence, cardEvidence, averageOrange
-            )) return false;
-            if (buttons.size() == 1) return true;
-
-            // All visible Aceitar controls are instances of the same card template.
-            // Require aligned width/column and the actual jobs-list cadence. The older
-            // 6%-32% gap envelope was wide enough for unrelated orange scenery to look
-            // like a two-row list.
-            if (smallestHeight <= 0 || largestHeight > Math.round(smallestHeight * 1.75f)) return false;
-            if (smallestWidth <= 0 || largestWidth > Math.round(smallestWidth * 1.70f)) return false;
-            if (maxCenterX - minCenterX > Math.round(screenWidth * 0.070f)) return false;
-            int minGap = Math.round(screenHeight * 0.100f);
-            int maxGap = Math.round(screenHeight * 0.235f);
+            int minGap = Math.round(screenHeight * 0.060f);
+            int maxGap = Math.round(screenHeight * 0.320f);
             for (int i = 1; i < buttons.size(); i++) {
                 int gap = buttons.get(i).centerY() - buttons.get(i - 1).centerY();
                 if (gap < minGap || gap > maxGap) return false;
@@ -197,21 +95,13 @@ final class GtoFastVisualDetector {
         List<Rect> buttons = detectButtons(buffer, pixelStride, rowStride, width, height);
         List<int[]> signatures = new ArrayList<>(buttons.size());
         float[] orange = new float[buttons.size()];
-        float[] cardDark = new float[buttons.size()];
-        float[] cardLight = new float[buttons.size()];
-        float[] cardGreen = new float[buttons.size()];
         for (int i = 0; i < buttons.size(); i++) {
             Rect rect = buttons.get(i);
             signatures.add(signature(buffer, pixelStride, rowStride, width, height, rect));
             orange[i] = orangeRatio(buffer, pixelStride, rowStride, width, height, rect);
-            float[] card = cardContextEvidence(buffer, pixelStride, rowStride, width, height, rect);
-            cardDark[i] = card[0];
-            cardLight[i] = card[1];
-            cardGreen[i] = card[2];
         }
         int[] panel = panelSignature(buffer, pixelStride, rowStride, width, height, buttons);
-        return new Frame(nowMs, image.getTimestamp(), buttons, signatures, orange,
-            cardDark, cardLight, cardGreen, panel, width, height);
+        return new Frame(nowMs, image.getTimestamp(), buttons, signatures, orange, panel, height);
     }
 
     PressCandidate detectPressedRow(Frame previous, Frame current, int screenHeight) {
@@ -265,6 +155,43 @@ final class GtoFastVisualDetector {
     }
 
 
+
+    /**
+     * Relaxed press detector used only inside a short ACTION_OUTSIDE pulse window.
+     * The timestamp pulse proves that the user just touched the GTO while the freight
+     * list was visible, so we can lower visual thresholds and let the subsequent list
+     * disappearance be the second confirmation.
+     */
+    /**
+     * Last-resort detector for the edge case where the user taps before a clean
+     * pre-touch baseline was processed. It only accepts one button whose orange fill
+     * is a clear outlier versus the other buttons in the same frame.
+     */
+    PressCandidate detectPressedRowFromSingleFrame(Frame current) {
+        if (current == null || !current.hasFreightList() || current.orangeRatios == null
+            || current.orangeRatios.length < 2) return null;
+        List<Float> sorted = new ArrayList<>();
+        for (float value : current.orangeRatios) sorted.add(value);
+        Collections.sort(sorted);
+        float median = sorted.get(sorted.size() / 2);
+        int bestRow = -1;
+        float bestDrop = 0f;
+        float secondDrop = 0f;
+        for (int i = 0; i < current.orangeRatios.length; i++) {
+            float drop = Math.max(0f, median - current.orangeRatios[i]);
+            if (drop > bestDrop) {
+                secondDrop = bestDrop;
+                bestDrop = drop;
+                bestRow = i;
+            } else if (drop > secondDrop) {
+                secondDrop = drop;
+            }
+        }
+        float margin = bestDrop - secondDrop;
+        if (bestRow < 0 || median < 0.18f) return null;
+        if (bestDrop < 0.075f || margin < 0.035f) return null;
+        return new PressCandidate(bestRow, bestDrop, margin);
+    }
 
     PressCandidate detectPressedRowAfterTouch(Frame baseline, Frame current, int screenHeight) {
         if (baseline == null || current == null || !baseline.hasFreightList()) return null;
@@ -411,7 +338,7 @@ final class GtoFastVisualDetector {
 
     private Frame empty(long nowMs, Image image) {
         return new Frame(nowMs, image == null ? 0L : image.getTimestamp(),
-            Collections.emptyList(), Collections.emptyList(), new float[0], new int[0], 0, 0);
+            Collections.emptyList(), Collections.emptyList(), new float[0], new int[0], 0);
     }
 
     private List<Rect> detectButtons(ByteBuffer buffer, int pixelStride, int rowStride, int width, int height) {
@@ -434,36 +361,20 @@ final class GtoFastVisualDetector {
 
         List<Rect> best = Collections.emptyList();
         float bestScore = -1f;
-        List<Rect> bestTransition = Collections.emptyList();
-        float bestTransitionScore = -1f;
         for (float[] band : bands) {
             int left = clamp(Math.round(width * band[0]), 0, width - 2);
             int right = clamp(Math.round(width * band[1]), left + 1, width);
             List<Rect> candidate = detectButtonsInBand(buffer, pixelStride, rowStride, width, height, left, right);
+            if (!isPlausibleButtonStack(candidate, height)) continue;
             float score = buttonBandScore(buffer, pixelStride, rowStride, width, height, candidate);
             // Prefer more complete stacks first, then the band with the strongest orange
             // coverage. A small right-side bias preserves the reference layout when tied.
             score += candidate.size() * 2.0f + band[0] * 0.05f;
-            if (isPlausibleButtonStack(candidate, height)) {
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = candidate;
-                }
-                continue;
-            }
-
-            // A real press can make one middle Aceitar disappear from the orange mask.
-            // Such an N-1 stack intentionally fails the strict freight-list geometry due
-            // to its single doubled vertical gap. Preserve it as transition evidence so
-            // detectTemporarilyMissingPressedRow() can map the missing slot instead of
-            // collapsing the whole frame to zero buttons. It is NOT a freight list: the
-            // strict Frame.hasFreightList() validation still decides that separately.
-            if (isPressTransitionButtonSubset(candidate, height) && score > bestTransitionScore) {
-                bestTransitionScore = score;
-                bestTransition = candidate;
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
             }
         }
-        if (best.isEmpty() && !bestTransition.isEmpty()) best = bestTransition;
         if (!best.isEmpty()) {
             List<Rect> refined = new ArrayList<>();
             for (Rect rect : best) {
@@ -591,31 +502,6 @@ final class GtoFastVisualDetector {
         }
     }
 
-    private boolean isPressTransitionButtonSubset(List<Rect> buttons, int screenHeight) {
-        if (buttons == null || buttons.size() < 2 || buttons.size() > 5 || screenHeight <= 0) return false;
-        int minHeight = Math.max(10, Math.round(screenHeight * 0.014f));
-        int maxHeight = Math.max(minHeight + 1, Math.round(screenHeight * 0.160f));
-        int smallestHeight = Integer.MAX_VALUE;
-        int largestHeight = 0;
-        for (Rect rect : buttons) {
-            if (rect.height() < minHeight || rect.height() > maxHeight) return false;
-            smallestHeight = Math.min(smallestHeight, rect.height());
-            largestHeight = Math.max(largestHeight, rect.height());
-        }
-        if (smallestHeight <= 0 || largestHeight > Math.round(smallestHeight * 1.75f)) return false;
-
-        int minGap = Math.round(screenHeight * 0.060f);
-        int maxTransitionGap = Math.round(screenHeight * 0.430f);
-        int largeGapCount = 0;
-        int normalGapUpper = Math.round(screenHeight * 0.225f);
-        for (int i = 1; i < buttons.size(); i++) {
-            int gap = buttons.get(i).centerY() - buttons.get(i - 1).centerY();
-            if (gap < minGap || gap > maxTransitionGap) return false;
-            if (gap > normalGapUpper) largeGapCount++;
-        }
-        return largeGapCount <= 1;
-    }
-
     private boolean isPlausibleButtonStack(List<Rect> buttons, int screenHeight) {
         if (buttons == null || buttons.isEmpty() || buttons.size() > 6 || screenHeight <= 0) return false;
         int minHeight = Math.max(10, Math.round(screenHeight * 0.014f));
@@ -624,13 +510,6 @@ final class GtoFastVisualDetector {
             if (rect.height() < minHeight || rect.height() > maxHeight) return false;
         }
         if (buttons.size() == 1) return buttons.get(0).centerY() <= Math.round(screenHeight * 0.32f);
-        int smallestHeight = Integer.MAX_VALUE;
-        int largestHeight = 0;
-        for (Rect rect : buttons) {
-            smallestHeight = Math.min(smallestHeight, rect.height());
-            largestHeight = Math.max(largestHeight, rect.height());
-        }
-        if (smallestHeight <= 0 || largestHeight > Math.round(smallestHeight * 1.75f)) return false;
         int minGap = Math.round(screenHeight * 0.060f);
         int maxGap = Math.round(screenHeight * 0.320f);
         for (int i = 1; i < buttons.size(); i++) {
@@ -638,53 +517,6 @@ final class GtoFastVisualDetector {
             if (gap < minGap || gap > maxGap) return false;
         }
         return true;
-    }
-
-
-    private float[] cardContextEvidence(
-        ByteBuffer buffer,
-        int pixelStride,
-        int rowStride,
-        int width,
-        int height,
-        Rect button
-    ) {
-        if (button == null || width <= 0 || height <= 0) return new float[] {0f, 0f, 0f};
-        int centerY = button.centerY();
-        int left = clamp(button.left - Math.round(width * 0.230f), 0, width - 2);
-        int right = clamp(button.left - Math.round(width * 0.008f), left + 1, width);
-        int top = clamp(centerY - Math.round(height * 0.075f), 0, height - 1);
-        int bottom = clamp(centerY + Math.round(height * 0.075f), top + 1, height);
-        int stepX = Math.max(3, (right - left) / 64);
-        int stepY = Math.max(3, (bottom - top) / 26);
-        int dark = 0;
-        int light = 0;
-        int green = 0;
-        int total = 0;
-        for (int y = top; y < bottom; y += stepY) {
-            for (int x = left; x < right; x += stepX) {
-                int rgb = readRgb(buffer, pixelStride, rowStride, x, y);
-                int r = (rgb >> 16) & 0xff;
-                int g = (rgb >> 8) & 0xff;
-                int b = rgb & 0xff;
-                int max = Math.max(r, Math.max(g, b));
-                int min = Math.min(r, Math.min(g, b));
-                int chroma = max - min;
-                total++;
-                if (max >= 28 && max <= 118 && chroma <= 30) dark++;
-                if (min >= 150 && chroma <= 50) light++;
-                if (g >= 90
-                    && g >= r * 1.03f
-                    && g >= b * 1.10f
-                    && g - Math.min(r, b) >= 15) green++;
-            }
-        }
-        if (total <= 0) return new float[] {0f, 0f, 0f};
-        return new float[] {
-            dark / (float) total,
-            light / (float) total,
-            green / (float) total
-        };
     }
 
     private float buttonBandScore(ByteBuffer buffer, int pixelStride, int rowStride, int width, int height, List<Rect> buttons) {

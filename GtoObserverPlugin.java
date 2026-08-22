@@ -1,8 +1,11 @@
 package com.nvu.operacional;
 
+import android.app.Activity;
 import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.Intent;
+import android.media.projection.MediaProjectionConfig;
+import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -11,12 +14,14 @@ import android.provider.Settings;
 
 import java.io.File;
 
+import androidx.activity.result.ActivityResult;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "GtoObserver")
@@ -127,10 +132,11 @@ public class GtoObserverPlugin extends Plugin {
 
     @PluginMethod
     public void requestScreenCapture(PluginCall call) {
-        // HF6 invariant: the Web/NVU activity is never allowed to own or display the
-        // MediaProjection consent screen. Legacy callers can only arm the native request;
-        // GtoObserverService will display it later, and only after the real GTO package is
-        // confirmed foreground in stable landscape.
+        Context context = getContext();
+        android.content.SharedPreferences prefs = context.getSharedPreferences(
+            GtoObserverService.PREFS_NAME,
+            Context.MODE_PRIVATE
+        );
         JSObject current = buildStatus();
         if (Boolean.TRUE.equals(current.getBool("projectionActive"))) {
             call.resolve(current);
@@ -143,11 +149,114 @@ public class GtoObserverPlugin extends Plugin {
             return;
         }
 
-        GtoObserverService.requestProjectionPermissionIfRunning();
-        current = buildStatus();
-        current.put("projectionStatus", "WAITING_GTO_FOR_PERMISSION");
-        current.put("projectionPermissionDeferredToGto", true);
-        call.resolve(current);
+        try {
+            MediaProjectionManager manager = (MediaProjectionManager) context.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (manager == null) {
+                String detail = "MediaProjectionManager indisponível";
+                GtoObserverService.reportProjectionPermissionTerminalFailure(
+                    context, "MANAGER_UNAVAILABLE_APP", detail
+                );
+                call.resolve(buildStatus());
+                return;
+            }
+
+            Intent captureIntent;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Initial work launch asks for whole-display capture while NVU itself is
+                // visible. The GTO is opened only after this permission has been granted.
+                captureIntent = manager.createScreenCaptureIntent(
+                    MediaProjectionConfig.createConfigForDefaultDisplay()
+                );
+            } else {
+                captureIntent = manager.createScreenCaptureIntent();
+            }
+
+            prefs.edit()
+                .putBoolean("projectionPermissionInFlight", true)
+                .putString("projectionStatus", "REQUESTING_PERMISSION_APP")
+                .remove("projectionError")
+                .putString("lastEvent", "Aguardando autorização de leitura antes de abrir o GTO")
+                .apply();
+            GtoObserverService.markProjectionPermissionInFlightIfRunning();
+            startActivityForResult(call, captureIntent, "screenCaptureResult");
+        } catch (Exception ex) {
+            String detail = GtoObserverService.describeError(ex);
+            GtoObserverService.reportProjectionPermissionTerminalFailure(
+                context, "CONSENT_LAUNCH_FAILED_APP", detail
+            );
+            call.resolve(buildStatus());
+        }
+    }
+
+    @ActivityCallback
+    private void screenCaptureResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+
+        Context context = getContext();
+        android.content.SharedPreferences prefs = context.getSharedPreferences(
+            GtoObserverService.PREFS_NAME,
+            Context.MODE_PRIVATE
+        );
+        Intent data = result.getData();
+        boolean granted = result.getResultCode() == Activity.RESULT_OK && data != null;
+
+        prefs.edit()
+            .putBoolean("projectionPermissionInFlight", false)
+            .putString("projectionStatus", granted ? "CONSENT_GRANTED_APP" : "DENIED")
+            .putString("lastEvent", granted
+                ? "Autorização de leitura concedida antes de abrir o GTO"
+                : "Autorização de leitura recusada")
+            .apply();
+
+        Intent serviceIntent = new Intent(context, GtoObserverService.class);
+        if (granted) {
+            serviceIntent.setAction(GtoObserverService.ACTION_START_PROJECTION);
+            serviceIntent.putExtra(GtoObserverService.EXTRA_RESULT_CODE, result.getResultCode());
+            serviceIntent.putExtra(GtoObserverService.EXTRA_RESULT_DATA, data);
+        } else {
+            serviceIntent.setAction(GtoObserverService.ACTION_PROJECTION_DENIED);
+        }
+
+        try {
+            if (GtoObserverService.isRunning()) {
+                context.startService(serviceIntent);
+            } else {
+                ContextCompat.startForegroundService(context, serviceIntent);
+            }
+        } catch (Exception ex) {
+            GtoObserverService.reportProjectionPermissionTerminalFailure(
+                context, "SERVICE_DISPATCH_FAILED_APP", GtoObserverService.describeError(ex)
+            );
+            call.resolve(buildStatus());
+            return;
+        }
+
+        if (!granted) {
+            new Handler(Looper.getMainLooper()).postDelayed(() -> call.resolve(buildStatus()), 120L);
+            return;
+        }
+        resolveProjectionStart(call, 0);
+    }
+
+    private void resolveProjectionStart(PluginCall call, int attempt) {
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            JSObject status = buildStatus();
+            boolean active = Boolean.TRUE.equals(status.getBool("projectionActive"));
+            String projectionStatus = status.optString("projectionStatus", "");
+            boolean terminal = "START_FAILED".equals(projectionStatus)
+                || "DENIED".equals(projectionStatus)
+                || projectionStatus.startsWith("PERMISSION_")
+                || projectionStatus.startsWith("SERVICE_DISPATCH_FAILED");
+            if (active || terminal || attempt >= 55) {
+                if (!active && attempt >= 55 && status.optString("projectionError", "").isEmpty()) {
+                    status.put("projectionStatus", "START_TIMEOUT");
+                    status.put("projectionError", "O Android não confirmou a leitura da tela a tempo.");
+                }
+                call.resolve(status);
+                return;
+            }
+            resolveProjectionStart(call, attempt + 1);
+        }, attempt == 0 ? 120L : 140L);
     }
 
     @PluginMethod
@@ -159,8 +268,6 @@ public class GtoObserverPlugin extends Plugin {
         );
         String previousJobId = prefs.getString("jobId", "");
         String nextJobId = safe(call.getString("jobId"));
-        String expectedGtoDestination = safe(call.getString("expectedGtoDestination"));
-        String trustedGtoCitiesJson = safe(call.getString("trustedGtoCitiesJson"));
         Integer jobProgress = call.getInt("jobProgress");
         Integer jobTotalDeliveries = call.getInt("jobTotalDeliveries");
 
@@ -175,23 +282,10 @@ public class GtoObserverPlugin extends Plugin {
             .putInt("jobTotalDeliveries", jobTotalDeliveries == null ? 0 : Math.max(0, jobTotalDeliveries))
             .putString("contractId", safe(call.getString("contractId")))
             .putString("contractName", safe(call.getString("contractName")))
-            .putString("contractMode", GtoContractModePolicy.normalize(call.getString("contractMode")))
             .putString("vehicleId", safe(call.getString("vehicleId")))
             .putString("vehicleName", safe(call.getString("vehicleName")))
             .putString("trailerId", safe(call.getString("trailerId")))
-            .putString("trailerName", safe(call.getString("trailerName")))
-            .putString("trustedGtoCitiesJson", trustedGtoCitiesJson.isEmpty() ? "[]" : trustedGtoCitiesJson);
-
-        if (!expectedGtoDestination.isEmpty()) {
-            editor.putString("expectedGtoDestination", expectedGtoDestination);
-        } else {
-            editor.remove("expectedGtoDestination");
-        }
-
-        // R3.34 HF2: GTO does not expose an origin-city field in these cards. The source
-        // company itself is now the canonical trip Origem. Remove all legacy continuity
-        // keys so a previous destination can never leak into a new automatic trip.
-        editor.remove("currentGtoCity").remove("currentGtoCitySource");
+            .putString("trailerName", safe(call.getString("trailerName")));
 
         // A backend completion lock belongs to one job only. Switching operation must
         // never leak the previous job's closed state into the new one.
@@ -202,16 +296,6 @@ public class GtoObserverPlugin extends Plugin {
                 .remove("gtoBackendJobId")
                 .remove("gtoBackendJobClosed")
                 .remove("gtoBackendJobStatusAt");
-            String activeSessionJobId = prefs.getString("gtoTripSessionJobId", "");
-            if (!nextJobId.isEmpty()
-                && !activeSessionJobId.isEmpty()
-                && !nextJobId.equals(activeSessionJobId)) {
-                editor
-                    .putBoolean("gtoOperationContextChanged", true)
-                    .putString("gtoOperationContextChangedFrom", activeSessionJobId)
-                    .putString("gtoOperationContextChangedTo", nextJobId)
-                    .putLong("gtoOperationContextChangedAt", System.currentTimeMillis());
-            }
         }
         editor.apply();
         call.resolve(buildStatus());
@@ -249,7 +333,7 @@ public class GtoObserverPlugin extends Plugin {
         if (GtoObserverService.STATE_RESULT_CONFIRMED.equals(state)
             && "CONFIRMED_NORMAL".equals(completion)
             && !GtoAutoTripSync.STATUS_SYNCED.equals(syncStatus)) {
-            GtoTripSubmissionCoordinator.submitCompletedTrip(context, prefs, null);
+            GtoAutoTripSync.enqueueConfirmedTrip(context, prefs, null);
         } else {
             GtoAutoTripSync.discardSessionSnapshot(context, sessionId);
         }
@@ -274,14 +358,8 @@ public class GtoObserverPlugin extends Plugin {
             .remove("vehicleName")
             .remove("trailerId")
             .remove("trailerName")
-            .remove("currentGtoCity")
-            .remove("currentGtoCitySource")
-            .remove("expectedGtoDestination")
-            .remove("trustedGtoCitiesJson")
             .remove("selectedFreight")
             .remove("selectedFreightSummary")
-            .remove("selectedFreightRow")
-            .remove("selectedOrigin")
             .remove("selectedDestination")
             .remove("selectedOriginCompany")
             .remove("selectedDestinationCompany")
@@ -289,11 +367,6 @@ public class GtoObserverPlugin extends Plugin {
             .remove("selectedKm")
             .remove("selectedValue")
             .remove("resultValue")
-            .remove("resultValueEvidence")
-            .remove("resultValueConsensusStable")
-            .remove("resultValueEvidenceConflict")
-            .remove("resultValueEvidenceCount")
-            .remove("resultValueConflictNoticeShown")
             .remove("finalGain")
             .remove("completionStatus")
             .remove("completionDetectedAt")
@@ -325,11 +398,6 @@ public class GtoObserverPlugin extends Plugin {
             .remove("resultSnapshotAt")
             .remove("resultSnapshotError")
             .remove("resultSnapshotErrorAt")
-            .remove("selectionConfirmationStatus")
-            .remove("selectionFailureReason")
-            .remove("selectionFailureAt")
-            .remove("freightPanelLeftScreen")
-            .remove("freightPanelScreenAt")
             .remove("projectionPermissionInFlight")
             .remove("logoutCleanupError")
             .commit();
@@ -370,25 +438,9 @@ public class GtoObserverPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void prepareFloatingButton(PluginCall call) {
-        boolean prepared = GtoObserverService.prepareFloatingButtonForNextGtoLaunch();
-        JSObject status = buildStatus();
-        status.put("floatingButtonPrepared", prepared);
-        if (!prepared && status.optString("overlayError", "").isEmpty()) {
-            status.put("overlayError", "O serviço GTO não conseguiu rearmar o botão flutuante.");
-        }
-        call.resolve(status);
-    }
-
-    @PluginMethod
     public void openGto(PluginCall call) {
-        Context context = getContext();
-        android.content.SharedPreferences prefs = context.getSharedPreferences(
-            GtoObserverService.PREFS_NAME,
-            Context.MODE_PRIVATE
-        );
         try {
-            Intent launchIntent = context.getPackageManager()
+            Intent launchIntent = getContext().getPackageManager()
                 .getLaunchIntentForPackage(GtoObserverService.GTO_PACKAGE);
             if (launchIntent == null) {
                 JSObject result = new JSObject();
@@ -397,44 +449,11 @@ public class GtoObserverPlugin extends Plugin {
                 call.resolve(result);
                 return;
             }
-            // prepareFloatingButton() is explicitly called by the Web launcher before
-            // openGto(). Do not tear down that fresh token a second time. Direct/native
-            // callers still rearm here only when no bubble is attached or already armed.
-            boolean floatingPrepared = GtoObserverService.ensureFloatingButtonPreparedForNextGtoLaunch();
-            if (!floatingPrepared) {
-                JSObject result = new JSObject();
-                result.put("opened", false);
-                result.put("installed", true);
-                result.put("prepared", false);
-                result.put("tripState", prefs.getString("tripState", GtoObserverService.STATE_IDLE));
-                result.put("error", prefs.getString("overlayError", "O botão flutuante NVU não pôde ser preparado."));
-                call.resolve(result);
-                return;
-            }
-
-            // Prepare the native journey state before the first GTO frame. This closes
-            // the IDLE -> foreground-proof circular dependency on OEMs with stale
-            // UsageStats and also guarantees that reopening GTO preserves active state.
-            boolean prepared = GtoObserverService.prepareWorkLaunchIfRunning();
-            if (!prepared) {
-                JSObject result = new JSObject();
-                result.put("opened", false);
-                result.put("installed", true);
-                result.put("prepared", false);
-                result.put("tripState", prefs.getString("tripState", GtoObserverService.STATE_IDLE));
-                result.put("error", prefs.getString("lastEvent", "O fluxo GTO não pôde ser preparado."));
-                call.resolve(result);
-                return;
-            }
-
-            GtoObserverService.markGtoLaunchRequestedIfRunning();
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-            context.startActivity(launchIntent);
+            getContext().startActivity(launchIntent);
             JSObject result = new JSObject();
             result.put("opened", true);
             result.put("installed", true);
-            result.put("prepared", true);
-            result.put("tripState", prefs.getString("tripState", GtoObserverService.STATE_IDLE));
             call.resolve(result);
         } catch (Exception ex) {
             call.reject("Não foi possível abrir o Global Truck Online.", ex);
@@ -506,43 +525,6 @@ public class GtoObserverPlugin extends Plugin {
         status.put("touchPulseSensorErrorAt", prefs.getLong("touchPulseSensorErrorAt", 0L));
         status.put("captureWidth", prefs.getInt("captureWidth", 0));
         status.put("captureHeight", prefs.getInt("captureHeight", 0));
-        status.put("captureExpectedWidth", prefs.getInt("captureExpectedWidth", 0));
-        status.put("captureExpectedHeight", prefs.getInt("captureExpectedHeight", 0));
-        status.put("captureStableFrames", prefs.getInt("captureStableFrames", 0));
-        status.put("captureReadiness", prefs.getString("captureReadiness", GtoCaptureStabilityGate.INACTIVE));
-        status.put("captureReadyForAnalysis", prefs.getBoolean("captureReadyForAnalysis", false));
-        status.put("captureSurfaceReady", prefs.getBoolean("captureSurfaceReady", false));
-        status.put("captureHealth", prefs.getString("captureHealth", "NOT_HEALTHY"));
-        status.put("captureHealthChangedAt", prefs.getLong("captureHealthChangedAt", 0L));
-        status.put("captureLastFrameAt", prefs.getLong("captureLastFrameAt", 0L));
-        status.put("captureLastAnalyzedFrameAt", prefs.getLong("captureLastAnalyzedFrameAt", 0L));
-        status.put("captureStabilityGeneration", prefs.getLong("captureStabilityGeneration", 0L));
-        status.put("captureStabilityStartedAt", prefs.getLong("captureStabilityStartedAt", 0L));
-        status.put("captureSnapshotGeneration", prefs.getLong("captureSnapshotGeneration", 0L));
-        status.put("captureSnapshotReaderIdentity", prefs.getString("captureSnapshotReaderIdentity", ""));
-        status.put("captureRecoveryState", prefs.getString("captureRecoveryState", "IDLE"));
-        status.put("captureRecoveryGeneration", prefs.getLong("captureRecoveryGeneration", 0L));
-        status.put("captureRecoveryStartedAt", prefs.getLong("captureRecoveryStartedAt", 0L));
-        status.put("transportState", prefs.getString("transportState", "STOPPED"));
-        status.put("transportHealthy", prefs.getBoolean("transportHealthy", false));
-        status.put("transportGeneration", prefs.getLong("transportGeneration", 0L));
-        status.put("transportChangedAt", prefs.getLong("transportChangedAt", 0L));
-        status.put("geometryState", prefs.getString("geometryState", "UNKNOWN"));
-        status.put("geometryValid", prefs.getBoolean("geometryValid", false));
-        status.put("geometryGeneration", prefs.getLong("geometryGeneration", 0L));
-        status.put("actionState", prefs.getString("actionState", "DISARMED"));
-        status.put("actionsArmed", prefs.getBoolean("actionsArmed", false));
-        status.put("actionBlockedReason", prefs.getString("actionBlockedReason", ""));
-        status.put("actionGeneration", prefs.getLong("actionGeneration", 0L));
-        status.put("captureIndicatorUnhealthySince", prefs.getLong("captureIndicatorUnhealthySince", 0L));
-        status.put("captureIndicatorHealthyFrameStreak", prefs.getInt("captureIndicatorHealthyFrameStreak", 0));
-        status.put("visualContextGeneration", prefs.getLong("visualContextGeneration", 0L));
-        status.put("visualContextState", prefs.getString("visualContextState", "UNKNOWN"));
-        status.put("visualContextSignature", prefs.getString("visualContextSignature", ""));
-        status.put("visualContextConsecutiveFrames", prefs.getInt("visualContextConsecutiveFrames", 0));
-        status.put("visualContextChangedAt", prefs.getLong("visualContextChangedAt", 0L));
-        status.put("visualContextActionsArmed", prefs.getBoolean("visualContextActionsArmed", false));
-        status.put("visualContextLastBlockedReason", prefs.getString("visualContextLastBlockedReason", ""));
         status.put("captureDensityDpi", prefs.getInt("captureDensityDpi", 0));
         status.put("captureAndroidApi", prefs.getInt("captureAndroidApi", Build.VERSION.SDK_INT));
         status.put("freightButtonBandLeft", prefs.getInt("freightButtonBandLeft", 0));
@@ -550,56 +532,13 @@ public class GtoObserverPlugin extends Plugin {
         status.put("freightDetectedButtonCount", prefs.getInt("freightDetectedButtonCount", 0));
         status.put("lastFreightConflict", prefs.getString("lastFreightConflict", ""));
         status.put("lastFreightConflictAt", prefs.getLong("lastFreightConflictAt", 0L));
-        status.put("selectionConfirmationStatus", prefs.getString("selectionConfirmationStatus", ""));
-        status.put("freightConfirmationStartedAt", prefs.getLong("freightConfirmationStartedAt", 0L));
-        status.put("selectionConfirmationLastRetryAt", prefs.getLong("selectionConfirmationLastRetryAt", 0L));
-        status.put("selectionConfirmationStuckForMs", prefs.getLong("selectionConfirmationStuckForMs", 0L));
-        status.put("selectionConfirmationTimeoutAt", prefs.getLong("selectionConfirmationTimeoutAt", 0L));
-        status.put("selectionCommitContextEligible", GtoObserverService.isSelectionCommitContextEligibleNow());
-        status.put("selectionFailureReason", prefs.getString("selectionFailureReason", ""));
-        status.put("selectionFailureAt", prefs.getLong("selectionFailureAt", 0L));
-        status.put("overlayOcclusionPreventedAt", prefs.getLong("overlayOcclusionPreventedAt", 0L));
         status.put("foregroundPackage", prefs.getString("foregroundPackage", ""));
-        status.put("capturedContentVisible", prefs.getBoolean("capturedContentVisible", true));
-        status.put("capturedContentVisibilityChangedAt", prefs.getLong("capturedContentVisibilityChangedAt", 0L));
-        status.put("capturedContentVisibilityStatus", prefs.getString("capturedContentVisibilityStatus", ""));
-        status.put("capturedContentReturnEpoch", prefs.getLong("capturedContentReturnEpoch", 0L));
-        status.put("returnSurfaceRefreshPending", prefs.getBoolean("returnSurfaceRefreshPending", false));
-        status.put("returnSurfaceRefreshStatus", prefs.getString("returnSurfaceRefreshStatus", ""));
-        status.put("returnSurfaceRefreshPauseAt", prefs.getLong("returnSurfaceRefreshPauseAt", 0L));
-        status.put("lastVisualGtoForegroundEvidenceAt", prefs.getLong("lastVisualGtoForegroundEvidenceAt", 0L));
-        status.put("lastVisualGtoFreightCount", prefs.getInt("lastVisualGtoFreightCount", 0));
-        status.put("lastVisualGtoEvidenceSource", prefs.getString("lastVisualGtoEvidenceSource", ""));
-        status.put("gtoWorkLaunchPrepared", prefs.getBoolean("gtoWorkLaunchPrepared", false));
-        status.put("gtoWorkLaunchPreparedState", prefs.getString("gtoWorkLaunchPreparedState", ""));
-        status.put("gtoWorkLaunchPreparedAt", prefs.getLong("gtoWorkLaunchPreparedAt", 0L));
         status.put("startError", prefs.getString("startError", ""));
         status.put("projectionActive", prefs.getBoolean("projectionActive", false));
-        status.put("projectionSessionBound", prefs.getBoolean("projectionSessionBound", false));
-        status.put("projectionSurfacePending", prefs.getBoolean("projectionSurfacePending", false));
-        status.put("projectionGrantValidated", prefs.getBoolean("projectionGrantValidated", false));
-        status.put("projectionGrantValidatedAt", prefs.getLong("projectionGrantValidatedAt", 0L));
-        status.put("projectionSessionBoundAt", prefs.getLong("projectionSessionBoundAt", 0L));
         status.put("projectionStatus", prefs.getString("projectionStatus", "INACTIVE"));
         status.put("projectionError", prefs.getString("projectionError", ""));
         status.put("projectionReauthRequired", prefs.getBoolean("projectionReauthRequired", false));
         status.put("projectionPermissionInFlight", prefs.getBoolean("projectionPermissionInFlight", false));
-        status.put("observerOperationalReady", prefs.getBoolean("observerOperationalReady", false));
-        status.put("observerOperationalStatus", prefs.getString("observerOperationalStatus", ""));
-        status.put("observerOperationalChangedAt", prefs.getLong("observerOperationalChangedAt", 0L));
-        status.put("observerLifecycleActive", prefs.getBoolean("observerLifecycleActive", false));
-        status.put("observerLifecycleStatus", prefs.getString("observerLifecycleStatus", ""));
-        status.put("observerLifecycleChangedAt", prefs.getLong("observerLifecycleChangedAt", 0L));
-        status.put("gtoCaptureReady", prefs.getBoolean("gtoCaptureReady", false));
-        long detectorHeartbeatAt = prefs.getLong("captureLastAnalyzedFrameAt", 0L);
-        long detectorProbeHeartbeatAt = prefs.getLong("screenRecognitionHeartbeatAt", 0L);
-        boolean detectorActive = GtoObserverService.isDetectorOperationalNow();
-        status.put("detectorActive", detectorActive);
-        status.put("detectorHeartbeatAt", detectorHeartbeatAt);
-        status.put("detectorProbeHeartbeatAt", detectorProbeHeartbeatAt);
-        status.put("resultCertifiedLatched", prefs.getBoolean("resultCertifiedLatched", false));
-        status.put("resultCertifiedAt", prefs.getLong("resultCertifiedAt", 0L));
-        status.put("resultWatchedAdEvidence", prefs.getBoolean("resultWatchedAdEvidence", false));
         status.put("resultTouchFallbackRequired", prefs.getBoolean("resultTouchFallbackRequired", false));
         status.put("resultTouchFallbackReady", prefs.getBoolean("resultTouchFallbackReady", false));
         status.put("resultTouchFallbackContinuityBroken", prefs.getBoolean("resultTouchFallbackContinuityBroken", false));
@@ -609,87 +548,30 @@ public class GtoObserverPlugin extends Plugin {
         status.put("runtimePermissionError", prefs.getString("runtimePermissionError", ""));
         status.put("runtimePermissionErrorCode", prefs.getString("runtimePermissionErrorCode", ""));
         status.put("gtoForeground", prefs.getBoolean("gtoForeground", false));
-        status.put("screenAnalysisPaused", prefs.getBoolean("screenAnalysisPaused", false));
-        status.put("screenAnalysisPauseReason", prefs.getString("screenAnalysisPauseReason", ""));
-        status.put("tripStateWhenAnalysisPaused", prefs.getString("tripStateWhenAnalysisPaused", ""));
-        status.put("gtoBackgroundClassification", prefs.getString("gtoBackgroundClassification", ""));
-        status.put("captureContinuityStatus", prefs.getString("captureContinuityStatus", ""));
-        status.put("gtoDurableStateRepairAt", prefs.getLong("gtoDurableStateRepairAt", 0L));
-        status.put("resultOverlayClearedAt", prefs.getLong("resultOverlayClearedAt", 0L));
-        status.put("activeTripFreightListVisible", prefs.getBoolean("activeTripFreightListVisible", false));
-        status.put("frameProcessingErrorArea", prefs.getString("frameProcessingErrorArea", ""));
-        status.put("frameProcessingError", prefs.getString("frameProcessingError", ""));
-        status.put("frameProcessingErrorAt", prefs.getLong("frameProcessingErrorAt", 0L));
         status.put("tripState", prefs.getString("tripState", GtoObserverService.STATE_IDLE));
-        status.put("tripStateChangedAt", prefs.getLong("tripStateChangedAt", 0L));
         status.put("screenState", prefs.getString("screenState", "UNKNOWN"));
         status.put("lastEvent", prefs.getString("lastEvent", ""));
         status.put("driverStageCode", prefs.getString("driverStageCode", ""));
         status.put("driverStageMessage", prefs.getString("driverStageMessage", ""));
         status.put("driverStageAt", prefs.getLong("driverStageAt", 0L));
-        status.put("pausePromptVisible", prefs.getBoolean("pausePromptVisible", false));
-        status.put("pauseScreenDetected", prefs.getBoolean("pauseScreenDetected", false));
-        status.put("pauseReadStatus", prefs.getString("pauseReadStatus", ""));
-        status.put("pauseMissingField", prefs.getString("pauseMissingField", ""));
-        status.put("pauseScreenDetectedAt", prefs.getLong("pauseScreenDetectedAt", 0L));
-        status.put("pauseLastReadAt", prefs.getLong("pauseLastReadAt", 0L));
         status.put("lastCancellationReason", prefs.getString("lastCancellationReason", ""));
         status.put("lastCancelledAt", prefs.getLong("lastCancelledAt", 0L));
         status.put("selectedFreight", prefs.getString("selectedFreight", ""));
-        status.put("floatingButtonActivationArmed", prefs.getBoolean("floatingButtonActivationArmed", false));
-        status.put("floatingButtonActivatedAt", prefs.getLong("floatingButtonActivatedAt", 0L));
-        status.put("expectedGtoDestination", prefs.getString("expectedGtoDestination", ""));
-        status.put("lastDestinationCorrectionFrom", prefs.getString("lastDestinationCorrectionFrom", ""));
-        status.put("lastDestinationCorrectionTo", prefs.getString("lastDestinationCorrectionTo", ""));
-        status.put("lastDestinationCorrectionSource", prefs.getString("lastDestinationCorrectionSource", ""));
-        status.put("lastDestinationCorrectionAt", prefs.getLong("lastDestinationCorrectionAt", 0L));
-        status.put("selectedFreightRow", prefs.getInt("selectedFreightRow", -1));
         status.put("selectedCargo", prefs.getString("selectedCargo", ""));
-        status.put("selectedOrigin", prefs.getString("selectedOrigin", ""));
         status.put("selectedCompany", prefs.getString("selectedOriginCompany", ""));
         status.put("selectedDestination", prefs.getString("selectedDestination", ""));
         status.put("selectedKm", prefs.getString("selectedKm", ""));
         status.put("selectedValue", prefs.getString("selectedValue", ""));
         status.put("resultValue", prefs.getString("resultValue", ""));
-        status.put("resultValueEvidenceCount", prefs.getInt("resultValueEvidenceCount", 0));
-        status.put("resultValueEvidenceConflict", prefs.getBoolean("resultValueEvidenceConflict", false));
         status.put("finalGain", prefs.getString("finalGain", ""));
         status.put("completionStatus", prefs.getString("completionStatus", ""));
         status.put("completionDetectedAt", prefs.getLong("completionDetectedAt", 0L));
         status.put("gtoTripSessionId", prefs.getString("gtoTripSessionId", ""));
         status.put("gtoTripSyncStatus", prefs.getString("gtoTripSyncStatus", ""));
-        status.put("tripSubmissionState", prefs.getString("tripSubmissionState", GtoTripSubmissionCoordinator.STATE_READY));
-        status.put("tripSubmissionStateAt", prefs.getLong("tripSubmissionStateAt", 0L));
         status.put("gtoRegisteredTripId", prefs.getString("gtoRegisteredTripId", ""));
         status.put("gtoTripSyncError", prefs.getString("gtoTripSyncError", ""));
         status.put("gtoTripSyncLastAttemptAt", prefs.getLong("gtoTripSyncLastAttemptAt", 0L));
         status.put("gtoTripSyncLastErrorCode", prefs.getString("gtoTripSyncLastErrorCode", ""));
-        GtoAutoTripSync.reconcileBackgroundSyncMarkers(context, prefs);
-        String statusSessionId = prefs.getString("gtoTripSessionId", "");
-        status.put("gtoDurableQueueCount", GtoAutoTripSync.queuedCount(context));
-        status.put("gtoCurrentSessionQueued", GtoAutoTripSync.hasPendingSession(context, statusSessionId));
-        com.google.firebase.auth.FirebaseUser statusUser = com.google.firebase.auth.FirebaseAuth.getInstance().getCurrentUser();
-        String statusUid = statusUser == null ? "" : statusUser.getUid();
-        // Older completed deliveries are an independent outbox and are never exposed as
-        // a condition that can block the current list/accept/new-trip flow.
-        status.put("gtoBackgroundQueuePending", false);
-        status.put("gtoIndependentDeliveryPending", GtoAutoTripSync.hasQueuedOtherThanForDriver(context, statusSessionId, statusUid));
-        status.put("gtoQueueRecoveryLastAt", prefs.getLong("gtoQueueRecoveryLastAt", 0L));
-        status.put("gtoQueueRecoveryQueueCount", prefs.getInt("gtoQueueRecoveryQueueCount", 0));
-        status.put("gtoQueueRecoveryOwnedCount", prefs.getInt("gtoQueueRecoveryOwnedCount", 0));
-        status.put("gtoQueueRecoveryForeignCount", prefs.getInt("gtoQueueRecoveryForeignCount", 0));
-        status.put("gtoQueueRecoveryInvalidCount", prefs.getInt("gtoQueueRecoveryInvalidCount", 0));
-        status.put("gtoQueueRecoveryCurrentSessionQueued", prefs.getBoolean("gtoQueueRecoveryCurrentSessionQueued", false));
-        status.put("gtoQueueRecoverySummary", prefs.getString("gtoQueueRecoverySummary", ""));
-        status.put("gtoQueueRecoveryLastErrorCode", prefs.getString("gtoQueueRecoveryLastErrorCode", ""));
-        status.put("backgroundSyncPendingSessionId", "");
-        status.put("backgroundSyncPendingDetail", "");
-        status.put("backgroundSyncLastSessionId", prefs.getString("lastIndependentDeliveryAckSessionId", ""));
-        status.put("backgroundSyncLastTripId", prefs.getString("lastIndependentDeliveryAckTripId", ""));
-        status.put("backgroundSyncLastAckAt", prefs.getLong("lastIndependentDeliveryAckAt", 0L));
-        status.put("independentDeliveryRetrySessionId", prefs.getString("lastIndependentDeliveryRetrySessionId", ""));
-        status.put("independentDeliveryRetryDetail", prefs.getString("lastIndependentDeliveryRetryDetail", ""));
-        status.put("independentDeliveryRetryAt", prefs.getLong("lastIndependentDeliveryRetryAt", 0L));
         status.put("gtoTripIntegrityStatus", prefs.getString("gtoTripIntegrityStatus", ""));
         status.put("gtoTripIntegrityError", prefs.getString("gtoTripIntegrityError", ""));
         status.put("jobStatus", prefs.getString("jobStatus", ""));
