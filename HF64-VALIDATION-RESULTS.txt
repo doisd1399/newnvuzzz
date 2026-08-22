@@ -1,0 +1,307 @@
+=== test:gto-r3.34-hf45-critical-flow ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf45-critical-flow
+> node scripts/test-gto-r3-34-hf45-critical-flow.mjs
+
+PASS HF45+ Android identity baseline
+PASS HF45+ workflow identity follows current Android source
+PASS certified result is sealed inside replacement promotion
+PASS old result cannot auto-prepare and destroy the certified new page
+PASS result-list boundary is no longer sealed early in active-list reducer
+PASS sealed completed result is not marked cancelled
+PASS sealed result carries previous queued session into fresh selection
+PASS foreground watchdog self-heals a sealed completion
+PASS background no-auth sync enumerates real queue sessions
+PASS background no-auth sync cannot poison unrelated current session
+PASS menu distinguishes previous delivery still sending
+PASS own NVU overlays are filtered from GTO OCR semantics
+PASS result payout is checked against selected freight before consensus
+PASS result exit UI stops asking for a vanished Receive button
+PASS passive certified exit resolves promptly but not instantly
+PASS all eight physical HF45 fixtures are packaged
+GtoHf45CriticalPolicyTest: PASS
+PASS HF45 result/ad/money policy regression passes
+counts=5,5
+GtoHf45CriticalScreenshotsTest: PASS
+PASS physical freight list after result remains detectable with and without NVU menu
+
+18/18 HF45 critical-flow checks passed.
+
+=== test:gto-r3.34-hf47-certified-result-lifecycle ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf47-certified-result-lifecycle
+> node scripts/test-gto-r3-34-hf47-certified-result-lifecycle.mjs
+
+PASS HF47+ Android identity
+PASS HF47+ workflow identity
+PASS certified-result tracking is durable-latch based
+PASS service recovery restores volatile result clock from durable certification
+PASS terminal resolver is driven directly by captured frames
+PASS terminal completion no longer requires a future OCR callback
+PASS fresh OCR is still forced to catch positive ADS evidence
+PASS HF42 protected-result escrow remains
+PASS HF45 list-boundary seal remains only as secondary recovery
+PASS physical result/exit fixtures are packaged
+PASS lifecycle policy explicitly ignores volatile last-seen for tracking
+PASS GtoHf47CertifiedResultLifecycleTest
+PASS HF47 lifecycle/process-recreation regression passes
+PASS GtoHf46ReceiveExitScreenshotsTest
+PASS HF47 preserves physical result-vs-gameplay gate regression
+
+13/13 HF47 certified-result lifecycle checks passed.
+
+=== test:gto-r3.34-hf49-auto-result ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf49-auto-result
+> node scripts/test-gto-r3-34-hf49-auto-result.mjs
+
+PASS HF49 Android identity
+PASS HF49+ workflow identity
+PASS certified result is automatic completion authority
+PASS Receive is no longer mandatory for normal completion
+PASS driver sees immediate automatic-send message
+PASS backend ACK produces requested success wording
+PASS automatic completion still requires immutable locked freight
+PASS positive watched-ad evidence remains a hard reject
+PASS ADS guard is touch-intercepting and result-scoped
+PASS certified result has a defined ADS interaction policy
+PASS ADS guard has fallback geometry when OCR misses ADS label
+PASS ADS guard cannot steal Receive target
+PASS ADS guard is removed outside GTO and after modal exit
+PASS next freight is not prepared while certified result ADS guard is active
+PASS physical result fixture is packaged
+PASS GtoHf49AutomaticResultPolicyTest
+PASS HF49 automatic-result policy
+PASS GtoHf49AutomaticResultScreenshotTest
+PASS HF49 physical Concluido screenshot
+
+17/17 HF49 automatic-result checks passed.
+
+=== test:gto-r3.34-hf55-return-result-recovery ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf55-return-result-recovery
+> node scripts/test-gto-r3-34-hf55-return-result-recovery.mjs
+
+PASS HF55 Android identity preserved or advanced
+PASS HF55 workflow identity preserved or advanced
+PASS HF55 regression is part of release verification
+PASS paused active trip no longer discards every return frame
+PASS known stale third-party owner can be probed without being trusted
+PASS strict result modal is required before foreground recovery
+PASS strong return signature requires all modal anchors
+PASS real NVU UI and transient SystemUI are vetoes
+PASS return restores same GTO foreground context
+PASS same physical return frame is OCRed before next-frame barrier
+PASS return OCR is serialized by global lease
+PASS return probe cannot abandon its own in-flight OCR
+PASS return OCR stays session and projection generation bound
+PASS semantic result authority remains handleOcrResult
+PASS trip state remains untouched by visual proof alone
+PASS HF55 exact physical interruption fixtures are packaged
+PASS HF55 physical result fixture hash is fixed
+PASS HF55 physical NVU-menu overlap fixture hash is fixed
+GtoHf55ReturnResultPolicyTest: PASS
+PASS HF55 policy regression test passes
+GtoHf55ReturnResultScreenshotTest: PASS
+PASS HF55 exact physical return screenshots pass strict visual gate
+
+20/20 HF55 return-result recovery checks passed.
+
+=== test:gto-r3.34-hf59-sync-safe ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf59-sync-safe
+> node scripts/test-gto-r3-34-hf59-sync-safe.mjs
+
+PASS HF59+ Android identity
+PASS HF59+ workflow identity follows Android source
+PASS HF59+ release artifact identity
+PASS HF59 release gate is mandatory
+PASS HF58 registerGtoTrip server source preserved byte-for-byte
+PASS HF58 syncGtoTripState server source preserved byte-for-byte
+PASS registerGtoTrip queue keeps durable seal before network flush
+PASS permanent callable failures pause timed retries
+PASS transient registerGtoTrip retry remains capped exponential
+PASS missing native auth pauses locally without callable storm
+PASS repeated no-auth polls are locally idempotent
+PASS driver mismatch pauses locally
+PASS backend contract mismatch pauses instead of looping
+PASS auth-paused queue gets only one process recovery release per reason
+PASS auth/profile recovery can resume inside the running process
+PASS queue recovery schema upgraded for HF59
+PASS completion-to-queue watchdog has bounded local backoff
+PASS foreground observer continuously self-heals unsealed completion
+PASS failed immediate completion seal arms recovery
+PASS watchdog retries durable enqueue and finalizes proof only after success
+PASS watchdog itself contains no direct Firebase callable
+PASS completed but unsealed UI is explicit
+PASS paused sync UI is explicit
+PASS driver receives protected-sync message instead of oscillating status
+PASS result proof escrow remains preserved while queue seal is pending
+PASS HF57 instant detection feedback preserved
+PASS HF57 corrected option pluralization preserved
+PASS ML Kit remains local OCR path
+PASS HF58 canonical cost backoff preserved
+
+29/29 HF59 Sync Safe checks passed.
+
+=== test:gto-r3.34-hf60-terminal-safe ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf60-terminal-safe
+> node scripts/test-gto-r3-34-hf60-terminal-safe.mjs
+
+PASS HF60+ Android identity
+PASS HF60+ workflow identity follows Android source
+PASS HF60+ release artifact identity
+PASS HF60 release gate is mandatory
+PASS HF58 registerGtoTrip server remains byte-identical
+PASS HF58 syncGtoTripState server remains byte-identical
+PASS certified terminal failsafe has bounded initial deadline
+PASS result certification arms terminal failsafe
+PASS process restart re-arms certified terminal failsafe
+PASS frame resolver no longer hard-blocks on foreground
+PASS safe certified exit resolves outside GTO after no-ad window
+PASS terminal failsafe accepts only certified result states
+PASS positive watched-ad evidence still vetoes normal completion
+PASS fresh ad UI still delays normal completion
+PASS explicit ADS touch retains bounded 45s hold
+PASS missing locked freight snapshot is recovered before finalization
+PASS terminal failsafe persists automatic completion latch synchronously
+PASS terminal failsafe keeps retrying local completion until state advances
+PASS certified terminal authority bypasses stale foreground only after durable latch
+PASS terminal authority still requires certified proof and no watched ad
+PASS successful local completion clears terminal failsafe before RESULT_CONFIRMED
+PASS queue-seal retry is scheduled independently of foreground polling
+PASS restart completion recovery arms queue watchdog if immediate sealing fails
+PASS driver receives non-stuck terminal safety message
+PASS HF59 permanent retry protections remain
+PASS ML Kit local OCR path remains untouched
+PASS HF57 instant message path remains untouched
+PASS release voice verifier scans by approved bytes instead of fragile APK path
+PASS release voice verifier pins both approved hashes
+
+29/29 HF60 Terminal Safe checks passed.
+
+=== test:gto-r3.34-hf61-completion-commit ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf61-completion-commit
+> node scripts/test-gto-r3-34-hf61-completion-commit.mjs
+
+PASS HF61 Android baseline identity preserved or advanced
+PASS HF61 workflow remains aligned to current Android identity
+PASS HF61 release artifact lineage preserved
+PASS HF61 release gate is mandatory
+PASS HF58 registerGtoTrip server remains byte-identical
+PASS HF58 syncGtoTripState server remains byte-identical
+PASS Concluido synchronously latches terminal commit by session
+PASS Concluido synchronously arms automatic completion
+PASS terminal commit auto-finalize is not blocked by stale foreground
+PASS certified result no longer requires post-result ADS guard
+PASS first compatible amount on certified result is frozen immediately
+PASS legacy two-read consensus still exists for uncertain paths
+PASS post-terminal watched-ad OCR is neutral
+PASS post-terminal touch cannot mutate result action
+PASS normal confirmation ignores ad marker only after terminal commit
+PASS terminal failsafe bypasses legacy ADS waits only after terminal commit
+PASS restart recovery recognizes terminal commit despite stale later ad marker
+PASS new certified freight list can seal committed previous result
+PASS RESULT_CONFIRMED can observe a real new list without backend ACK only when old session is terminal+queued
+PASS stable certified new list is a post-commit lifecycle boundary
+PASS already queued completed session is preserved when next list takes over
+PASS new session is only prepared as WAITING_FREIGHT
+PASS WAITING_FREIGHT cannot interpret result screen as another trip
+PASS completed queue is keyed idempotently by session id before network
+PASS terminal fields are cleared only with trip/session reset
+PASS HF59 retry protections remain
+PASS HF58 canonical cost backoff remains
+PASS HF57 instant message and pluralization remain
+PASS ML Kit remains local OCR path
+
+29/29 HF61 Completion Commit checks passed.
+
+=== test:gto-r3.34-hf63-return-freight ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf63-return-freight
+> node scripts/test-gto-r3-34-hf63-return-freight-recovery.mjs
+
+PASS HF63 Android baseline identity preserved or advanced
+PASS HF63 workflow remains aligned to current Android identity
+PASS HF63 release metadata lineage preserved or advanced
+PASS HF63 is Android-only
+PASS HF63 regression is mandatory in release gate
+PASS paused freight return probe survives stale third-party UsageStats
+PASS stale package name is not granted authority by return policy
+PASS return probe requires verified live projection and landscape
+PASS real NVU and transient surfaces remain vetoes
+PASS two consecutive strict freight frames required for visual repair
+PASS visual return proof repairs foreground only
+PASS two-frame visual candidate cannot mutate trip state
+PASS normal semantic freight authority remains downstream
+PASS newer visual GTO proof outranks older UsageStats event
+PASS newer real app event can still supersede visual proof
+PASS foreground visual precedence keeps MainActivity/system vetoes
+PASS three exact reported screenshots are packaged
+PASS reported screenshot hashes are fixed
+GtoHf63FreightReturnPolicyTest: PASS
+PASS HF63 return-policy regression passes
+GtoHf63ReturnFreightScreenshotTest: PASS
+PASS exact reported screens pass production freight detector
+
+20/20 HF63 return-freight recovery checks passed.
+
+=== test:gto-r3.34-hf64-completion-deadlock ===
+
+> nvu-operacional@2.3.9 test:gto-r3.34-hf64-completion-deadlock
+> node scripts/test-gto-r3-34-hf64-completion-deadlock.mjs
+
+PASS HF64 Android identity
+PASS HF64 workflow identity
+PASS HF64 release metadata identity
+PASS HF64 is Android-only
+PASS HF64 regression is mandatory in release gate
+PASS terminal modal disappearance bypasses legacy Receive inference
+PASS legacy Receive copy remains only for non-terminal compatibility
+PASS already-posted exit resolver forwards terminal commit instead of no-op
+PASS terminal self-healer is bounded and foreground-independent
+PASS self-healer progresses certified RESULT_DETECTED
+PASS self-healer progresses RESULT_CONFIRMED through local queue boundary
+PASS terminal healer runs before raw GTO/UsageStats authority
+PASS terminal confirmation bypasses stale foreground only with certified authority
+PASS durable value recovery runs before snapshot OCR
+PASS missing value no longer requires two snapshot sources forever
+PASS value recovery requires certified terminal commit
+PASS actual certified result value is preferred
+PASS immutable selected freight is deterministic fallback
+PASS recovered value is synchronously committed to terminal consensus
+PASS locked offer recovery reads only immutable locked snapshot
+PASS result proof recovery requires certified escrow
+PASS single preserved snapshot candidate wakes durable terminal fallback
+PASS snapshot OCR failure also wakes durable terminal fallback
+PASS queue remains sealed before any network send
+PASS HF58 registerGtoTrip remains byte-identical
+PASS HF58 syncGtoTripState remains byte-identical
+PASS three reported completion-flow screenshots are packaged exactly
+
+27/27 HF64 Completion Deadlock Safe checks passed.
+
+=== audit:firebase-costs ===
+
+> nvu-operacional@2.3.9 audit:firebase-costs
+> node scripts/audit-firebase-costs.mjs
+
+NVU — auditoria estática de custos e regressões
+Críticos: 0 | Avisos: 0
+Resultado: aprovado sem regressões críticas detectadas.
+
+
+> nvu-operacional@2.3.9 check:android-java-syntax
+> node scripts/check-android-java-syntax.mjs
+
+JavaSyntaxCheck: PASS (53 sources)
+
+Additional release facts:
+- Android identity: 1.0.116 / versionCode 116
+- Web source diff vs HF63: none
+- Functions source diff vs HF63: none
+- functions/src/gtoTrips.ts SHA-256: e11110e248fe886c0a8eb1644bb1b129b618919413ae15f8b576a56d907bd707
+- functions/src/gtoState.ts SHA-256: f15301283ea37774deef756498a655a0018be17474254dcfc09485efdcfbc836
+- Local Gradle compile was not executable in this sandbox because Gradle wrapper dependency download requires external network access; GitHub release workflow remains configured to perform the real Gradle build with Java 21 / Android SDK 36.
