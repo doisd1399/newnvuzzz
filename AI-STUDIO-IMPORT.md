@@ -2,11 +2,11 @@
 
 ## O que esta branch entrega
 
-A branch `sync/hf126-complete-ready` representa a fonte completa HF126 do NVU. Ela inclui o Web/React, o runtime Capacitor, o Android nativo Java/Gradle, as Firebase Functions e os testes. A versão Android é **1.0.176** (`versionCode 176`).
+A branch `sync/hf126-complete-tree` representa a fonte completa HF126 do NVU. Ela inclui o Web/React, o runtime Capacitor, o Android nativo Java/Gradle, as Firebase Functions e os testes. A versão Android é **1.0.176** (`versionCode 176`).
 
 ## Importação recomendada
 
-No Google AI Studio, use **Add files (+) → Import from GitHub** e selecione o repositório `doisd1399/newnvuzzz` e a branch `sync/hf126-complete-ready`. Como alternativa, baixe o ZIP da branch pelo GitHub e importe somente os arquivos-fonte.
+No Google AI Studio, use **Add files (+) → Import from GitHub** e selecione o repositório `doisd1399/newnvuzzz` e a branch `sync/hf126-complete-tree`. Como alternativa, baixe o ZIP da branch pelo GitHub e importe somente os arquivos-fonte.
 
 O AI Studio é apropriado para revisar e editar principalmente a aplicação Web/React. O APK Android continua sendo gerado com o projeto `android/` usando Gradle/Android SDK em ambiente de build. As Firebase Functions continuam sendo compiladas e publicadas pelo fluxo Firebase autorizado; a importação no AI Studio não executa deploy administrativo automaticamente.
 

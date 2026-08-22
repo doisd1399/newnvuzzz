@@ -14,7 +14,7 @@ O repositório remoto `doisd1399/newnvuzzz` estava na `main` no commit `670bb098
 
 A sincronização foi preparada na branch:
 
-`sync/hf126-complete-ready`
+`sync/hf126-complete-tree`
 
 A `main` não foi sobrescrita. A branch inclui os arquivos históricos remotos que continuam compatíveis e incorpora a fonte HF126 completa, incluindo o coordenador unificado `GtoTripSubmissionCoordinator.java` e os testes HF123–HF126.
 
@@ -48,4 +48,4 @@ O lint TypeScript ainda possui erros preexistentes em arquivos não alterados; o
 
 ## Publicação segura
 
-A publicação deve ocorrer primeiro nesta branch de sincronização. Depois da revisão no GitHub/AI Studio, a branch pode ser comparada e mesclada manualmente na `main`. Nenhuma credencial de assinatura deve ser enviada ao GitHub ou ao AI Studio.
+A sincronização deve ocorrer primeiro nesta branch de sincronização. Depois da revisão no GitHub/AI Studio, a branch pode ser comparada e mesclada manualmente na `main`. Nenhuma credencial de assinatura deve ser enviada ao GitHub ou ao AI Studio.
