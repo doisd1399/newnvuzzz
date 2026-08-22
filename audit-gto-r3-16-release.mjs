@@ -19,14 +19,14 @@ const manifest = read('android/app/src/main/AndroidManifest.xml');
 const gradle = read('android/app/build.gradle');
 const remote = JSON.parse(read('capacitor.remote.json'));
 
-check('release version is R3.20 release baseline', gradle.includes('versionCode 37') && gradle.includes('versionName "1.0.37"'));
+check('release version is R3.31 baseline', Number((gradle.match(/versionCode\s+(\d+)/)||[])[1]||0) >= 48 && Number((gradle.match(/versionName\s+"1\.0\.(\d+)"/)||[])[1]||0) >= 48);
 check('remote Capacitor runtime is HTTPS Netlify', remote.enabled === true && /^https:\/\//.test(remote.url) && remote.url.includes('netlify.app'));
-check('web launcher gates GTO open on active MediaProjection', launcher.includes('if (!status.projectionActive)') && launcher.includes('openGto()'));
+check('web launcher opens GTO before initial MediaProjection consent', !launcher.includes('requestScreenCapture()') && launcher.includes('openGto()') && service.includes('armProjectionPermissionAfterGtoOpen()'));
 check('permission flow is visible NVU ActivityResult', plugin.includes('startActivityForResult(call, captureIntent, "screenCaptureResult")'));
 check('permission recovery does not launch GTO before projection', main.includes('projectionActive') && main.includes('reopenGtoWhenProjectionReady'));
 check('projection callback is generation protected', service.includes('generation != projectionGeneration || mediaProjection != projection'));
 check('permission transition has foreground grace', service.includes('PERMISSION_RETURN_GRACE_MS') && service.includes('projectionPermissionInFlight'));
-check('selection failure explicitly arms reopen after restoring WAITING', service.includes('armFreightListReopenAfterSelectionFailure(now, reason)'));
+check('selection failure explicitly arms reopen after restoring WAITING', service.includes('armFreightListReopenAfterSelectionFailure(now, safeReason)'));
 check('selection close is recorded even while confirming', service.includes('CONFIRMING_FREIGHT') && service.includes('freightListCycleClosed'));
 check('reopened identical list creates a fresh session', service.includes('restartWaitingFreightSelectionSession("FREIGHT_LIST_REOPENED_AFTER_SELECTION_FAILURE")'));
 check('fresh retry clears previous session snapshot', service.includes('discardSessionSnapshot(this, previousSessionId)') && service.includes('clearTripAnalysis()'));
